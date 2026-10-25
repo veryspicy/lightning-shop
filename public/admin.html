@@ -58,18 +58,19 @@
     .bar input[type=search] { padding: 8px 12px; border: 1px solid #d7e2da; border-radius: 8px; font-size: .9rem; min-width: 200px; }
     .img-preview { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; border: 1px solid #d7e2da; }
     .btn-outline-mini { border: 1px solid #d7e2da; background: #fff; color: #334; padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: .85rem; }
-    .qr-config-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 20px; align-items: start; }
-    .qr-config-form { display: flex; flex-direction: column; gap: 4px; }
-    .qr-config-preview { background: #f7faf8; border: 1px dashed #cfe0d5; border-radius: 10px; padding: 14px; }
-    .qr-preview-label { font-size: .78rem; color: #667; font-weight: 600; margin-bottom: 10px; }
-    .qr-preview-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .qr-preview-card { background: #fff; border: 1px solid #e5ede7; border-radius: 10px; padding: 12px; text-align: center; }
-    .qr-preview-card b { display: block; font-size: .92rem; color: #234; margin-bottom: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .qr-config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+    .qr-card-block { background: #fff; border: 1px solid #e5ede7; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+    .qr-block-head { font-size: .9rem; font-weight: 700; color: #234; padding: 10px 14px; border-bottom: 1px solid #eef3ef; background: #fafcfa; }
+    .qr-block-body { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px; }
+    .qr-block-preview { background: #f7faf8; border: 1px dashed #cfe0d5; border-radius: 10px; padding: 12px; text-align: center; }
+    .qr-block-preview b { display: block; font-size: .92rem; color: #234; margin-bottom: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .qr-preview-img { width: 132px; height: 132px; object-fit: contain; border-radius: 8px; border: 1px solid #ddd; background: #fff; padding: 6px; box-sizing: border-box; }
     .qr-preview-box { width: 132px; height: 132px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; background: #fff; padding: 6px; box-sizing: border-box; }
     .qr-preview-box canvas { display: block; width: 100%; height: 100%; }
     .qr-preview-empty { color: #99a; font-size: .72rem; line-height: 132px; }
-    @media (max-width: 860px) { .qr-config-grid { grid-template-columns: 1fr; } }
+    .qr-block-form { display: flex; flex-direction: column; gap: 10px; }
+    .qr-block-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 10px; padding: 0 14px 14px; }
+    @media (max-width: 1100px) { .qr-config-grid { grid-template-columns: 1fr; } .qr-block-body { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -111,33 +112,38 @@
       <!-- 二维码与链接配置 -->
       <div class="panel">
         <h2>二维码与链接配置</h2>
-        <p class="muted" style="margin:4px 0 12px">首页底部并排展示两个二维码卡片。左卡（报价单）为图片，右卡（商城）按链接自动生成，标题与链接均可配置；右侧为实时预览。</p>
+        <p class="muted" style="margin:4px 0 12px">左卡（报价单）与右卡（商城）各自独立配置与预览，标题与链接均可后台修改。</p>
         <div class="qr-config-grid">
-          <div class="qr-config-form">
-            <div class="form-grid">
-              <div class="field"><label>左卡标题（报价单）</label><input id="f-qr-quote-title" maxlength="20" placeholder="如 获取完整报价单" /></div>
-              <div class="field"><label>右卡标题（商城）</label><input id="f-qr-shop-title" maxlength="20" placeholder="如 扫码直达商城" /></div>
-              <div class="field"><label>商城链接（右侧二维码内容）</label><input id="f-qr-url" placeholder="https://lightning-shop.gora.dpdns.org" /></div>
-              <div class="field"><label>报价单二维码图片</label><input type="file" id="f-qr-img-file" accept="image/*" /></div>
-              <div class="field"><label>报价单二维码图片地址（上传后自动填写，可留空）</label><input id="f-qr-quote-image" placeholder="/img/quote-qr.jpg" /></div>
-            </div>
-            <div class="row-actions">
-              <button type="button" class="btn btn-outline btn-sm" id="qr-reset">恢复默认</button>
-              <button type="button" class="btn btn-primary btn-sm" id="qr-save">保存二维码配置</button>
-            </div>
-          </div>
-          <div class="qr-config-preview">
-            <div class="qr-preview-label">实时预览（与首页一致）</div>
-            <div class="qr-preview-cards">
-              <div class="qr-preview-card">
+          <div class="qr-card-block">
+            <div class="qr-block-head">左卡 · 获取完整报价单</div>
+            <div class="qr-block-body">
+              <div class="qr-block-preview">
                 <b id="preview-quote-title">获取完整报价单</b>
                 <img class="qr-preview-img" id="qr-img-preview" alt="报价单二维码预览" hidden />
               </div>
-              <div class="qr-preview-card">
+              <div class="qr-block-form">
+                <div class="field"><label>左卡标题</label><input id="f-qr-quote-title" maxlength="20" placeholder="如 获取完整报价单" /></div>
+                <div class="field"><label>报价单二维码图片</label><input type="file" id="f-qr-img-file" accept="image/*" /></div>
+                <div class="field"><label>图片地址（上传后自动填写，可留空）</label><input id="f-qr-quote-image" placeholder="/img/quote-qr.jpg" /></div>
+              </div>
+            </div>
+          </div>
+          <div class="qr-card-block">
+            <div class="qr-block-head">右卡 · 扫码直达商城</div>
+            <div class="qr-block-body">
+              <div class="qr-block-preview">
                 <b id="preview-shop-title">扫码直达商城</b>
                 <div id="qr-url-preview" class="qr-preview-box"></div>
               </div>
+              <div class="qr-block-form">
+                <div class="field"><label>右卡标题</label><input id="f-qr-shop-title" maxlength="20" placeholder="如 扫码直达商城" /></div>
+                <div class="field"><label>商城链接（二维码内容）</label><input id="f-qr-url" placeholder="https://lightning-shop.gora.dpdns.org" /></div>
+              </div>
             </div>
+          </div>
+          <div class="qr-block-actions">
+            <button type="button" class="btn btn-outline btn-sm" id="qr-reset">恢复默认</button>
+            <button type="button" class="btn btn-primary btn-sm" id="qr-save">保存二维码配置</button>
           </div>
         </div>
       </div>
