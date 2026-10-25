@@ -65,8 +65,17 @@
     .qr-block-preview { background: #f7faf8; border: 1px dashed #cfe0d5; border-radius: 10px; padding: 12px; text-align: center; }
     .qr-block-preview b { display: block; font-size: .92rem; color: #234; margin-bottom: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .qr-preview-img { width: 132px; height: 132px; object-fit: contain; border-radius: 8px; border: 1px solid #ddd; background: #fff; padding: 6px; box-sizing: border-box; }
-    .qr-preview-box { width: 132px; height: 132px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; background: #fff; padding: 6px; box-sizing: border-box; }
+    .qr-preview-box { width: 132px; height: 132px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; background: #fff; padding: 6px; box-sizing: border-box; position: relative; }
     .qr-preview-box canvas { display: block; width: 100%; height: 100%; }
+    .qr-preview-box:has(canvas)::after {
+      content: '';
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      width: 30px; height: 30px; border-radius: 7px;
+      background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M14.5 2L3.5 14.5h5.25L7.5 22l11-12.5h-5.25L14.5 2z' fill='%237C4DFF'/%3E%3C/svg%3E") center / 18px 18px no-repeat;
+      box-shadow: 0 1px 5px rgba(0,0,0,.22);
+      pointer-events: none;
+    }
     .qr-preview-empty { color: #99a; font-size: .72rem; line-height: 132px; }
     .qr-block-form { display: flex; flex-direction: column; gap: 10px; }
     .qr-block-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 10px; padding: 0 14px 14px; }
