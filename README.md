@@ -107,7 +107,7 @@ npm run deploy
 
 1. **目录方式（推荐）**：把 `skills/product-import/` 整个文件夹复制到 Marvis 技能目录：
    ```
-   C:\Users\tank\AppData\Roaming\Tencent\Marvis\User\<user_id>\skills\custom\product-import\
+   C:\Users\*\AppData\Roaming\Tencent\Marvis\User\<user_id>\skills\custom\product-import\
    ```
 2. **包方式**：`skills/dist/product-import.skill` 是打包好的分发包（zip），在 Marvis 技能市场中导入/安装该包。
 3. 安装后重启 Marvis（或新开会话），让技能索引扫描到新技能。
