@@ -132,6 +132,31 @@ function applyHero(hero) {
   }
 }
 
+function styleQrGradient(box) {
+  const canvas = box && box.querySelector('canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const from = [11, 45, 107];   // 深蓝 #0B2D6B
+  const to = [124, 77, 255];    // 浅紫 #7C4DFF
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (d[i + 3] < 128) continue;
+      const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      if (lum >= 128) continue;
+      const t = (x + y) / (w + h - 2);
+      d[i] = Math.round(from[0] + (to[0] - from[0]) * t);
+      d[i + 1] = Math.round(from[1] + (to[1] - from[1]) * t);
+      d[i + 2] = Math.round(from[2] + (to[2] - from[2]) * t);
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
 function applyQr(qr) {
   if (!qr) return;
   const quoteImg = document.getElementById('quote-qr-img');
@@ -139,6 +164,10 @@ function applyQr(qr) {
     quoteImg.src = qr.quoteImage;
     quoteImg.alt = '报价单二维码';
   }
+  const quoteTitle = document.getElementById('quote-qr-title');
+  if (quoteTitle && qr.quoteTitle) quoteTitle.textContent = qr.quoteTitle;
+  const shopTitle = document.getElementById('shop-qr-title');
+  if (shopTitle && qr.shopTitle) shopTitle.textContent = qr.shopTitle;
   const box = document.getElementById('site-qr');
   if (box && qr.url && typeof QRCode !== 'undefined') {
     try {
@@ -147,10 +176,11 @@ function applyQr(qr) {
         text: qr.url,
         width: 180,
         height: 180,
-        colorDark: '#0b1f17',
+        colorDark: '#111111',
         colorLight: '#ffffff',
         correctLevel: QRCode.CorrectLevel.M,
       });
+      styleQrGradient(box);
       box.hidden = false;
     } catch {
       /* 二维码生成失败不阻塞页面 */
@@ -422,6 +452,7 @@ async function buildSharePoster(p) {
 }
 
 async function openShareModal(p) {
+  const inWechat = /MicroMessenger/i.test(navigator.userAgent);
   let modal = document.getElementById('share-modal');
   if (!modal) {
     modal = document.createElement('div');
@@ -435,9 +466,9 @@ async function openShareModal(p) {
           <button class="share-close" type="button" aria-label="关闭">✕</button>
         </div>
         <img class="share-img" alt="商品分享图">
-        <p class="share-tip">长按图片保存，或点击下方按钮分享给微信好友</p>
+        <p class="share-tip">${inWechat ? '长按图片保存，或点击右上角「···」转发给好友' : '长按图片保存，或点击下方按钮分享给微信好友'}</p>
         <div class="share-actions">
-          <button class="btn-wx" type="button">分享到微信</button>
+          <button class="btn-wx" type="button">${inWechat ? '去右上角转发' : '分享到微信'}</button>
           <a class="btn-save" download>保存图片</a>
         </div>
       </div>`;
@@ -463,6 +494,12 @@ async function openShareModal(p) {
 
   const wxBtn = modal.querySelector('.btn-wx');
   wxBtn.onclick = async () => {
+    if (inWechat) {
+      // 微信内置浏览器不支持 Web Share API，只能引导右上角菜单转发
+      wxBtn.textContent = '请点击右上角「···」→ 转发给朋友';
+      wxBtn.disabled = true;
+      return;
+    }
     try {
       const blob = await (await fetch(url)).blob();
       const file = new File([blob], `${p.name}-分享.png`, { type: 'image/png' });

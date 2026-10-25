@@ -362,13 +362,74 @@ async function handleHeroUpload() {
 
 /* ---- 二维码与链接配置 ---- */
 
+function styleQrGradient(box) {
+  const canvas = box && box.querySelector('canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const from = [11, 45, 107];   // 深蓝 #0B2D6B
+  const to = [124, 77, 255];    // 浅紫 #7C4DFF
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (d[i + 3] < 128) continue;
+      const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      if (lum >= 128) continue;
+      const t = (x + y) / (w + h - 2);
+      d[i] = Math.round(from[0] + (to[0] - from[0]) * t);
+      d[i + 1] = Math.round(from[1] + (to[1] - from[1]) * t);
+      d[i + 2] = Math.round(from[2] + (to[2] - from[2]) * t);
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function renderQrUrlPreview() {
+  const box = $('qr-url-preview');
+  if (!box) return;
+  const v = $('f-qr-url').value.trim();
+  box.innerHTML = '';
+  if (!v) {
+    box.innerHTML = '<span class="qr-preview-empty">输入链接后生成预览</span>';
+    return;
+  }
+  if (typeof QRCode === 'undefined') return;
+  try {
+    new QRCode(box, {
+      text: v,
+      width: 132,
+      height: 132,
+      colorDark: '#111111',
+      colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+    styleQrGradient(box);
+  } catch {
+    box.innerHTML = '<span class="qr-preview-empty">链接无效</span>';
+  }
+}
+
+function syncQrPreviewText() {
+  const qt = $('preview-quote-title');
+  const st = $('preview-shop-title');
+  if (qt) qt.textContent = $('f-qr-quote-title').value.trim() || '获取完整报价单';
+  if (st) st.textContent = $('f-qr-shop-title').value.trim() || '扫码直达商城';
+}
+
 async function loadQr() {
   try {
     const qr = await api('/api/site/qr');
     $('f-qr-url').value = qr.url || '';
     $('f-qr-quote-image').value = qr.quoteImage || '';
+    $('f-qr-quote-title').value = qr.quoteTitle || '';
+    $('f-qr-shop-title').value = qr.shopTitle || '';
     const prev = $('qr-img-preview');
     if (qr.quoteImage) { prev.src = qr.quoteImage; prev.hidden = false; } else { prev.hidden = true; }
+    renderQrUrlPreview();
+    syncQrPreviewText();
   } catch {
     /* 二维码配置读取失败不阻塞主流程 */
   }
@@ -378,6 +439,8 @@ async function saveQr() {
   const body = {
     url: $('f-qr-url').value.trim(),
     quoteImage: $('f-qr-quote-image').value.trim(),
+    quoteTitle: $('f-qr-quote-title').value.trim(),
+    shopTitle: $('f-qr-shop-title').value.trim(),
   };
   try {
     await api('/api/site/qr', { method: 'PUT', headers: authHeaders(), body: JSON.stringify(body) });
@@ -503,9 +566,13 @@ $('qr-save').addEventListener('click', saveQr);
 $('qr-reset').addEventListener('click', () => {
   $('f-qr-url').value = 'https://lightning-shop.gora.dpdns.org';
   $('f-qr-quote-image').value = '/wechat-qr.jpg';
+  $('f-qr-quote-title').value = '获取完整报价单';
+  $('f-qr-shop-title').value = '扫码直达商城';
   const prev = $('qr-img-preview');
   prev.src = '/wechat-qr.jpg';
   prev.hidden = false;
+  renderQrUrlPreview();
+  syncQrPreviewText();
   saveQr();
 });
 $('f-qr-img-file').addEventListener('change', () => handleQrUpload().catch((err) => toast(err.message, true)));
@@ -514,6 +581,9 @@ $('f-qr-quote-image').addEventListener('input', () => {
   const v = $('f-qr-quote-image').value.trim();
   if (v) { prev.src = v; prev.hidden = false; } else { prev.hidden = true; }
 });
+$('f-qr-url').addEventListener('input', renderQrUrlPreview);
+$('f-qr-quote-title').addEventListener('input', syncQrPreviewText);
+$('f-qr-shop-title').addEventListener('input', syncQrPreviewText);
 $('price-save').addEventListener('click', savePrice);
 $('price-reset').addEventListener('click', () => {
   $('f-price-enabled').checked = true;
