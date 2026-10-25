@@ -132,6 +132,31 @@ function applyHero(hero) {
   }
 }
 
+function styleQrGradient(box) {
+  const canvas = box && box.querySelector('canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const from = [11, 45, 107];   // 深蓝 #0B2D6B
+  const to = [124, 77, 255];    // 浅紫 #7C4DFF
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (d[i + 3] < 128) continue;
+      const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      if (lum >= 128) continue;
+      const t = (x + y) / (w + h - 2);
+      d[i] = Math.round(from[0] + (to[0] - from[0]) * t);
+      d[i + 1] = Math.round(from[1] + (to[1] - from[1]) * t);
+      d[i + 2] = Math.round(from[2] + (to[2] - from[2]) * t);
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
 function applyQr(qr) {
   if (!qr) return;
   const quoteImg = document.getElementById('quote-qr-img');
@@ -155,6 +180,7 @@ function applyQr(qr) {
         colorLight: '#ffffff',
         correctLevel: QRCode.CorrectLevel.M,
       });
+      styleQrGradient(box);
       box.hidden = false;
     } catch {
       /* 二维码生成失败不阻塞页面 */
