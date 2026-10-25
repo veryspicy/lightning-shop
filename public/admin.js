@@ -57,6 +57,7 @@ async function load() {
   loadCategoryOptions();
   loadConfigCategories();
   loadHero();
+  loadQr();
   loadPrice();
 }
 
@@ -359,6 +360,49 @@ async function handleHeroUpload() {
   toast('背景图上传成功');
 }
 
+/* ---- 二维码与链接配置 ---- */
+
+async function loadQr() {
+  try {
+    const qr = await api('/api/site/qr');
+    $('f-qr-url').value = qr.url || '';
+    $('f-qr-quote-image').value = qr.quoteImage || '';
+    const prev = $('qr-img-preview');
+    if (qr.quoteImage) { prev.src = qr.quoteImage; prev.hidden = false; } else { prev.hidden = true; }
+  } catch {
+    /* 二维码配置读取失败不阻塞主流程 */
+  }
+}
+
+async function saveQr() {
+  const body = {
+    url: $('f-qr-url').value.trim(),
+    quoteImage: $('f-qr-quote-image').value.trim(),
+  };
+  try {
+    await api('/api/site/qr', { method: 'PUT', headers: authHeaders(), body: JSON.stringify(body) });
+    toast('二维码配置已保存');
+  } catch (err) { toast(err.message, true); }
+}
+
+async function handleQrUpload() {
+  const file = $('f-qr-img-file').files[0];
+  if (!file) return toast('请选择报价单二维码图片', true);
+  if (!/\.(jpe?g|png|webp)$/i.test(file.name)) return toast('仅支持 JPG / PNG / WebP', true);
+  const dataUrl = await fileToJpgBase64(file);
+  const filename = `quote-qr-${Date.now()}.jpg`;
+  const r = await api('/api/upload', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ filename, base64: dataUrl }),
+  });
+  $('f-qr-quote-image').value = r.url;
+  const prev = $('qr-img-preview');
+  prev.src = r.url;
+  prev.hidden = false;
+  toast('报价单二维码上传成功');
+}
+
 /* ---- 价格策略 ---- */
 
 async function loadPrice() {
@@ -455,6 +499,21 @@ $('hero-reset').addEventListener('click', () => {
   saveHero();
 });
 $('f-hero-img-file').addEventListener('change', () => handleHeroUpload().catch((err) => toast(err.message, true)));
+$('qr-save').addEventListener('click', saveQr);
+$('qr-reset').addEventListener('click', () => {
+  $('f-qr-url').value = 'https://lightning-shop.gora.dpdns.org';
+  $('f-qr-quote-image').value = '/wechat-qr.jpg';
+  const prev = $('qr-img-preview');
+  prev.src = '/wechat-qr.jpg';
+  prev.hidden = false;
+  saveQr();
+});
+$('f-qr-img-file').addEventListener('change', () => handleQrUpload().catch((err) => toast(err.message, true)));
+$('f-qr-quote-image').addEventListener('input', () => {
+  const prev = $('qr-img-preview');
+  const v = $('f-qr-quote-image').value.trim();
+  if (v) { prev.src = v; prev.hidden = false; } else { prev.hidden = true; }
+});
 $('price-save').addEventListener('click', savePrice);
 $('price-reset').addEventListener('click', () => {
   $('f-price-enabled').checked = true;

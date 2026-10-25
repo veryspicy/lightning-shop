@@ -55,7 +55,12 @@
       <div class="b2b-card">
         <h3>获取完整报价单</h3>
         <p>留下渠道类型与采购量，1 个工作日内回复详细报价单（含物流测算）。</p>
-        <img src="/wechat-qr.jpg" alt="微信二维码" class="qr-img" width="180" height="180" />
+        <img src="/wechat-qr.jpg" alt="报价单二维码" id="quote-qr-img" class="qr-img" width="180" height="180" />
+      </div>
+      <div class="b2b-card">
+        <h3>扫码直达商城</h3>
+        <p>微信扫一扫，随时随地查看最新货盘与报价。</p>
+        <div id="site-qr" class="qr-box" hidden></div>
       </div>
     </div>
   </section>
@@ -70,6 +75,7 @@
     </div>
   </footer>
 
+  <script src="/qrcode.min.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>
