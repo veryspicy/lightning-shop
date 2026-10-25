@@ -165,6 +165,34 @@ async function savePrice(env, raw) {
   return p;
 }
 
+// 二维码站点配置：url 用于首页动态生成「扫码直达商城」二维码，quoteImage 为报价单二维码图片（R2）
+const DEFAULT_QR = {
+  url: 'https://lightning-shop.gora.dpdns.org',
+  quoteImage: '/wechat-qr.jpg',
+};
+
+async function getQr(env) {
+  const raw = await env.KV.get('site:qr', 'json');
+  if (raw && (raw.url || raw.quoteImage)) {
+    return {
+      url: String(raw.url || DEFAULT_QR.url).trim() || DEFAULT_QR.url,
+      quoteImage: String(raw.quoteImage || DEFAULT_QR.quoteImage).trim() || DEFAULT_QR.quoteImage,
+    };
+  }
+  return DEFAULT_QR;
+}
+
+async function saveQr(env, raw) {
+  const q = {
+    url: String(raw.url || '').trim(),
+    quoteImage: String(raw.quoteImage || '').trim(),
+  };
+  if (!q.url) q.url = DEFAULT_QR.url;
+  if (!q.quoteImage) q.quoteImage = DEFAULT_QR.quoteImage;
+  await env.KV.put('site:qr', JSON.stringify(q));
+  return q;
+}
+
 function sanitizeProduct(raw) {
   const p = {};
   for (const f of PRODUCT_FIELDS) p[f] = String(raw[f] ?? '').trim();
@@ -275,6 +303,19 @@ async function handleApi(request, env, url) {
       if (!raw) return json({ error: 'bad_request' }, 400);
       const price = await savePrice(env, raw);
       return json({ ok: true, price });
+    }
+    return notFound();
+  }
+
+  // 二维码站点配置：GET 公共可读（禁缓存，保证后台改配置前端立即生效），PUT 需鉴权
+  if (path === '/api/site/qr') {
+    if (method === 'GET') return jsonNoCache(await getQr(env));
+    if (method === 'PUT') {
+      if (!checkAuth(request, env)) return unauthorized();
+      const raw = await readJson(request);
+      if (!raw) return json({ error: 'bad_request' }, 400);
+      const qr = await saveQr(env, raw);
+      return json({ ok: true, qr });
     }
     return notFound();
   }

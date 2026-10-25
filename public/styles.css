@@ -240,7 +240,7 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 
 /* ---------- B2B 区块 ---------- */
 .b2b { background: var(--surface-alt); border-top: 1px solid var(--line); padding: 72px 0; }
-.b2b-inner { display: grid; grid-template-columns: 1fr; gap: 48px; align-items: center; justify-items: center; }
+.b2b-inner { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; align-items: center; justify-items: center; }
 .b2b h2 { font-family: var(--font-display); font-size: 28px; margin-bottom: 12px; }
 .b2b-desc { color: var(--ink-soft); margin-bottom: 20px; }
 .b2b-points { list-style: none; display: grid; gap: 10px; }
@@ -269,6 +269,8 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .site-footer { background: var(--ink); color: #9ca3af; padding: 32px 0; font-family: var(--font-body); font-variant-numeric: lining-nums; }
 .footer-inner { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 14px; }
 .qr-img { border-radius: 10px; border: 1px solid #334; background: #fff; padding: 6px; display: block; }
+.qr-box { border-radius: 10px; border: 1px solid #334; background: #fff; padding: 6px; display: inline-block; }
+.qr-box canvas, .qr-box img { display: block; max-width: 100%; height: auto; }
 
 /* 隐蔽管理入口：口令输入框 -> 显示供应链管理链接 */
 .admin-gate { margin: 0; display: flex; align-items: center; }
