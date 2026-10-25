@@ -1,0 +1,21 @@
+# 本地环境变量（含管理后台密码）
+.dev.vars
+
+# 依赖与本地模拟状态
+node_modules/
+.wrangler/
+
+# 本地日志与进程文件
+*.log
+dev.pid
+dev-batch.pid
+kv-local*.log
+seed.log
+r2-local*.log
+npm-install*.log
+wrangler-err*.log
+dev-err.log
+dev-out*.log
+
+# 临时产物
+temp/

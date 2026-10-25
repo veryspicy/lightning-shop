@@ -1,0 +1,118 @@
+[
+  {
+    "key": "products",
+    "value": "[{\"id\":\"p01\",\"seq\":1,\"name\":\"低GI青稞荞麦速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"60g × 30袋/箱\",\"wholesale_price\":\"50元/箱\",\"retail_price\":\"99元/箱\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"低升糖 · 高蛋白 · 高膳食纤维 · 低钠低脂肪，饱腹感强\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"18个月\",\"cert\":\"低GI认证\",\"image\":\"/img/p01.jpg\",\"badge\":\"低GI\"},{\"id\":\"p02\",\"seq\":2,\"name\":\"燕麦五谷十二粮\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"1.5kg/袋\",\"wholesale_price\":\"23元/袋\",\"retail_price\":\"38元/袋\",\"price_note\":\"\",\"moq\":\"1袋\",\"highlights\":\"十二种谷物科学配比，杂粮代餐首选\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"\",\"badge\":\"低GI\"},{\"id\":\"p03\",\"seq\":3,\"name\":\"有机荞麦速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"200g × 20袋/箱\",\"wholesale_price\":\"4元/袋\",\"retail_price\":\"9.9-13.9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"有机原料 · 荞麦含量高 · 速食方便\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"有机认证\",\"image\":\"/img/p03.jpg\",\"badge\":\"低GI\"},{\"id\":\"p04\",\"seq\":4,\"name\":\"黄芪荞麦速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"200g × 20袋/箱\",\"wholesale_price\":\"3.5元/袋\",\"retail_price\":\"7-9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"黄芪入面 · 荞麦健康 · 速食方便\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p04.jpg\",\"badge\":\"低GI\"},{\"id\":\"p05\",\"seq\":5,\"name\":\"荞麦速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"200g × 20袋/箱\",\"wholesale_price\":\"3元/袋\",\"retail_price\":\"7-9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"纯荞麦 · 低升糖 · 速食方便\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p05.jpg\",\"badge\":\"低GI\"},{\"id\":\"p06\",\"seq\":6,\"name\":\"燕麦速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"200g × 20袋/箱\",\"wholesale_price\":\"3.5元/袋\",\"retail_price\":\"7-9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"燕麦入面 · 低升糖 · 速食方便\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p06.jpg\",\"badge\":\"低GI\"},{\"id\":\"p07\",\"seq\":7,\"name\":\"苦荞速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"200g × 20袋/箱\",\"wholesale_price\":\"3.5元/袋\",\"retail_price\":\"7-9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"苦荞入面 · 低升糖 · 速食方便\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p07.jpg\",\"badge\":\"低GI\"},{\"id\":\"p08\",\"seq\":8,\"name\":\"青稞速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"200g × 20袋/箱\",\"wholesale_price\":\"3.5元/袋\",\"retail_price\":\"7-9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"青稞入面 · 低升糖 · 速食方便\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p08.jpg\",\"badge\":\"低GI\"},{\"id\":\"p09\",\"seq\":9,\"name\":\"固阳荞面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"2.5kg/袋\",\"wholesale_price\":\"20元/袋\",\"retail_price\":\"30元/袋\",\"price_note\":\"\",\"moq\":\"1袋\",\"highlights\":\"固阳特产荞麦粉 · 高寒产区 · 石磨工艺\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p09.jpg\",\"badge\":\"低GI\"},{\"id\":\"p10\",\"seq\":10,\"name\":\"固阳莜面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"2.5kg/袋\",\"wholesale_price\":\"25元/袋\",\"retail_price\":\"30元/袋\",\"price_note\":\"\",\"moq\":\"1袋\",\"highlights\":\"固阳莜麦 · 高蛋白 · 三高人群主食替代\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p10.jpg\",\"badge\":\"低GI\"},{\"id\":\"p11\",\"seq\":11,\"name\":\"固阳胡麻油\",\"brand\":\"蒙降三高\",\"category\":\"营养粮油\",\"spec\":\"2.5L/桶\",\"wholesale_price\":\"50元/桶\",\"retail_price\":\"70元/桶\",\"price_note\":\"\",\"moq\":\"1桶\",\"highlights\":\"固阳胡麻籽冷榨 · 亚麻酸丰富 · 原生态压榨\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"18个月\",\"cert\":\"\",\"image\":\"/img/p11.jpg\",\"badge\":\"低GI\"},{\"id\":\"p12\",\"seq\":12,\"name\":\"固阳黄芪（250g/袋）\",\"brand\":\"蒙降三高\",\"category\":\"营养粮油\",\"spec\":\"250g/袋\",\"wholesale_price\":\"30元/袋\",\"retail_price\":\"60元/袋\",\"price_note\":\"\",\"moq\":\"1袋\",\"highlights\":\"固阳道地黄芪 · 片大质优 · 泡水炖汤\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"24个月\",\"cert\":\"\",\"image\":\"\",\"badge\":\"低GI\"},{\"id\":\"p13\",\"seq\":13,\"name\":\"固阳黄芪（100g/桶）\",\"brand\":\"蒙降三高\",\"category\":\"营养粮油\",\"spec\":\"100g/桶\",\"wholesale_price\":\"20元/桶\",\"retail_price\":\"38元/桶\",\"price_note\":\"\",\"moq\":\"1桶\",\"highlights\":\"固阳道地黄芪 · 便携桶装 · 送礼佳品\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"24个月\",\"cert\":\"\",\"image\":\"\",\"badge\":\"低GI\"},{\"id\":\"p14\",\"seq\":14,\"name\":\"甜苣菜（野生苦菜）\",\"brand\":\"固阳农家\",\"category\":\"野生苦菜\",\"spec\":\"500g/袋\",\"wholesale_price\":\"12元/袋\",\"retail_price\":\"15元/袋\",\"price_note\":\"批发价不含运费\",\"moq\":\"1袋\",\"highlights\":\"野生采摘 · 天然苦菜 · 清热解毒\",\"storage\":\"冷藏 0-5℃\",\"shelf_life\":\"15天\",\"cert\":\"\",\"image\":\"/img/p14.jpg\",\"badge\":\"\"},{\"id\":\"p15\",\"seq\":15,\"name\":\"紫花苦菜（宋掌柜）\",\"brand\":\"宋掌柜\",\"category\":\"野生苦菜\",\"spec\":\"5斤/袋\",\"wholesale_price\":\"12/11.5/11 元/斤\",\"retail_price\":\"按需报价\",\"price_note\":\"阶梯批发：100斤起12元，300斤起11.5元，500斤起11元\",\"moq\":\"100斤\",\"highlights\":\"紫花苦菜 · 农户直供 · 大宗批发\",\"storage\":\"冷藏 0-5℃\",\"shelf_life\":\"15天\",\"cert\":\"\",\"image\":\"/img/p15.jpg\",\"badge\":\"\"},{\"id\":\"p16\",\"seq\":16,\"name\":\"黄柿子拌面料 80g\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"80g × 100袋/箱\",\"wholesale_price\":\"2元/袋\",\"retail_price\":\"4元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"黄柿子为原料 · 自然酸甜 · 拌面拌菜\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p16.jpg\",\"badge\":\"火锅底料\"},{\"id\":\"p17\",\"seq\":17,\"name\":\"黄柿子火锅底料 80g\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"80g × 100袋/箱\",\"wholesale_price\":\"2元/袋\",\"retail_price\":\"4元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"黄柿子火锅底料 · 酸甜鲜香 · 一人食\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p16.jpg\",\"badge\":\"火锅底料\"},{\"id\":\"p18\",\"seq\":18,\"name\":\"黄柿子火锅底料 120g\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"120g × 100袋/箱\",\"wholesale_price\":\"3.5元/袋\",\"retail_price\":\"9.9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"黄柿子熬制 · 鲜香浓郁 · 家庭装\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p16.jpg\",\"badge\":\"火锅底料\"},{\"id\":\"p19\",\"seq\":19,\"name\":\"黄柿子火锅底料 310g\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"310g × 30袋/箱\",\"wholesale_price\":\"8元/袋\",\"retail_price\":\"15元/袋\",\"price_note\":\"50箱起订\",\"moq\":\"50箱\",\"highlights\":\"大分量 · 餐饮专供 · 浓郁鲜香\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p16.jpg\",\"badge\":\"火锅底料\"},{\"id\":\"p20\",\"seq\":20,\"name\":\"黄柿子火锅底料 200g\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"200g × 36袋/箱\",\"wholesale_price\":\"6元/袋\",\"retail_price\":\"12元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"中份量 · 家庭聚餐 · 酸甜鲜香\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p20.jpg\",\"badge\":\"火锅底料\"},{\"id\":\"p21\",\"seq\":21,\"name\":\"黄柿子火锅底料 300g\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"300g × 30袋/箱\",\"wholesale_price\":\"8元/袋\",\"retail_price\":\"15元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"大分量 · 聚餐火锅 · 酸甜鲜香\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p21.jpg\",\"badge\":\"火锅底料\"},{\"id\":\"p22\",\"seq\":22,\"name\":\"黄柿子火锅底料 1kg\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"1kg × 12袋/箱\",\"wholesale_price\":\"24元/公斤\",\"retail_price\":\"32元/公斤\",\"price_note\":\"餐饮大包装\",\"moq\":\"1箱\",\"highlights\":\"餐饮装 · 量大价优 · 后厨直供\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p16.jpg\",\"badge\":\"火锅底料\"},{\"id\":\"p23\",\"seq\":23,\"name\":\"鑫乐荣原味葵花子（罐装）\",\"brand\":\"鑫乐荣\",\"category\":\"坚果玉米\",\"spec\":\"180g/罐\",\"wholesale_price\":\"8元/罐\",\"retail_price\":\"按需报价\",\"price_note\":\"\",\"moq\":\"1箱\",\"highlights\":\"原味炒制 · 颗粒饱满 · 罐装锁鲜\",\"storage\":\"常温、防潮、密封\",\"shelf_life\":\"6个月\",\"cert\":\"\",\"image\":\"/img/p23.jpg\",\"badge\":\"鑫乐荣\"},{\"id\":\"p24\",\"seq\":24,\"name\":\"鑫乐荣葵花子（袋装）\",\"brand\":\"鑫乐荣\",\"category\":\"坚果玉米\",\"spec\":\"160g/袋\",\"wholesale_price\":\"5元/袋\",\"retail_price\":\"按需报价\",\"price_note\":\"\",\"moq\":\"1箱\",\"highlights\":\"原味炒制 · 休闲零食 · 实惠袋装\",\"storage\":\"常温、防潮、密封\",\"shelf_life\":\"6个月\",\"cert\":\"\",\"image\":\"/img/p24.jpg\",\"badge\":\"鑫乐荣\"},{\"id\":\"p25\",\"seq\":25,\"name\":\"鑫乐荣甜糯玉米\",\"brand\":\"鑫乐荣\",\"category\":\"坚果玉米\",\"spec\":\"10支/箱\",\"wholesale_price\":\"35元/箱\",\"retail_price\":\"按需报价\",\"price_note\":\"\",\"moq\":\"1箱\",\"highlights\":\"甜糯玉米 · 真空锁鲜 · 早餐代餐\",\"storage\":\"常温、阴凉\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p25.jpg\",\"badge\":\"鑫乐荣\"},{\"id\":\"p26\",\"seq\":26,\"name\":\"鑫乐荣脱骨羊杂碎（餐饮装）\",\"brand\":\"鑫乐荣\",\"category\":\"羊杂碎\",\"spec\":\"2500g/包\",\"wholesale_price\":\"25元/斤\",\"retail_price\":\"按需报价\",\"price_note\":\"餐饮门店专供\",\"moq\":\"1包\",\"highlights\":\"脱骨处理 · 餐饮专供 · 冷链配送\",\"storage\":\"冷冻 -18℃\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p26.jpg\",\"badge\":\"鑫乐荣\"},{\"id\":\"p27\",\"seq\":27,\"name\":\"鑫乐荣羊杂（家用装）\",\"brand\":\"鑫乐荣\",\"category\":\"羊杂碎\",\"spec\":\"500g/包\",\"wholesale_price\":\"28元/斤\",\"retail_price\":\"按需报价\",\"price_note\":\"\",\"moq\":\"1包\",\"highlights\":\"半成品 · 加热即食 · 家庭快手菜\",\"storage\":\"冷冻 -18℃\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p27.jpg\",\"badge\":\"鑫乐荣\"}]"
+  },
+  {
+    "key": "config:categories",
+    "value": "[\"低GI杂粮\",\"营养粮油\",\"黄柿子火锅底料\",\"野生苦菜\",\"坚果玉米\",\"羊杂碎\"]"
+  },
+  {
+    "key": "products:p01",
+    "value": "{\"id\":\"p01\",\"seq\":1,\"name\":\"低GI青稞荞麦速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"60g × 30袋/箱\",\"wholesale_price\":\"50元/箱\",\"retail_price\":\"99元/箱\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"低升糖 · 高蛋白 · 高膳食纤维 · 低钠低脂肪，饱腹感强\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"18个月\",\"cert\":\"低GI认证\",\"image\":\"/img/p01.jpg\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p02",
+    "value": "{\"id\":\"p02\",\"seq\":2,\"name\":\"燕麦五谷十二粮\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"1.5kg/袋\",\"wholesale_price\":\"23元/袋\",\"retail_price\":\"38元/袋\",\"price_note\":\"\",\"moq\":\"1袋\",\"highlights\":\"十二种谷物科学配比，杂粮代餐首选\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p03",
+    "value": "{\"id\":\"p03\",\"seq\":3,\"name\":\"有机荞麦速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"200g × 20袋/箱\",\"wholesale_price\":\"4元/袋\",\"retail_price\":\"9.9-13.9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"有机原料 · 荞麦含量高 · 速食方便\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"有机认证\",\"image\":\"/img/p03.jpg\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p04",
+    "value": "{\"id\":\"p04\",\"seq\":4,\"name\":\"黄芪荞麦速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"200g × 20袋/箱\",\"wholesale_price\":\"3.5元/袋\",\"retail_price\":\"7-9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"黄芪入面 · 荞麦健康 · 速食方便\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p04.jpg\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p05",
+    "value": "{\"id\":\"p05\",\"seq\":5,\"name\":\"荞麦速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"200g × 20袋/箱\",\"wholesale_price\":\"3元/袋\",\"retail_price\":\"7-9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"纯荞麦 · 低升糖 · 速食方便\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p05.jpg\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p06",
+    "value": "{\"id\":\"p06\",\"seq\":6,\"name\":\"燕麦速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"200g × 20袋/箱\",\"wholesale_price\":\"3.5元/袋\",\"retail_price\":\"7-9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"燕麦入面 · 低升糖 · 速食方便\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p06.jpg\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p07",
+    "value": "{\"id\":\"p07\",\"seq\":7,\"name\":\"苦荞速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"200g × 20袋/箱\",\"wholesale_price\":\"3.5元/袋\",\"retail_price\":\"7-9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"苦荞入面 · 低升糖 · 速食方便\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p07.jpg\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p08",
+    "value": "{\"id\":\"p08\",\"seq\":8,\"name\":\"青稞速食面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"200g × 20袋/箱\",\"wholesale_price\":\"3.5元/袋\",\"retail_price\":\"7-9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"青稞入面 · 低升糖 · 速食方便\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p08.jpg\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p09",
+    "value": "{\"id\":\"p09\",\"seq\":9,\"name\":\"固阳荞面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"2.5kg/袋\",\"wholesale_price\":\"20元/袋\",\"retail_price\":\"30元/袋\",\"price_note\":\"\",\"moq\":\"1袋\",\"highlights\":\"固阳特产荞麦粉 · 高寒产区 · 石磨工艺\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p09.jpg\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p10",
+    "value": "{\"id\":\"p10\",\"seq\":10,\"name\":\"固阳莜面\",\"brand\":\"蒙降三高\",\"category\":\"低GI杂粮\",\"spec\":\"2.5kg/袋\",\"wholesale_price\":\"25元/袋\",\"retail_price\":\"30元/袋\",\"price_note\":\"\",\"moq\":\"1袋\",\"highlights\":\"固阳莜麦 · 高蛋白 · 三高人群主食替代\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p10.jpg\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p11",
+    "value": "{\"id\":\"p11\",\"seq\":11,\"name\":\"固阳胡麻油\",\"brand\":\"蒙降三高\",\"category\":\"营养粮油\",\"spec\":\"2.5L/桶\",\"wholesale_price\":\"50元/桶\",\"retail_price\":\"70元/桶\",\"price_note\":\"\",\"moq\":\"1桶\",\"highlights\":\"固阳胡麻籽冷榨 · 亚麻酸丰富 · 原生态压榨\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"18个月\",\"cert\":\"\",\"image\":\"/img/p11.jpg\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p12",
+    "value": "{\"id\":\"p12\",\"seq\":12,\"name\":\"固阳黄芪（250g/袋）\",\"brand\":\"蒙降三高\",\"category\":\"营养粮油\",\"spec\":\"250g/袋\",\"wholesale_price\":\"30元/袋\",\"retail_price\":\"60元/袋\",\"price_note\":\"\",\"moq\":\"1袋\",\"highlights\":\"固阳道地黄芪 · 片大质优 · 泡水炖汤\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"24个月\",\"cert\":\"\",\"image\":\"\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p13",
+    "value": "{\"id\":\"p13\",\"seq\":13,\"name\":\"固阳黄芪（100g/桶）\",\"brand\":\"蒙降三高\",\"category\":\"营养粮油\",\"spec\":\"100g/桶\",\"wholesale_price\":\"20元/桶\",\"retail_price\":\"38元/桶\",\"price_note\":\"\",\"moq\":\"1桶\",\"highlights\":\"固阳道地黄芪 · 便携桶装 · 送礼佳品\",\"storage\":\"常温、防潮、避光\",\"shelf_life\":\"24个月\",\"cert\":\"\",\"image\":\"\",\"badge\":\"低GI\"}"
+  },
+  {
+    "key": "products:p14",
+    "value": "{\"id\":\"p14\",\"seq\":14,\"name\":\"甜苣菜（野生苦菜）\",\"brand\":\"固阳农家\",\"category\":\"野生苦菜\",\"spec\":\"500g/袋\",\"wholesale_price\":\"12元/袋\",\"retail_price\":\"15元/袋\",\"price_note\":\"批发价不含运费\",\"moq\":\"1袋\",\"highlights\":\"野生采摘 · 天然苦菜 · 清热解毒\",\"storage\":\"冷藏 0-5℃\",\"shelf_life\":\"15天\",\"cert\":\"\",\"image\":\"/img/p14.jpg\",\"badge\":\"\"}"
+  },
+  {
+    "key": "products:p15",
+    "value": "{\"id\":\"p15\",\"seq\":15,\"name\":\"紫花苦菜（宋掌柜）\",\"brand\":\"宋掌柜\",\"category\":\"野生苦菜\",\"spec\":\"5斤/袋\",\"wholesale_price\":\"12/11.5/11 元/斤\",\"retail_price\":\"按需报价\",\"price_note\":\"阶梯批发：100斤起12元，300斤起11.5元，500斤起11元\",\"moq\":\"100斤\",\"highlights\":\"紫花苦菜 · 农户直供 · 大宗批发\",\"storage\":\"冷藏 0-5℃\",\"shelf_life\":\"15天\",\"cert\":\"\",\"image\":\"/img/p15.jpg\",\"badge\":\"\"}"
+  },
+  {
+    "key": "products:p16",
+    "value": "{\"id\":\"p16\",\"seq\":16,\"name\":\"黄柿子拌面料 80g\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"80g × 100袋/箱\",\"wholesale_price\":\"2元/袋\",\"retail_price\":\"4元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"黄柿子为原料 · 自然酸甜 · 拌面拌菜\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p16.jpg\",\"badge\":\"火锅底料\"}"
+  },
+  {
+    "key": "products:p17",
+    "value": "{\"id\":\"p17\",\"seq\":17,\"name\":\"黄柿子火锅底料 80g\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"80g × 100袋/箱\",\"wholesale_price\":\"2元/袋\",\"retail_price\":\"4元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"黄柿子火锅底料 · 酸甜鲜香 · 一人食\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p16.jpg\",\"badge\":\"火锅底料\"}"
+  },
+  {
+    "key": "products:p18",
+    "value": "{\"id\":\"p18\",\"seq\":18,\"name\":\"黄柿子火锅底料 120g\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"120g × 100袋/箱\",\"wholesale_price\":\"3.5元/袋\",\"retail_price\":\"9.9元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"黄柿子熬制 · 鲜香浓郁 · 家庭装\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p16.jpg\",\"badge\":\"火锅底料\"}"
+  },
+  {
+    "key": "products:p19",
+    "value": "{\"id\":\"p19\",\"seq\":19,\"name\":\"黄柿子火锅底料 310g\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"310g × 30袋/箱\",\"wholesale_price\":\"8元/袋\",\"retail_price\":\"15元/袋\",\"price_note\":\"50箱起订\",\"moq\":\"50箱\",\"highlights\":\"大分量 · 餐饮专供 · 浓郁鲜香\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p16.jpg\",\"badge\":\"火锅底料\"}"
+  },
+  {
+    "key": "products:p20",
+    "value": "{\"id\":\"p20\",\"seq\":20,\"name\":\"黄柿子火锅底料 200g\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"200g × 36袋/箱\",\"wholesale_price\":\"6元/袋\",\"retail_price\":\"12元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"中份量 · 家庭聚餐 · 酸甜鲜香\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p20.jpg\",\"badge\":\"火锅底料\"}"
+  },
+  {
+    "key": "products:p21",
+    "value": "{\"id\":\"p21\",\"seq\":21,\"name\":\"黄柿子火锅底料 300g\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"300g × 30袋/箱\",\"wholesale_price\":\"8元/袋\",\"retail_price\":\"15元/袋\",\"price_note\":\"整箱起批\",\"moq\":\"1箱\",\"highlights\":\"大分量 · 聚餐火锅 · 酸甜鲜香\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p21.jpg\",\"badge\":\"火锅底料\"}"
+  },
+  {
+    "key": "products:p22",
+    "value": "{\"id\":\"p22\",\"seq\":22,\"name\":\"黄柿子火锅底料 1kg\",\"brand\":\"领柿食品\",\"category\":\"黄柿子火锅底料\",\"spec\":\"1kg × 12袋/箱\",\"wholesale_price\":\"24元/公斤\",\"retail_price\":\"32元/公斤\",\"price_note\":\"餐饮大包装\",\"moq\":\"1箱\",\"highlights\":\"餐饮装 · 量大价优 · 后厨直供\",\"storage\":\"常温、避光、密封\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p16.jpg\",\"badge\":\"火锅底料\"}"
+  },
+  {
+    "key": "products:p23",
+    "value": "{\"id\":\"p23\",\"seq\":23,\"name\":\"鑫乐荣原味葵花子（罐装）\",\"brand\":\"鑫乐荣\",\"category\":\"坚果玉米\",\"spec\":\"180g/罐\",\"wholesale_price\":\"8元/罐\",\"retail_price\":\"按需报价\",\"price_note\":\"\",\"moq\":\"1箱\",\"highlights\":\"原味炒制 · 颗粒饱满 · 罐装锁鲜\",\"storage\":\"常温、防潮、密封\",\"shelf_life\":\"6个月\",\"cert\":\"\",\"image\":\"/img/p23.jpg\",\"badge\":\"鑫乐荣\"}"
+  },
+  {
+    "key": "products:p24",
+    "value": "{\"id\":\"p24\",\"seq\":24,\"name\":\"鑫乐荣葵花子（袋装）\",\"brand\":\"鑫乐荣\",\"category\":\"坚果玉米\",\"spec\":\"160g/袋\",\"wholesale_price\":\"5元/袋\",\"retail_price\":\"按需报价\",\"price_note\":\"\",\"moq\":\"1箱\",\"highlights\":\"原味炒制 · 休闲零食 · 实惠袋装\",\"storage\":\"常温、防潮、密封\",\"shelf_life\":\"6个月\",\"cert\":\"\",\"image\":\"/img/p24.jpg\",\"badge\":\"鑫乐荣\"}"
+  },
+  {
+    "key": "products:p25",
+    "value": "{\"id\":\"p25\",\"seq\":25,\"name\":\"鑫乐荣甜糯玉米\",\"brand\":\"鑫乐荣\",\"category\":\"坚果玉米\",\"spec\":\"10支/箱\",\"wholesale_price\":\"35元/箱\",\"retail_price\":\"按需报价\",\"price_note\":\"\",\"moq\":\"1箱\",\"highlights\":\"甜糯玉米 · 真空锁鲜 · 早餐代餐\",\"storage\":\"常温、阴凉\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p25.jpg\",\"badge\":\"鑫乐荣\"}"
+  },
+  {
+    "key": "products:p26",
+    "value": "{\"id\":\"p26\",\"seq\":26,\"name\":\"鑫乐荣脱骨羊杂碎（餐饮装）\",\"brand\":\"鑫乐荣\",\"category\":\"羊杂碎\",\"spec\":\"2500g/包\",\"wholesale_price\":\"25元/斤\",\"retail_price\":\"按需报价\",\"price_note\":\"餐饮门店专供\",\"moq\":\"1包\",\"highlights\":\"脱骨处理 · 餐饮专供 · 冷链配送\",\"storage\":\"冷冻 -18℃\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p26.jpg\",\"badge\":\"鑫乐荣\"}"
+  },
+  {
+    "key": "products:p27",
+    "value": "{\"id\":\"p27\",\"seq\":27,\"name\":\"鑫乐荣羊杂（家用装）\",\"brand\":\"鑫乐荣\",\"category\":\"羊杂碎\",\"spec\":\"500g/包\",\"wholesale_price\":\"28元/斤\",\"retail_price\":\"按需报价\",\"price_note\":\"\",\"moq\":\"1包\",\"highlights\":\"半成品 · 加热即食 · 家庭快手菜\",\"storage\":\"冷冻 -18℃\",\"shelf_life\":\"12个月\",\"cert\":\"\",\"image\":\"/img/p27.jpg\",\"badge\":\"鑫乐荣\"}"
+  }
+]

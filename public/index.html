@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lightning Shop · 绿色·助农·公益</title>
+  <meta name="description" content="农牧特产批发，源头厂家直供。低GI杂粮、黄柿子火锅底料等产地品牌货盘，B2B 批发 + 零售一件代发。" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Raleway:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="/" class="brand">
+        <span class="brand-mark" aria-hidden="true">⚡</span>
+        <span class="brand-name">Lightning<span>Shop</span></span>
+      </a>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="container">
+      <p class="hero-eyebrow" id="hero-stats">加载中…</p>
+      <h1 class="hero-title">农牧特产批发，源头厂家直供</h1>
+    </div>
+  </section>
+
+  <section class="stats" aria-label="货盘数据">
+    <div class="container stats-grid">
+      <div class="stat"><strong id="stat-sku">—</strong><span>在售 SKU</span></div>
+      <div class="stat"><strong id="stat-brand">—</strong><span>产地品牌</span></div>
+      <div class="stat"><strong>1</strong><span>件代发支持</span></div>
+      <div class="stat"><strong>2</strong><span>B2B / 零售双模式</span></div>
+    </div>
+  </section>
+
+  <main id="products" class="container">
+    <div class="toolbar">
+      <div class="category-tabs" id="category-tabs" role="tablist" aria-label="产品分类">
+        <button class="cat-tab active" data-category="" role="tab">全部</button>
+      </div>
+      <div class="search-box">
+        <input type="search" id="search-input" placeholder="搜索品名 / 品牌 / 卖点" aria-label="搜索产品" />
+      </div>
+    </div>
+
+    <div class="product-grid" id="product-grid" aria-live="polite"></div>
+    <div class="empty-state" id="empty-state" hidden>未找到匹配产品，换个关键词试试。</div>
+  </main>
+
+  <section id="b2b" class="b2b">
+    <div class="container b2b-inner">
+      <div class="b2b-card">
+        <h3>获取完整报价单</h3>
+        <p>留下渠道类型与采购量，1 个工作日内回复详细报价单（含物流测算）。</p>
+        <img src="/wechat-qr.jpg" alt="微信二维码" class="qr-img" width="180" height="180" />
+      </div>
+    </div>
+  </section>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <p>© 2026 Lightning Shop</p>
+      <p class="admin-gate">
+        <input type="password" id="admin-gate-input" class="admin-gate-input" placeholder="口令" autocomplete="off" aria-label="管理入口口令" title="输入口令进入管理后台" />
+        <a href="/admin" id="admin-gate-link" class="admin-gate-link" rel="nofollow" hidden>供应链管理</a>
+      </p>
+    </div>
+  </footer>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
