@@ -96,6 +96,22 @@
         </div>
       </div>
 
+      <!-- 二维码与链接配置 -->
+      <div class="panel">
+        <h2>二维码与链接配置</h2>
+        <p class="muted" style="margin:4px 0 12px">首页底部并排展示两个二维码卡片：左侧「获取完整报价单」二维码（图片，上传后存 R2 可随时更换）；右侧「扫码直达商城」二维码（按下方链接自动生成）。</p>
+        <div class="form-grid">
+          <div class="field"><label>商城链接（右侧二维码内容）</label><input id="f-qr-url" placeholder="https://lightning-shop.gora.dpdns.org" /></div>
+          <div class="field"><label>报价单二维码图片</label><input type="file" id="f-qr-img-file" accept="image/*" /></div>
+          <div class="field"><label>报价单二维码图片地址（上传后自动填写，可留空）</label><input id="f-qr-quote-image" placeholder="/img/quote-qr.jpg" /></div>
+          <div class="field"><label>预览</label><img class="img-preview" id="qr-img-preview" alt="报价单二维码预览" hidden /></div>
+        </div>
+        <div class="row-actions">
+          <button type="button" class="btn btn-outline btn-sm" id="qr-reset">恢复默认</button>
+          <button type="button" class="btn btn-primary btn-sm" id="qr-save">保存二维码配置</button>
+        </div>
+      </div>
+
       <!-- 价格策略配置 -->
       <div class="panel">
         <h2>价格策略</h2>

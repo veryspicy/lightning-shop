@@ -132,6 +132,32 @@ function applyHero(hero) {
   }
 }
 
+function applyQr(qr) {
+  if (!qr) return;
+  const quoteImg = document.getElementById('quote-qr-img');
+  if (quoteImg && qr.quoteImage) {
+    quoteImg.src = qr.quoteImage;
+    quoteImg.alt = '报价单二维码';
+  }
+  const box = document.getElementById('site-qr');
+  if (box && qr.url && typeof QRCode !== 'undefined') {
+    try {
+      box.innerHTML = '';
+      new QRCode(box, {
+        text: qr.url,
+        width: 180,
+        height: 180,
+        colorDark: '#0b1f17',
+        colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M,
+      });
+      box.hidden = false;
+    } catch {
+      /* 二维码生成失败不阻塞页面 */
+    }
+  }
+}
+
 function updateStats() {
   const sku = products.length;
   const brands = new Set(products.map((p) => p.brand).filter(Boolean)).size;
@@ -143,20 +169,23 @@ function updateStats() {
 
 async function load() {
   try {
-    const [pRes, cRes, heroRes, priceRes] = await Promise.all([
+    const [pRes, cRes, heroRes, priceRes, qrRes] = await Promise.all([
       fetch('/api/products'),
       fetch('/api/categories'),
       fetch('/api/site/hero'),
       fetch('/api/site/price'),
+      fetch('/api/site/qr'),
     ]);
     products = await pRes.json();
     const categories = await cRes.json();
     const hero = await heroRes.json().catch(() => null);
     priceConfig = await priceRes.json().catch(() => null);
+    const qrConfig = await qrRes.json().catch(() => null);
     renderTabs(categories);
     render();
     updateStats();
     applyHero(hero);
+    applyQr(qrConfig);
   } catch (err) {
     grid.innerHTML = '<p style="color:#dc2626">加载失败，请刷新重试。</p>';
   }
