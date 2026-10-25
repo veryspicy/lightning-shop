@@ -362,13 +362,48 @@ async function handleHeroUpload() {
 
 /* ---- 二维码与链接配置 ---- */
 
+function renderQrUrlPreview() {
+  const box = $('qr-url-preview');
+  if (!box) return;
+  const v = $('f-qr-url').value.trim();
+  box.innerHTML = '';
+  if (!v) {
+    box.innerHTML = '<span class="qr-preview-empty">输入链接后生成预览</span>';
+    return;
+  }
+  if (typeof QRCode === 'undefined') return;
+  try {
+    new QRCode(box, {
+      text: v,
+      width: 132,
+      height: 132,
+      colorDark: '#111111',
+      colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+  } catch {
+    box.innerHTML = '<span class="qr-preview-empty">链接无效</span>';
+  }
+}
+
+function syncQrPreviewText() {
+  const qt = $('preview-quote-title');
+  const st = $('preview-shop-title');
+  if (qt) qt.textContent = $('f-qr-quote-title').value.trim() || '获取完整报价单';
+  if (st) st.textContent = $('f-qr-shop-title').value.trim() || '扫码直达商城';
+}
+
 async function loadQr() {
   try {
     const qr = await api('/api/site/qr');
     $('f-qr-url').value = qr.url || '';
     $('f-qr-quote-image').value = qr.quoteImage || '';
+    $('f-qr-quote-title').value = qr.quoteTitle || '';
+    $('f-qr-shop-title').value = qr.shopTitle || '';
     const prev = $('qr-img-preview');
     if (qr.quoteImage) { prev.src = qr.quoteImage; prev.hidden = false; } else { prev.hidden = true; }
+    renderQrUrlPreview();
+    syncQrPreviewText();
   } catch {
     /* 二维码配置读取失败不阻塞主流程 */
   }
@@ -378,6 +413,8 @@ async function saveQr() {
   const body = {
     url: $('f-qr-url').value.trim(),
     quoteImage: $('f-qr-quote-image').value.trim(),
+    quoteTitle: $('f-qr-quote-title').value.trim(),
+    shopTitle: $('f-qr-shop-title').value.trim(),
   };
   try {
     await api('/api/site/qr', { method: 'PUT', headers: authHeaders(), body: JSON.stringify(body) });
@@ -503,9 +540,13 @@ $('qr-save').addEventListener('click', saveQr);
 $('qr-reset').addEventListener('click', () => {
   $('f-qr-url').value = 'https://lightning-shop.gora.dpdns.org';
   $('f-qr-quote-image').value = '/wechat-qr.jpg';
+  $('f-qr-quote-title').value = '获取完整报价单';
+  $('f-qr-shop-title').value = '扫码直达商城';
   const prev = $('qr-img-preview');
   prev.src = '/wechat-qr.jpg';
   prev.hidden = false;
+  renderQrUrlPreview();
+  syncQrPreviewText();
   saveQr();
 });
 $('f-qr-img-file').addEventListener('change', () => handleQrUpload().catch((err) => toast(err.message, true)));
@@ -514,6 +555,9 @@ $('f-qr-quote-image').addEventListener('input', () => {
   const v = $('f-qr-quote-image').value.trim();
   if (v) { prev.src = v; prev.hidden = false; } else { prev.hidden = true; }
 });
+$('f-qr-url').addEventListener('input', renderQrUrlPreview);
+$('f-qr-quote-title').addEventListener('input', syncQrPreviewText);
+$('f-qr-shop-title').addEventListener('input', syncQrPreviewText);
 $('price-save').addEventListener('click', savePrice);
 $('price-reset').addEventListener('click', () => {
   $('f-price-enabled').checked = true;

@@ -139,6 +139,10 @@ function applyQr(qr) {
     quoteImg.src = qr.quoteImage;
     quoteImg.alt = '报价单二维码';
   }
+  const quoteTitle = document.getElementById('quote-qr-title');
+  if (quoteTitle && qr.quoteTitle) quoteTitle.textContent = qr.quoteTitle;
+  const shopTitle = document.getElementById('shop-qr-title');
+  if (shopTitle && qr.shopTitle) shopTitle.textContent = qr.shopTitle;
   const box = document.getElementById('site-qr');
   if (box && qr.url && typeof QRCode !== 'undefined') {
     try {
@@ -147,7 +151,7 @@ function applyQr(qr) {
         text: qr.url,
         width: 180,
         height: 180,
-        colorDark: '#0b1f17',
+        colorDark: '#111111',
         colorLight: '#ffffff',
         correctLevel: QRCode.CorrectLevel.M,
       });
@@ -422,6 +426,7 @@ async function buildSharePoster(p) {
 }
 
 async function openShareModal(p) {
+  const inWechat = /MicroMessenger/i.test(navigator.userAgent);
   let modal = document.getElementById('share-modal');
   if (!modal) {
     modal = document.createElement('div');
@@ -435,9 +440,9 @@ async function openShareModal(p) {
           <button class="share-close" type="button" aria-label="关闭">✕</button>
         </div>
         <img class="share-img" alt="商品分享图">
-        <p class="share-tip">长按图片保存，或点击下方按钮分享给微信好友</p>
+        <p class="share-tip">${inWechat ? '长按图片保存，或点击右上角「···」转发给好友' : '长按图片保存，或点击下方按钮分享给微信好友'}</p>
         <div class="share-actions">
-          <button class="btn-wx" type="button">分享到微信</button>
+          <button class="btn-wx" type="button">${inWechat ? '去右上角转发' : '分享到微信'}</button>
           <a class="btn-save" download>保存图片</a>
         </div>
       </div>`;
@@ -463,6 +468,12 @@ async function openShareModal(p) {
 
   const wxBtn = modal.querySelector('.btn-wx');
   wxBtn.onclick = async () => {
+    if (inWechat) {
+      // 微信内置浏览器不支持 Web Share API，只能引导右上角菜单转发
+      wxBtn.textContent = '请点击右上角「···」→ 转发给朋友';
+      wxBtn.disabled = true;
+      return;
+    }
     try {
       const blob = await (await fetch(url)).blob();
       const file = new File([blob], `${p.name}-分享.png`, { type: 'image/png' });
