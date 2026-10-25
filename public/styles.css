@@ -332,6 +332,9 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .share-btn:disabled { opacity: .5; cursor: wait; }
 .share-btn svg { width: 18px; height: 18px; }
 
+/* 兜底：hidden 属性必须真正隐藏元素（防被 .share-modal 等 display 样式覆盖） */
+[hidden] { display: none !important; }
+
 .share-modal {
   position: fixed;
   inset: 0;
