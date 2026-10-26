@@ -172,10 +172,12 @@ function applyQr(qr) {
   if (box && qr.url && typeof QRCode !== 'undefined') {
     try {
       box.innerHTML = '';
+      // 移动端按 220px 容器生成 206px 位图，微信内长按识别更稳
+      const qrSize = window.matchMedia('(max-width: 768px)').matches ? 206 : 180;
       new QRCode(box, {
         text: qr.url,
-        width: 180,
-        height: 180,
+        width: qrSize,
+        height: qrSize,
         colorDark: '#111111',
         colorLight: '#ffffff',
         correctLevel: QRCode.CorrectLevel.M,
