@@ -597,6 +597,20 @@ $('batch-apply').addEventListener('click', async () => {
   }
 });
 
+/* ---- Tab 切换 ---- */
+$('admin-tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab-btn');
+  if (!btn) return;
+  document.querySelectorAll('.tab-btn').forEach((b) => {
+    const active = b === btn;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  document.querySelectorAll('.tab-panel').forEach((p) => {
+    p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab);
+  });
+});
+
 /* 初始化：有 token 直接尝试进入 */
 if (sessionStorage.getItem(TOKEN_KEY)) {
   load().catch((err) => toast(err.message, true));
