@@ -240,6 +240,11 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 
 .empty-state { text-align: center; padding: 60px 0; color: var(--muted); }
 
+/* 加载更多 */
+.load-more-wrap { display: flex; justify-content: center; padding-top: 28px; }
+.load-more-btn { min-width: 160px; }
+.load-more-btn:disabled { opacity: .6; cursor: default; }
+
 /* ---------- B2B 区块 ---------- */
 .b2b { background: var(--surface-alt); border-top: 1px solid var(--line); padding: 72px 0; }
 .b2b-inner { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; align-items: center; justify-items: center; }
