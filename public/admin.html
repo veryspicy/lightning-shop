@@ -87,6 +87,9 @@
       pointer-events: none;
     }
     .qr-preview-empty { color: #99a; font-size: .72rem; line-height: 132px; }
+    .badge-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+    .badge-chip { display: inline-block; background: #eef4ef; color: #066a4e; border: 1px solid #cfe0d5; font-size: .72rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+    .badge-chip.gi { background: #059669; color: #fff; border-color: #059669; }
     .qr-block-form { display: flex; flex-direction: column; gap: 10px; }
     .qr-block-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 10px; padding: 0 14px 14px; flex-wrap: wrap; }
 
@@ -141,7 +144,6 @@
         <button type="button" class="tab-btn" data-tab="price" role="tab" aria-selected="false">价格策略</button>
         <button type="button" class="tab-btn" data-tab="products" role="tab" aria-selected="false">产品管理</button>
         <button type="button" class="tab-btn" data-tab="categories" role="tab" aria-selected="false">分类管理</button>
-        <button type="button" class="tab-btn" data-tab="batch" role="tab" aria-selected="false">批量修改</button>
       </nav>
 
       <!-- Tab: 首页配置 -->
@@ -226,7 +228,7 @@
             <div class="form-grid">
               <div class="field"><label>品名 *</label><input id="f-name" required placeholder="如 低GI青稞荞麦速食面" /></div>
               <div class="field"><label>品牌</label><input id="f-brand" placeholder="如 蒙降三高" /></div>
-              <div class="field"><label>卡片标签</label><input id="f-badge" placeholder="如 低GI / 火锅底料，留空不显示" /></div>
+              <div class="field"><label>卡片标签（支持多个）</label><input id="f-badge" placeholder="多个用逗号分隔，如 低GI,火锅底料；留空不显示" /></div>
               <div class="field"><label>分类</label><input id="f-category" list="category-list" placeholder="如 低GI杂粮" /></div>
               <datalist id="category-list"></datalist>
               <div class="field"><label>规格</label><input id="f-spec" placeholder="如 60g × 30袋/箱" /></div>
@@ -239,7 +241,9 @@
               <div class="field"><label>背书 / 认证</label><input id="f-cert" placeholder="如 低GI认证" /></div>
               <div class="field"><label>状态</label><select id="f-status"><option value="上架">上架</option><option value="下架">下架</option></select></div>
               <div class="field wide"><label>核心卖点</label><textarea id="f-highlights" placeholder="如 低升糖 · 高蛋白 · 高膳食纤维"></textarea></div>
-              <div class="field"><label>产品图片</label><input type="file" id="f-img-file" accept="image/*" /></div>
+              <div class="field"><label>产品图片</label><input type="file" id="f-img-file" accept="image/*" />
+                <label class="check-label" style="font-weight:400; margin-top:6px"><input type="checkbox" id="f-img-crop" checked /> 裁剪为正方形（推荐，上传自动缩放压缩）</label>
+              </div>
               <div class="field"><label>图片地址（上传后自动填写，也可手填）</label><input id="f-img" placeholder="/img/p28.jpg" /></div>
               <div class="field"><label>预览</label><img class="img-preview" id="img-preview" alt="预览" hidden /></div>
             </div>
@@ -253,7 +257,7 @@
         <div class="panel">
           <div class="bar">
             <h2 style="margin:0">产品列表 <span class="muted" id="list-count"></span></h2>
-            <input type="search" id="list-search" placeholder="搜索品名 / 品牌" />
+            <input type="search" id="list-search" placeholder="搜索品名 / 品牌" autocomplete="off" />
           </div>
           <div style="overflow-x:auto; margin-top:10px">
             <table class="admin-table">
@@ -264,29 +268,10 @@
             </table>
           </div>
         </div>
-      </div>
 
-      <!-- Tab: 分类管理 -->
-      <div id="tab-categories" class="tab-panel">
+        <!-- 批量修改（并入产品管理 Tab） -->
         <div class="panel">
-          <h2>分类管理</h2>
-          <p class="muted" style="margin:4px 0 12px">配置可选分类，用于产品录入与批量修改。新增后即使暂无产品也会出现在下拉选项中；产品中出现的其他分类会自动追加显示。</p>
-          <div class="bar" style="justify-content:flex-start">
-            <div class="field" style="min-width:220px"><label>新增分类</label>
-              <input id="cat-new-name" placeholder="输入新分类名称，如 有机杂粮" />
-            </div>
-            <div class="field"><label style="visibility:hidden">.</label>
-              <button type="button" class="btn btn-primary btn-sm" id="cat-add-btn">新增分类</button>
-            </div>
-          </div>
-          <div class="cat-chips" id="cat-chips"><span class="muted">加载中…</span></div>
-        </div>
-      </div>
-
-      <!-- Tab: 批量修改 -->
-      <div id="tab-batch" class="tab-panel">
-        <div class="panel">
-          <h2>批量修改</h2>
+          <h2 style="margin:0 0 4px">批量修改</h2>
           <p class="muted" style="margin:4px 0 12px">先按分类或勾选选择产品，再统一修改字段并一次生效。仅修改选中的字段，其他字段保持不变。</p>
           <div class="bar" style="justify-content:flex-start">
             <div class="field"><label>快捷选择分类</label>
@@ -296,7 +281,7 @@
             <div class="field" style="min-width:140px"><label>当前已选</label><strong id="batch-count" style="font-size:1rem; line-height:34px">0</strong><span class="muted"> 个产品</span></div>
             <div class="field"><label>修改字段</label>
               <select id="batch-field">
-                <option value="badge">卡片标签</option>
+                <option value="badge">卡片标签（多个用逗号分隔）</option>
                 <option value="category">分类</option>
                 <option value="spec">规格</option>
                 <option value="wholesale_price">批发价</option>
@@ -321,6 +306,24 @@
           </div>
         </div>
       </div>
+
+      <!-- Tab: 分类管理 -->
+      <div id="tab-categories" class="tab-panel">
+        <div class="panel">
+          <h2>分类管理</h2>
+          <p class="muted" style="margin:4px 0 12px">配置可选分类，用于产品录入与批量修改。新增后即使暂无产品也会出现在下拉选项中；产品中出现的其他分类会自动追加显示。</p>
+          <div class="bar" style="justify-content:flex-start">
+            <div class="field" style="min-width:220px"><label>新增分类</label>
+              <input id="cat-new-name" placeholder="输入新分类名称，如 有机杂粮" />
+            </div>
+            <div class="field"><label style="visibility:hidden">.</label>
+              <button type="button" class="btn btn-primary btn-sm" id="cat-add-btn">新增分类</button>
+            </div>
+          </div>
+          <div class="cat-chips" id="cat-chips"><span class="muted">加载中…</span></div>
+        </div>
+      </div>
+
     </section>
   </div>
 

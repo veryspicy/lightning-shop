@@ -142,10 +142,53 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .section-head h2 { font-family: var(--font-display); font-size: 28px; margin-bottom: 6px; }
 .section-head p { color: var(--muted); }
 
-.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 28px; }
+.toolbar { display: flex; align-items: center; justify-content: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 28px; }
 
-.category-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+/* 箭头独立于滚动区两侧，与标签完全分离不重叠 */
+.tabs-group { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
+
+/* 分类横向滚动容器（固定约 6 个标签宽度，分类多时左右滑动查看） */
+.tabs-scroll { position: relative; flex: 1 1 auto; min-width: 0; width: 760px; }
+.category-tabs {
+  display: flex; gap: 8px; flex-wrap: nowrap;
+  overflow-x: auto; overscroll-behavior-x: contain;
+  scrollbar-width: none; -ms-overflow-style: none;
+  padding: 2px 0;
+}
+.category-tabs::-webkit-scrollbar { display: none; }
+/* 内容不足时标签组水平居中，溢出时贴左可滚动 */
+.category-tabs::before,
+.category-tabs::after { content: ''; flex: 0 0 auto; }
+.category-tabs::before { margin-left: auto; }
+.category-tabs::after { margin-right: auto; }
+/* 左右箭头（独立位于滚动区两侧，不随内容滚动、不压标签） */
+.tabs-nav {
+  flex: 0 0 auto;
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 1px solid var(--line); background: var(--surface);
+  color: var(--ink-soft); font-size: 16px; line-height: 1;
+  cursor: pointer; z-index: 2;
+  box-shadow: var(--shadow-sm);
+  display: flex; align-items: center; justify-content: center;
+  transition: all var(--dur) var(--ease);
+}
+.tabs-nav:hover { border-color: var(--primary); color: var(--primary); }
+.tabs-nav:disabled { opacity: .35; cursor: default; border-color: var(--line); color: var(--ink-soft); }
+.tabs-scroll::after {
+  content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: 40px;
+  background: linear-gradient(to left, var(--surface) 45%, transparent);
+  pointer-events: none;
+  display: none;
+}
+.tabs-scroll::before {
+  content: ''; position: absolute; top: 0; left: 0; bottom: 0; width: 40px;
+  background: linear-gradient(to right, var(--surface) 45%, transparent);
+  pointer-events: none;
+  display: none;
+}
 .cat-tab {
+  flex: 0 0 auto;
+  white-space: nowrap;
   padding: 8px 16px;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -160,6 +203,7 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .cat-tab:hover { border-color: var(--primary); color: var(--primary); }
 .cat-tab.active { background: var(--primary); border-color: var(--primary); color: #fff; }
 
+.search-box { flex: 0 0 auto; }
 .search-box input {
   width: 260px;
   padding: 10px 16px;
@@ -171,6 +215,34 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 .search-box input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(5, 150, 105, .15); }
+
+/* ---------- 大图预览 Lightbox ---------- */
+.lightbox {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.88);
+  opacity: 0; pointer-events: none;
+  transition: opacity 200ms var(--ease);
+}
+.lightbox.open { opacity: 1; pointer-events: auto; }
+.lightbox-img {
+  max-width: min(92vw, 1200px); max-height: 82vh;
+  object-fit: contain;
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+.lightbox-name {
+  margin: 14px 24px 0; color: #fff; font-size: 14px;
+  text-align: center; max-width: 80vw;
+}
+.lightbox-close {
+  position: absolute; top: 14px; right: 18px;
+  background: rgba(255, 255, 255, 0.15); color: #fff;
+  border: none; border-radius: 50%;
+  width: 40px; height: 40px; font-size: 22px; line-height: 1;
+  cursor: pointer;
+}
+.lightbox-close:hover { background: rgba(255, 255, 255, 0.3); }
 
 /* ---------- 产品卡片 ---------- */
 .product-grid {
@@ -203,8 +275,13 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
   background: linear-gradient(135deg, #f3f4f6, #e5e7eb);
   color: #9ca3af; font-size: 40px;
 }
-.card-badge {
+.card-badges {
   position: absolute; top: 10px; left: 10px;
+  display: flex; flex-wrap: wrap; gap: 6px;
+  max-width: calc(100% - 20px);
+  pointer-events: none;
+}
+.card-badge {
   background: var(--accent); color: #fff;
   font-size: 12px; font-weight: 700;
   padding: 4px 10px; border-radius: 999px;
@@ -294,6 +371,7 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 @media (max-width: 1024px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 16px; }
   .b2b-inner { gap: 32px; }
+  .tabs-scroll { width: 640px; }
   .search-box input { width: 220px; }
 }
 
@@ -302,8 +380,17 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
   .b2b-inner { grid-template-columns: 1fr; gap: 28px; }
   .header-inner { height: 60px; }
   .main-nav { display: none; }
+  .toolbar { flex-direction: column; align-items: stretch; gap: 12px; }
+  .search-box { order: -1; width: 100%; }
   .search-box input { width: 100%; }
-  .toolbar { flex-direction: column; align-items: stretch; }
+  .tabs-group { width: 100%; justify-content: flex-start; }
+  .tabs-scroll { width: 100%; }
+  .tabs-scroll::after { display: block; width: 28px; }
+  .tabs-scroll::before { display: none; }
+  /* 移动端触屏滑动，无需滚动条与箭头 */
+  .tabs-nav { display: none; }
+  .category-tabs { scrollbar-width: none; -ms-overflow-style: none; padding: 2px 0; }
+  .category-tabs::-webkit-scrollbar { display: none; }
   .hero { padding: 64px 0 48px; }
   .b2b-card { padding: 22px 18px; }
   .b2b-card h3 { font-size: 18px; }
