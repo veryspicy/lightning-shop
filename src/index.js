@@ -486,6 +486,12 @@ async function handleApi(request, env, url) {
             (p.highlights || '').toLowerCase().includes(q)
         );
       }
+      // 分页：?limit=&offset=；显式传分页参数时返回 { items,total,offset,limit }，否则保持数组兼容
+      if (url.searchParams.has('limit') || url.searchParams.has('offset')) {
+        const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 50, 1), 200);
+        const offset = Math.max(Number(url.searchParams.get('offset')) || 0, 0);
+        return json({ items: list.slice(offset, offset + limit), total: list.length, offset, limit });
+      }
       return json(list);
     }
     if (method === 'POST') {

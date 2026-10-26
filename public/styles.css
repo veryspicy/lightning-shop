@@ -1,7 +1,7 @@
 /* ============================================================
    Lightning Shop · 设计系统样式
    Flat Design · 生鲜绿 #059669 + 琥珀 #D97706
-   字体：Lora（标题衬线）+ Raleway（正文无衬线）
+   字体：系统字体栈（标题衬线 + 正文黑体）
    ============================================================ */
 
 :root {
@@ -24,9 +24,9 @@
   --danger: #dc2626;
   --success: #059669;
 
-  /* 字体 */
-  --font-display: 'Lora', 'Songti SC', serif;
-  --font-body: 'Raleway', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  /* 字体：系统字体栈（去除 Google Fonts 外链，微信/国内访问更快） */
+  --font-display: 'Songti SC', 'SimSun', 'Noto Serif SC', serif;
+  --font-body: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', sans-serif;
 
   /* 圆角 / 阴影 / 动效 */
   --radius: 14px;
@@ -48,6 +48,8 @@ body {
   background: var(--surface);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
 }
 
 img { max-width: 100%; display: block; }
@@ -238,6 +240,11 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 
 .empty-state { text-align: center; padding: 60px 0; color: var(--muted); }
 
+/* 加载更多 */
+.load-more-wrap { display: flex; justify-content: center; padding-top: 28px; }
+.load-more-btn { min-width: 160px; }
+.load-more-btn:disabled { opacity: .6; cursor: default; }
+
 /* ---------- B2B 区块 ---------- */
 .b2b { background: var(--surface-alt); border-top: 1px solid var(--line); padding: 72px 0; }
 .b2b-inner { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; align-items: center; justify-items: center; }
@@ -275,7 +282,7 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 }
 .qr-img { display: block; object-fit: contain; }
 .qr-box { display: flex; align-items: center; justify-content: center; position: relative; }
-.qr-img, .qr-box canvas, .qr-box img { width: 180px; height: 180px; }
+.qr-box canvas, .qr-box img { width: 180px; height: 180px; }
 /* 右卡中心店铺闪电 logo（白底圆角 + 品牌紫闪电） */
 .qr-box::after {
   content: '';
@@ -311,9 +318,14 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
   .b2b-inner { grid-template-columns: 1fr; gap: 28px; }
   .header-inner { height: 60px; }
   .main-nav { display: none; }
-  .search-box input { width: 100%; }
+  .search-box input { width: 100%; font-size: 16px; padding: 12px 16px; }
   .toolbar { flex-direction: column; align-items: stretch; }
   .hero { padding: 64px 0 48px; }
+  /* 触控目标：分类标签加大，减少误触 */
+  .cat-tab { padding: 10px 18px; }
+  /* 二维码放大：微信内长按识别更稳 */
+  .qr-img, .qr-box { width: 220px; height: 220px; }
+  .qr-box canvas, .qr-box img { width: 206px; height: 206px; }
 }
 
 @media (max-width: 375px) {
