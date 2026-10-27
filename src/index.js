@@ -166,9 +166,12 @@ async function savePrice(env, raw) {
 }
 
 // 二维码站点配置：url 用于首页动态生成「扫码直达商城」二维码，quoteImage 为报价单二维码图片（R2）
+// quoteTitle / shopTitle 为两张卡片标题，后台可配置，留空回退默认
 const DEFAULT_QR = {
   url: 'https://lightning-shop.gora.dpdns.org',
   quoteImage: '/wechat-qr.jpg',
+  quoteTitle: '获取完整报价单',
+  shopTitle: '扫码直达商城',
 };
 
 async function getQr(env) {
@@ -177,6 +180,8 @@ async function getQr(env) {
     return {
       url: String(raw.url || DEFAULT_QR.url).trim() || DEFAULT_QR.url,
       quoteImage: String(raw.quoteImage || DEFAULT_QR.quoteImage).trim() || DEFAULT_QR.quoteImage,
+      quoteTitle: String(raw.quoteTitle || '').trim() || DEFAULT_QR.quoteTitle,
+      shopTitle: String(raw.shopTitle || '').trim() || DEFAULT_QR.shopTitle,
     };
   }
   return DEFAULT_QR;
@@ -186,6 +191,8 @@ async function saveQr(env, raw) {
   const q = {
     url: String(raw.url || '').trim(),
     quoteImage: String(raw.quoteImage || '').trim(),
+    quoteTitle: String(raw.quoteTitle || '').trim() || DEFAULT_QR.quoteTitle,
+    shopTitle: String(raw.shopTitle || '').trim() || DEFAULT_QR.shopTitle,
   };
   if (!q.url) q.url = DEFAULT_QR.url;
   if (!q.quoteImage) q.quoteImage = DEFAULT_QR.quoteImage;
@@ -478,6 +485,12 @@ async function handleApi(request, env, url) {
             (p.brand || '').toLowerCase().includes(q) ||
             (p.highlights || '').toLowerCase().includes(q)
         );
+      }
+      // 分页：?limit=&offset=；显式传分页参数时返回 { items,total,offset,limit }，否则保持数组兼容
+      if (url.searchParams.has('limit') || url.searchParams.has('offset')) {
+        const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 50, 1), 200);
+        const offset = Math.max(Number(url.searchParams.get('offset')) || 0, 0);
+        return json({ items: list.slice(offset, offset + limit), total: list.length, offset, limit });
       }
       return json(list);
     }

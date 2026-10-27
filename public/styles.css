@@ -1,7 +1,7 @@
 /* ============================================================
    Lightning Shop · 设计系统样式
    Flat Design · 生鲜绿 #059669 + 琥珀 #D97706
-   字体：Lora（标题衬线）+ Raleway（正文无衬线）
+   字体：系统字体栈（标题衬线 + 正文黑体）
    ============================================================ */
 
 :root {
@@ -24,9 +24,9 @@
   --danger: #dc2626;
   --success: #059669;
 
-  /* 字体 */
-  --font-display: 'Songti SC', 'STSong', 'SimSun', serif;
-  --font-body: 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  /* 字体：系统字体栈（去除 Google Fonts 外链，微信/国内访问更快） */
+  --font-display: 'Songti SC', 'SimSun', 'Noto Serif SC', serif;
+  --font-body: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', sans-serif;
 
   /* 圆角 / 阴影 / 动效 */
   --radius: 14px;
@@ -48,6 +48,8 @@ body {
   background: var(--surface);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
 }
 
 img { max-width: 100%; display: block; }
@@ -315,6 +317,11 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 
 .empty-state { text-align: center; padding: 60px 0; color: var(--muted); }
 
+/* 加载更多 */
+.load-more-wrap { display: flex; justify-content: center; padding-top: 28px; }
+.load-more-btn { min-width: 160px; }
+.load-more-btn:disabled { opacity: .6; cursor: default; }
+
 /* ---------- B2B 区块 ---------- */
 .b2b { background: var(--surface-alt); border-top: 1px solid var(--line); padding: 72px 0; }
 .b2b-inner { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; align-items: center; justify-items: center; }
@@ -345,9 +352,24 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 /* ---------- 页脚 ---------- */
 .site-footer { background: var(--ink); color: #9ca3af; padding: 32px 0; font-family: var(--font-body); font-variant-numeric: lining-nums; }
 .footer-inner { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 14px; }
-.qr-img { border-radius: 10px; border: 1px solid #334; background: #fff; padding: 6px; display: block; max-width: 100%; height: auto; }
-.qr-box { border-radius: 10px; border: 1px solid #334; background: #fff; padding: 6px; display: inline-block; max-width: 100%; }
-.qr-box canvas, .qr-box img { display: block; max-width: 100%; height: auto; }
+.qr-img, .qr-box {
+  width: 192px; height: 192px; box-sizing: border-box;
+  border-radius: 10px; border: 1px solid #334; background: #fff;
+  padding: 6px; margin: 0 auto;
+}
+.qr-img { display: block; object-fit: contain; }
+.qr-box { display: flex; align-items: center; justify-content: center; position: relative; }
+.qr-box canvas, .qr-box img { width: 180px; height: 180px; }
+/* 右卡中心店铺闪电 logo（白底圆角 + 品牌紫闪电） */
+.qr-box::after {
+  content: '';
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 42px; height: 42px; border-radius: 10px;
+  background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M14.5 2L3.5 14.5h5.25L7.5 22l11-12.5h-5.25L14.5 2z' fill='%237C4DFF'/%3E%3C/svg%3E") center / 24px 24px no-repeat;
+  box-shadow: 0 1px 6px rgba(0,0,0,.22);
+  pointer-events: none;
+}
 
 /* 隐蔽管理入口：口令输入框 -> 显示供应链管理链接 */
 .admin-gate { margin: 0; display: flex; align-items: center; }
@@ -382,7 +404,7 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
   .main-nav { display: none; }
   .toolbar { flex-direction: column; align-items: stretch; gap: 12px; }
   .search-box { order: -1; width: 100%; }
-  .search-box input { width: 100%; }
+  .search-box input { width: 100%; font-size: 16px; padding: 12px 16px; }
   .tabs-group { width: 100%; justify-content: flex-start; }
   .tabs-scroll { width: 100%; }
   .tabs-scroll::after { display: block; width: 28px; }
@@ -391,10 +413,15 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
   .tabs-nav { display: none; }
   .category-tabs { scrollbar-width: none; -ms-overflow-style: none; padding: 2px 0; }
   .category-tabs::-webkit-scrollbar { display: none; }
+  /* 触控目标：分类标签加大，减少误触 */
+  .cat-tab { padding: 10px 18px; }
   .hero { padding: 64px 0 48px; }
   .b2b-card { padding: 22px 18px; }
   .b2b-card h3 { font-size: 18px; }
   .stat strong { font-size: 28px; }
+  /* 二维码放大：微信内长按识别更稳 */
+  .qr-img, .qr-box { width: 220px; height: 220px; }
+  .qr-box canvas, .qr-box img { width: 206px; height: 206px; }
 }
 
 @media (max-width: 375px) {

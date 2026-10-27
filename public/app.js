@@ -6,8 +6,11 @@ const searchInput = document.getElementById('search-input');
 const tabs = document.getElementById('category-tabs');
 
 let products = [];
+let total = 0;
 let activeCategory = '';
 let priceConfig = null;
+let loading = false;
+const PAGE_SIZE = 24;
 
 const CATEGORY_LABEL = {
   低GI杂粮: '低GI杂粮',
@@ -89,20 +92,16 @@ function cardHtml(p) {
 }
 
 function render() {
-  const q = searchInput.value.trim().toLowerCase();
-  let list = products;
-  if (activeCategory) list = list.filter((p) => p.category === activeCategory);
-  if (q) {
-    list = list.filter(
-      (p) =>
-        p.name.toLowerCase().includes(q) ||
-        p.brand.toLowerCase().includes(q) ||
-        p.highlights.toLowerCase().includes(q)
-    );
-  }
-  grid.innerHTML = list.map(cardHtml).join('');
-  emptyState.hidden = list.length > 0;
+  grid.innerHTML = products.map(cardHtml).join('');
+  emptyState.hidden = products.length > 0;
   updateNav();
+  updateLoadMore();
+}
+
+function updateLoadMore() {
+  const moreBtn = document.getElementById('load-more');
+  if (!moreBtn) return;
+  moreBtn.hidden = products.length >= total;
 }
 
 function renderTabs(categories) {
@@ -135,6 +134,31 @@ function applyHero(hero) {
   }
 }
 
+function styleQrGradient(box) {
+  const canvas = box && box.querySelector('canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const from = [11, 45, 107];   // 深蓝 #0B2D6B
+  const to = [124, 77, 255];    // 浅紫 #7C4DFF
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (d[i + 3] < 128) continue;
+      const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      if (lum >= 128) continue;
+      const t = (x + y) / (w + h - 2);
+      d[i] = Math.round(from[0] + (to[0] - from[0]) * t);
+      d[i + 1] = Math.round(from[1] + (to[1] - from[1]) * t);
+      d[i + 2] = Math.round(from[2] + (to[2] - from[2]) * t);
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
 function applyQr(qr) {
   if (!qr) return;
   const quoteImg = document.getElementById('quote-qr-img');
@@ -142,18 +166,25 @@ function applyQr(qr) {
     quoteImg.src = qr.quoteImage;
     quoteImg.alt = '报价单二维码';
   }
+  const quoteTitle = document.getElementById('quote-qr-title');
+  if (quoteTitle && qr.quoteTitle) quoteTitle.textContent = qr.quoteTitle;
+  const shopTitle = document.getElementById('shop-qr-title');
+  if (shopTitle && qr.shopTitle) shopTitle.textContent = qr.shopTitle;
   const box = document.getElementById('site-qr');
   if (box && qr.url && typeof QRCode !== 'undefined') {
     try {
       box.innerHTML = '';
+      // 移动端按 220px 容器生成 206px 位图，微信内长按识别更稳
+      const qrSize = window.matchMedia('(max-width: 768px)').matches ? 206 : 180;
       new QRCode(box, {
         text: qr.url,
-        width: 180,
-        height: 180,
-        colorDark: '#0b1f17',
+        width: qrSize,
+        height: qrSize,
+        colorDark: '#111111',
         colorLight: '#ffffff',
         correctLevel: QRCode.CorrectLevel.M,
       });
+      styleQrGradient(box);
       box.hidden = false;
     } catch {
       /* 二维码生成失败不阻塞页面 */
@@ -162,7 +193,7 @@ function applyQr(qr) {
 }
 
 function updateStats() {
-  const sku = products.length;
+  const sku = total;
   const brands = new Set(products.map((p) => p.brand).filter(Boolean)).size;
   const skuEl = document.getElementById('stat-sku');
   const brandEl = document.getElementById('stat-brand');
@@ -170,16 +201,65 @@ function updateStats() {
   if (brandEl) brandEl.textContent = String(brands);
 }
 
+async function fetchPage(offset) {
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
+  if (activeCategory) params.set('category', activeCategory);
+  const q = searchInput.value.trim();
+  if (q) params.set('q', q);
+  const res = await fetch(`/api/products?${params.toString()}`);
+  const data = await res.json();
+  return Array.isArray(data) ? { items: data, total: data.length } : data;
+}
+
+async function reload() {
+  if (loading) return;
+  loading = true;
+  try {
+    const data = await fetchPage(0);
+    products = data.items || [];
+    total = data.total || products.length;
+    render();
+    updateStats();
+  } catch (err) {
+    grid.innerHTML = '<p style="color:#dc2626">加载失败，请刷新重试。</p>';
+  } finally {
+    loading = false;
+  }
+}
+
+async function loadMore() {
+  if (loading || products.length >= total) return;
+  loading = true;
+  const moreBtn = document.getElementById('load-more');
+  if (moreBtn) {
+    moreBtn.disabled = true;
+    moreBtn.textContent = '加载中…';
+  }
+  try {
+    const data = await fetchPage(products.length);
+    products = products.concat(data.items || []);
+    total = data.total || products.length;
+    render();
+  } finally {
+    if (moreBtn) {
+      moreBtn.disabled = false;
+      moreBtn.textContent = '加载更多';
+    }
+    loading = false;
+  }
+}
+
 async function load() {
   try {
-    const [pRes, cRes, heroRes, priceRes, qrRes] = await Promise.all([
-      fetch('/api/products'),
+    const [data, cRes, heroRes, priceRes, qrRes] = await Promise.all([
+      fetchPage(0),
       fetch('/api/categories'),
       fetch('/api/site/hero'),
       fetch('/api/site/price'),
       fetch('/api/site/qr'),
     ]);
-    products = await pRes.json();
+    products = data.items || [];
+    total = data.total || products.length;
     const categories = await cRes.json();
     const hero = await heroRes.json().catch(() => null);
     priceConfig = await priceRes.json().catch(() => null);
@@ -200,7 +280,7 @@ tabs.addEventListener('click', (e) => {
   activeCategory = btn.dataset.category;
   tabs.querySelectorAll('.cat-tab').forEach((b) => b.classList.toggle('active', b === btn));
   btn.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
-  render();
+  reload();
 });
 
 /* 左右箭头（独立于滚动区两侧，不随内容滚动；移动端隐藏走触屏滑动） */
@@ -222,9 +302,17 @@ if (tabsPrev && tabsNext) {
   updateNav();
 }
 
-searchInput.addEventListener('input', render);
+let searchTimer = null;
+searchInput.addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(reload, 300);
+});
 
 load();
+
+/* 商品分页：加载更多 */
+const loadMoreBtn = document.getElementById('load-more');
+if (loadMoreBtn) loadMoreBtn.addEventListener('click', loadMore);
 
 /* 页脚隐蔽管理入口：输入 admin 口令后显示供应链管理链接 */
 (function () {
@@ -446,6 +534,7 @@ async function buildSharePoster(p) {
 }
 
 async function openShareModal(p) {
+  const inWechat = /MicroMessenger/i.test(navigator.userAgent);
   let modal = document.getElementById('share-modal');
   if (!modal) {
     modal = document.createElement('div');
@@ -459,9 +548,9 @@ async function openShareModal(p) {
           <button class="share-close" type="button" aria-label="关闭">✕</button>
         </div>
         <img class="share-img" alt="商品分享图">
-        <p class="share-tip">长按图片保存，或点击下方按钮分享给微信好友</p>
+        <p class="share-tip">${inWechat ? '长按图片保存，或点击右上角「···」转发给好友' : '长按图片保存，或点击下方按钮分享给微信好友'}</p>
         <div class="share-actions">
-          <button class="btn-wx" type="button">分享到微信</button>
+          <button class="btn-wx" type="button">${inWechat ? '去右上角转发' : '分享到微信'}</button>
           <a class="btn-save" download>保存图片</a>
         </div>
       </div>`;
@@ -487,6 +576,12 @@ async function openShareModal(p) {
 
   const wxBtn = modal.querySelector('.btn-wx');
   wxBtn.onclick = async () => {
+    if (inWechat) {
+      // 微信内置浏览器不支持 Web Share API，只能引导右上角菜单转发
+      wxBtn.textContent = '请点击右上角「···」→ 转发给朋友';
+      wxBtn.disabled = true;
+      return;
+    }
     try {
       const blob = await (await fetch(url)).blob();
       const file = new File([blob], `${p.name}-分享.png`, { type: 'image/png' });

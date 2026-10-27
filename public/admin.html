@@ -175,10 +175,11 @@
               <div class="qr-block-head">左卡 · 获取完整报价单</div>
               <div class="qr-block-body">
                 <div class="qr-block-preview">
-                  <b>获取完整报价单</b>
+                  <b id="preview-quote-title">获取完整报价单</b>
                   <img class="qr-preview-img" id="qr-img-preview" alt="报价单二维码预览" hidden />
                 </div>
                 <div class="qr-block-form">
+                  <div class="field"><label>左卡标题</label><input id="f-qr-quote-title" maxlength="20" placeholder="如 获取完整报价单" /></div>
                   <div class="field"><label>报价单二维码图片</label><input type="file" id="f-qr-img-file" accept="image/*" /></div>
                   <div class="field"><label>图片地址（上传后自动填写，可留空）</label><input id="f-qr-quote-image" placeholder="/img/quote-qr.jpg" /></div>
                 </div>
@@ -187,7 +188,12 @@
             <div class="qr-card-block">
               <div class="qr-block-head">右卡 · 扫码直达商城</div>
               <div class="qr-block-body">
+                <div class="qr-block-preview">
+                  <b id="preview-shop-title">扫码直达商城</b>
+                  <div id="qr-url-preview" class="qr-preview-box"></div>
+                </div>
                 <div class="qr-block-form">
+                  <div class="field"><label>右卡标题</label><input id="f-qr-shop-title" maxlength="20" placeholder="如 扫码直达商城" /></div>
                   <div class="field"><label>商城链接（二维码内容）</label><input id="f-qr-url" placeholder="https://lightning-shop.gora.dpdns.org" /></div>
                 </div>
               </div>
