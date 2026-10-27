@@ -309,6 +309,7 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .hl-wrap { display: block; }
 .hl-toggle { display: none; margin: 2px 0 0; padding: 0; border: 0; background: none; color: var(--accent, #047857); font-size: 12px; cursor: pointer; line-height: 1.2; }
 .hl-toggle[hidden] { display: none; }
+.hl-toggle:not([hidden]) { display: inline-block; }
 
 .card-price {
   display: flex; justify-content: space-between; align-items: flex-end;

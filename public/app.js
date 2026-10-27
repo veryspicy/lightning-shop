@@ -107,6 +107,28 @@ function render() {
   emptyState.hidden = products.length > 0;
   updateResultMeta();
   updateLoadMore();
+  initHighlightToggles();
+}
+
+/* 描述折叠：默认最多显示 3 行；溢出时显示「更多」按钮，点击展开/收起 */
+function initHighlightToggles() {
+  document.querySelectorAll('.hl-wrap').forEach((wrap) => {
+    const p = wrap.querySelector('.card-highlight');
+    const btn = wrap.querySelector('.hl-toggle');
+    if (!p || !btn) return;
+    p.classList.add('clamped');
+    btn.hidden = p.scrollHeight <= p.clientHeight + 1;
+  });
+}
+
+function toggleHighlight(btn) {
+  const wrap = btn.closest('.hl-wrap');
+  if (!wrap) return;
+  const p = wrap.querySelector('.card-highlight');
+  if (!p) return;
+  const expanded = !p.classList.contains('clamped');
+  p.classList.toggle('clamped', !expanded);
+  btn.textContent = expanded ? '更多' : '收起';
 }
 
 function updateLoadMore() {
