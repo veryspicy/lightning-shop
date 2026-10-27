@@ -180,6 +180,9 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
   display: flex; flex-wrap: wrap; gap: 8px;
   min-width: 0; flex: 1 1 auto;
 }
+/* 单行折叠态：始终一行、溢出隐藏，放不下的 chip 由 JS 标记隐藏 */
+.chip-list.chip-collapsed { flex-wrap: nowrap; overflow: hidden; }
+.chip-hidden { display: none !important; }
 .chip {
   flex: 0 0 auto;
   display: inline-flex; align-items: center; gap: 7px;
@@ -211,6 +214,14 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
   text-align: center;
 }
 .chip.active .chip-count { background: rgba(255, 255, 255, .22); color: #fff; }
+
+/* 展开/收起按钮：chip 折叠触发时出现，虚线边框弱化主次 */
+.chip-toggle {
+  border-style: dashed;
+  background: var(--primary-light);
+  color: var(--primary);
+}
+.chip-toggle:hover { background: #d1fae5; border-style: solid; }
 
 .result-meta {
   margin: 0 0 14px;
@@ -403,7 +414,16 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
   .filter-panel { padding: 12px 10px; gap: 10px; }
   .filter-row { gap: 8px; }
   .filter-label { padding-top: 11px; font-size: 12px; }
-  /* 移动端 chip 单行横滑 + 右侧渐变遮罩（触屏滑动，无需箭头） */
+  .hero { padding: 64px 0 48px; }
+  .b2b-card { padding: 22px 18px; }
+  .b2b-card h3 { font-size: 18px; }
+  .stat strong { font-size: 28px; }
+  /* 二维码放大：微信内长按识别更稳 */
+  .qr-img, .qr-box { width: 220px; height: 220px; }
+  .qr-box canvas, .qr-box img { width: 206px; height: 206px; }
+}
+/* 手机端（<=480px，与 JS 折叠断点对齐）：chip 单行横滑 + 右侧渐变遮罩（触屏滑动，无需箭头） */
+@media (max-width: 480px) {
   .chip-list {
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -412,7 +432,6 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
     padding: 2px 0;
   }
   .chip-list::-webkit-scrollbar { display: none; }
-  /* 右侧渐变遮罩提示还有更多 */
   .chip-list { position: relative; }
   .chip-list::after {
     content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: 28px;
@@ -421,13 +440,6 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
   }
   /* 触控目标：chip 加大，减少误触 */
   .chip { padding: 10px 15px; font-size: 15px; }
-  .hero { padding: 64px 0 48px; }
-  .b2b-card { padding: 22px 18px; }
-  .b2b-card h3 { font-size: 18px; }
-  .stat strong { font-size: 28px; }
-  /* 二维码放大：微信内长按识别更稳 */
-  .qr-img, .qr-box { width: 220px; height: 220px; }
-  .qr-box canvas, .qr-box img { width: 206px; height: 206px; }
 }
 
 @media (max-width: 375px) {

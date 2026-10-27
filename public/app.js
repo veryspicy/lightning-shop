@@ -14,6 +14,11 @@ let activeBrand = '';
 let priceConfig = null;
 let loading = false;
 const PAGE_SIZE = 24;
+// 单行折叠状态：chip 列表始终保持一行，放不下时溢出项隐藏 + 「展开 N 个」按钮
+let categoryExpanded = false;
+let brandExpanded = false;
+let categoryList = [];
+let brandList = [];
 
 const CATEGORY_LABEL = {
   低GI杂粮: '低GI杂粮',
@@ -115,17 +120,62 @@ function chipHtml(key, name, count, active) {
 }
 
 function renderTabs(categories) {
+  categoryList = categories;
   const all = [{ name: '', count: total }].concat(categories);
   tabs.innerHTML = all
     .map((c) => chipHtml('category', c.name, c.count, c.name === activeCategory))
     .join('');
+  applyCollapse(tabs, 'category');
 }
 
 function renderBrandTabs(brands) {
+  brandList = brands;
   const all = [{ name: '', count: total }].concat(brands);
   brandTabs.innerHTML = all
     .map((b) => chipHtml('brand', b.name, b.count, b.name === activeBrand))
     .join('');
+  applyCollapse(brandTabs, 'brand');
+}
+
+/* 单行折叠：chip 列表始终保持一行；一行放不下（出现换行）时从尾部隐藏溢出项，
+   追加「展开 N 个」按钮（与可见项同排）；展开后全部显示可换行，点「收起」恢复单行。
+   手机端（<=480px）保持横向滑动全展示，不参与折叠。 */
+function sameRow(elms) {
+  if (!elms.length) return true;
+  const top = elms[0].getBoundingClientRect().top;
+  return elms.every((c) => Math.abs(c.getBoundingClientRect().top - top) < 2);
+}
+
+function applyCollapse(listEl, key) {
+  if (!listEl) return;
+  // 清理旧的隐藏标记与 toggle 按钮
+  listEl.querySelectorAll('.chip-hidden').forEach((c) => c.classList.remove('chip-hidden'));
+  listEl.querySelectorAll('.chip-toggle').forEach((t) => t.remove());
+  listEl.classList.remove('chip-collapsed');
+  if (window.matchMedia('(max-width: 480px)').matches) return; // 手机端横滑，不折叠
+
+  const expanded = key === 'category' ? categoryExpanded : brandExpanded;
+  if (expanded) {
+    listEl.insertAdjacentHTML('beforeend',
+      `<button class="chip chip-toggle" type="button" data-toggle="${key}" aria-expanded="true">收起</button>`);
+    return;
+  }
+  const chips = Array.from(listEl.querySelectorAll('.chip:not(.chip-toggle)'));
+  if (!chips.length || sameRow(chips)) return; // 一行放得下，无需折叠
+
+  // 预留 toggle 按钮空间：从尾部隐藏 chip，直到可见项与 toggle 同排
+  listEl.classList.add('chip-collapsed');
+  listEl.insertAdjacentHTML('beforeend',
+    `<button class="chip chip-toggle" type="button" data-toggle="${key}" aria-expanded="false">展开</button>`);
+  let hidden = 0;
+  const toggle = listEl.querySelector('.chip-toggle');
+  for (let i = chips.length - 1; i >= 0; i--) {
+    chips[i].classList.add('chip-hidden');
+    hidden++;
+    const rest = Array.from(listEl.querySelectorAll('.chip:not(.chip-hidden)'));
+    if (sameRow(rest)) break;
+  }
+  toggle.textContent = `展开 ${hidden} 个`;
 }
 
 function updateResultMeta() {
@@ -303,9 +353,17 @@ async function load() {
   }
 }
 
-function bindChipList(container, selector, apply) {
+function bindChipList(container, selector, apply, key) {
   if (!container) return;
   container.addEventListener('click', (e) => {
+    const toggleBtn = e.target.closest('.chip-toggle');
+    if (toggleBtn) {
+      if (key === 'category') categoryExpanded = !categoryExpanded;
+      else brandExpanded = !brandExpanded;
+      renderTabs(categoryList);
+      renderBrandTabs(brandList);
+      return;
+    }
     const btn = e.target.closest(selector);
     if (!btn) return;
     apply(btn);
@@ -320,7 +378,7 @@ bindChipList(tabs, '.chip[data-category]', (btn) => {
     b.setAttribute('aria-pressed', String(active));
   });
   reload();
-});
+}, 'category');
 
 bindChipList(brandTabs, '.chip[data-brand]', (btn) => {
   activeBrand = btn.dataset.brand;
@@ -330,12 +388,22 @@ bindChipList(brandTabs, '.chip[data-brand]', (btn) => {
     b.setAttribute('aria-pressed', String(active));
   });
   reload();
-});
+}, 'brand');
 
 let searchTimer = null;
 searchInput.addEventListener('input', () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(reload, 300);
+});
+
+/* 窗口尺寸变化时重新计算单行折叠（防抖） */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    renderTabs(categoryList);
+    renderBrandTabs(brandList);
+  }, 200);
 });
 
 load();
