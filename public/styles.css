@@ -305,6 +305,10 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .card-name { font-family: var(--font-display); font-size: 17px; font-weight: 600; }
 .card-spec { color: var(--muted); font-size: 13px; }
 .card-highlight { font-size: 13px; color: var(--ink-soft); line-height: 1.5; min-height: 40px; }
+.card-highlight.clamped { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.hl-wrap { display: block; }
+.hl-toggle { display: none; margin: 2px 0 0; padding: 0; border: 0; background: none; color: var(--accent, #047857); font-size: 12px; cursor: pointer; line-height: 1.2; }
+.hl-toggle[hidden] { display: none; }
 
 .card-price {
   display: flex; justify-content: space-between; align-items: flex-end;

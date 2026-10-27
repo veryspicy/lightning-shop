@@ -80,7 +80,10 @@ function cardHtml(p) {
       <div class="card-body">
         <h3 class="card-name">${escapeHtml(p.name)}</h3>
         <p class="card-spec">${escapeHtml(p.spec)} · ${escapeHtml(p.brand)}</p>
-        <p class="card-highlight">${escapeHtml(p.highlights)}</p>
+        <div class="hl-wrap">
+          <p class="card-highlight">${escapeHtml(p.highlights)}</p>
+          <button class="hl-toggle" type="button" hidden>更多</button>
+        </div>
         <div class="card-meta">
           ${p.cert ? `<span class="card-tag">${escapeHtml(p.cert)}</span>` : ''}
           ${p.moq ? `<span class="card-tag amber">起订 ${escapeHtml(p.moq)}</span>` : ''}
@@ -730,6 +733,12 @@ function closeLightbox() {
 }
 
 grid.addEventListener('click', async (e) => {
+  // 点击「更多/收起」-> 展开/折叠描述
+  const hlBtn = e.target.closest('.hl-toggle');
+  if (hlBtn) {
+    toggleHighlight(hlBtn);
+    return;
+  }
   // 点击产品图片 -> 预览大图
   const cardImg = e.target.closest('.card-media img');
   if (cardImg) {
