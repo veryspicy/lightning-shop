@@ -55,6 +55,15 @@
       <div class="search-box">
         <input type="search" id="search-input" placeholder="搜索品名 / 品牌 / 卖点" aria-label="搜索产品" autocomplete="off" />
       </div>
+      <div class="brands-group">
+        <button type="button" class="tabs-nav brands-prev" aria-label="上一个品牌" tabindex="-1">‹</button>
+        <div class="tabs-scroll">
+          <div class="category-tabs" id="brand-tabs" role="tablist" aria-label="产品品牌">
+            <button class="cat-tab active" data-brand="" role="tab">全部品牌</button>
+          </div>
+        </div>
+        <button type="button" class="tabs-nav brands-next" aria-label="更多品牌" tabindex="-1">›</button>
+      </div>
     </div>
 
     <div class="product-grid" id="product-grid" aria-live="polite"></div>

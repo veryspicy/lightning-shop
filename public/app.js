@@ -4,10 +4,12 @@ const grid = document.getElementById('product-grid');
 const emptyState = document.getElementById('empty-state');
 const searchInput = document.getElementById('search-input');
 const tabs = document.getElementById('category-tabs');
+const brandTabs = document.getElementById('brand-tabs');
 
 let products = [];
 let total = 0;
 let activeCategory = '';
+let activeBrand = '';
 let priceConfig = null;
 let loading = false;
 const PAGE_SIZE = 24;
@@ -94,7 +96,8 @@ function cardHtml(p) {
 function render() {
   grid.innerHTML = products.map(cardHtml).join('');
   emptyState.hidden = products.length > 0;
-  updateNav();
+  if (updateCatNav) updateCatNav();
+  if (updateBrandNav) updateBrandNav();
   updateLoadMore();
 }
 
@@ -105,13 +108,24 @@ function updateLoadMore() {
 }
 
 function renderTabs(categories) {
-  const all = [{ name: '', count: products.length }].concat(categories);
+  const all = [{ name: '', count: total }].concat(categories);
   tabs.innerHTML = all
     .map(
       (c) =>
         `<button class="cat-tab${c.name === activeCategory ? ' active' : ''}" data-category="${escapeHtml(c.name)}" role="tab">${escapeHtml(c.name || '全部')}<span style="opacity:.6"> · ${c.count}</span></button>`
     )
     .join('');
+}
+
+function renderBrandTabs(brands) {
+  const all = [{ name: '', count: total }].concat(brands);
+  brandTabs.innerHTML = all
+    .map(
+      (b) =>
+        `<button class="cat-tab${b.name === activeBrand ? ' active' : ''}" data-brand="${escapeHtml(b.name)}" role="tab">${escapeHtml(b.name || '全部品牌')}<span style="opacity:.6"> · ${b.count}</span></button>`
+    )
+    .join('');
+  if (updateBrandNav) updateBrandNav();
 }
 
 function applyHero(hero) {
@@ -204,6 +218,7 @@ function updateStats() {
 async function fetchPage(offset) {
   const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
   if (activeCategory) params.set('category', activeCategory);
+  if (activeBrand) params.set('brand', activeBrand);
   const q = searchInput.value.trim();
   if (q) params.set('q', q);
   const res = await fetch(`/api/products?${params.toString()}`);
@@ -251,9 +266,10 @@ async function loadMore() {
 
 async function load() {
   try {
-    const [data, cRes, heroRes, priceRes, qrRes] = await Promise.all([
+    const [data, cRes, bRes, heroRes, priceRes, qrRes] = await Promise.all([
       fetchPage(0),
       fetch('/api/categories'),
+      fetch('/api/brands'),
       fetch('/api/site/hero'),
       fetch('/api/site/price'),
       fetch('/api/site/qr'),
@@ -261,10 +277,12 @@ async function load() {
     products = data.items || [];
     total = data.total || products.length;
     const categories = await cRes.json();
+    const brands = await bRes.json();
     const hero = await heroRes.json().catch(() => null);
     priceConfig = await priceRes.json().catch(() => null);
     const qrConfig = await qrRes.json().catch(() => null);
     renderTabs(categories);
+    renderBrandTabs(brands);
     render();
     updateStats();
     applyHero(hero);
@@ -283,24 +301,32 @@ tabs.addEventListener('click', (e) => {
   reload();
 });
 
+brandTabs.addEventListener('click', (e) => {
+  const btn = e.target.closest('.cat-tab');
+  if (!btn) return;
+  activeBrand = btn.dataset.brand;
+  brandTabs.querySelectorAll('.cat-tab').forEach((b) => b.classList.toggle('active', b === btn));
+  btn.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+  reload();
+});
+
 /* 左右箭头（独立于滚动区两侧，不随内容滚动；移动端隐藏走触屏滑动） */
-const tabsPrev = document.querySelector('.tabs-prev');
-const tabsNext = document.querySelector('.tabs-next');
-function step() {
-  return Math.min(240, tabs.scrollWidth - tabs.clientWidth);
+function setupScrollNav(scrollEl, prevBtn, nextBtn) {
+  if (!scrollEl || !prevBtn || !nextBtn) return null;
+  const update = () => {
+    prevBtn.disabled = scrollEl.scrollLeft <= 0;
+    nextBtn.disabled = scrollEl.scrollLeft >= scrollEl.scrollWidth - scrollEl.clientWidth - 1;
+  };
+  const step = () => Math.min(240, scrollEl.scrollWidth - scrollEl.clientWidth);
+  prevBtn.addEventListener('click', () => scrollEl.scrollBy({ left: -step(), behavior: 'smooth' }));
+  nextBtn.addEventListener('click', () => scrollEl.scrollBy({ left: step(), behavior: 'smooth' }));
+  scrollEl.addEventListener('scroll', update, { passive: true });
+  window.addEventListener('resize', update);
+  update();
+  return update;
 }
-function updateNav() {
-  if (!tabsPrev || !tabsNext) return;
-  tabsPrev.disabled = tabs.scrollLeft <= 0;
-  tabsNext.disabled = tabs.scrollLeft >= tabs.scrollWidth - tabs.clientWidth - 1;
-}
-if (tabsPrev && tabsNext) {
-  tabsPrev.addEventListener('click', () => tabs.scrollBy({ left: -step(), behavior: 'smooth' }));
-  tabsNext.addEventListener('click', () => tabs.scrollBy({ left: step(), behavior: 'smooth' }));
-  tabs.addEventListener('scroll', updateNav, { passive: true });
-  window.addEventListener('resize', updateNav);
-  updateNav();
-}
+const updateCatNav = setupScrollNav(tabs, document.querySelector('.tabs-prev'), document.querySelector('.tabs-next'));
+const updateBrandNav = setupScrollNav(brandTabs, document.querySelector('.brands-prev'), document.querySelector('.brands-next'));
 
 let searchTimer = null;
 searchInput.addEventListener('input', () => {

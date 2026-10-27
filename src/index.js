@@ -1,9 +1,10 @@
 /**
  * Lightning Shop Worker
  * 路由：
- *   GET  /api/products            -> 全部产品（支持 ?category=  ?q= 过滤；自动排除下架）
+ *   GET  /api/products            -> 全部产品（支持 ?category=  ?brand=  ?q= 过滤；自动排除下架）
  *   GET  /api/products/:id        -> 单个产品
  *   GET  /api/categories          -> 分类列表（配置分类 + 产品聚合，含数量）
+ *   GET  /api/brands              -> 品牌列表（产品聚合，含数量）
  *   GET  /api/admin/categories    -> 分类配置管理（配置分类 + 产品自动发现分类，需 x-admin-token）
  *   POST /api/admin/categories    -> 新增配置分类（需 x-admin-token）
  *   PUT  /api/admin/categories    -> 重命名配置分类（同步产品分类，需 x-admin-token）
@@ -288,6 +289,20 @@ async function handleApi(request, env, url) {
     return jsonNoCache(buildCategories(onShelf, await getConfigCategories(env)));
   }
 
+  // GET /api/brands：产品品牌聚合（按数量降序，禁缓存）
+  if (path === '/api/brands' && method === 'GET') {
+    const map = new Map();
+    for (const p of onShelf) {
+      const b = String(p.brand || '').trim();
+      if (!b) continue;
+      map.set(b, (map.get(b) || 0) + 1);
+    }
+    const list = [...map.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count);
+    return jsonNoCache(list);
+  }
+
   // Hero 站点配置：GET 公共可读（禁缓存，保证后台改配置前端立即生效），PUT 需鉴权
   if (path === '/api/site/hero') {
     if (method === 'GET') return jsonNoCache(await getHero(env));
@@ -475,9 +490,11 @@ async function handleApi(request, env, url) {
   if (path === '/api/products') {
     if (method === 'GET') {
       const category = url.searchParams.get('category');
+      const brand = url.searchParams.get('brand');
       const q = (url.searchParams.get('q') || '').trim().toLowerCase();
       let list = onShelf;
       if (category) list = list.filter((p) => p.category === category);
+      if (brand) list = list.filter((p) => p.brand === brand);
       if (q) {
         list = list.filter(
           (p) =>
