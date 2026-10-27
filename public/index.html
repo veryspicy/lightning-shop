@@ -43,20 +43,26 @@
 
   <main id="products" class="container">
     <div class="toolbar">
-      <div class="tabs-group">
-        <button type="button" class="tabs-nav tabs-prev" aria-label="上一个分类" tabindex="-1">‹</button>
-        <div class="tabs-scroll">
-          <div class="category-tabs" id="category-tabs" role="tablist" aria-label="产品分类">
-            <button class="cat-tab active" data-category="" role="tab">全部</button>
-          </div>
-        </div>
-        <button type="button" class="tabs-nav tabs-next" aria-label="更多分类" tabindex="-1">›</button>
-      </div>
       <div class="search-box">
         <input type="search" id="search-input" placeholder="搜索品名 / 品牌 / 卖点" aria-label="搜索产品" autocomplete="off" />
       </div>
+      <div class="filter-panel">
+        <div class="filter-row">
+          <span class="filter-label" id="filter-label-category">品类</span>
+          <div class="chip-list" id="category-tabs" role="group" aria-labelledby="filter-label-category">
+            <button class="chip active" type="button" data-category="" aria-pressed="true">全部</button>
+          </div>
+        </div>
+        <div class="filter-row">
+          <span class="filter-label" id="filter-label-brand">品牌</span>
+          <div class="chip-list" id="brand-tabs" role="group" aria-labelledby="filter-label-brand">
+            <button class="chip active" type="button" data-brand="" aria-pressed="true">全部品牌</button>
+          </div>
+        </div>
+      </div>
     </div>
 
+    <p class="result-meta" id="result-meta" role="status" aria-live="polite"></p>
     <div class="product-grid" id="product-grid" aria-live="polite"></div>
     <div class="empty-state" id="empty-state" hidden>未找到匹配产品，换个关键词试试。</div>
     <div class="load-more-wrap">

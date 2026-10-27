@@ -4,13 +4,21 @@ const grid = document.getElementById('product-grid');
 const emptyState = document.getElementById('empty-state');
 const searchInput = document.getElementById('search-input');
 const tabs = document.getElementById('category-tabs');
+const brandTabs = document.getElementById('brand-tabs');
+const resultMeta = document.getElementById('result-meta');
 
 let products = [];
 let total = 0;
 let activeCategory = '';
+let activeBrand = '';
 let priceConfig = null;
 let loading = false;
 const PAGE_SIZE = 24;
+// 单行折叠状态：chip 列表始终保持一行，放不下时溢出项隐藏 + 「展开 N 个」按钮
+let categoryExpanded = false;
+let brandExpanded = false;
+let categoryList = [];
+let brandList = [];
 
 const CATEGORY_LABEL = {
   低GI杂粮: '低GI杂粮',
@@ -94,7 +102,7 @@ function cardHtml(p) {
 function render() {
   grid.innerHTML = products.map(cardHtml).join('');
   emptyState.hidden = products.length > 0;
-  updateNav();
+  updateResultMeta();
   updateLoadMore();
 }
 
@@ -104,14 +112,81 @@ function updateLoadMore() {
   moreBtn.hidden = products.length >= total;
 }
 
+function chipHtml(key, name, count, active) {
+  return `<button class="chip${active ? ' active' : ''}" type="button" data-${key}="${escapeHtml(name)}" aria-pressed="${active}">
+    <span class="chip-name">${escapeHtml(name || '全部')}</span>
+    <span class="chip-count">${count}</span>
+  </button>`;
+}
+
 function renderTabs(categories) {
-  const all = [{ name: '', count: products.length }].concat(categories);
+  categoryList = categories;
+  const all = [{ name: '', count: total }].concat(categories);
   tabs.innerHTML = all
-    .map(
-      (c) =>
-        `<button class="cat-tab${c.name === activeCategory ? ' active' : ''}" data-category="${escapeHtml(c.name)}" role="tab">${escapeHtml(c.name || '全部')}<span style="opacity:.6"> · ${c.count}</span></button>`
-    )
+    .map((c) => chipHtml('category', c.name, c.count, c.name === activeCategory))
     .join('');
+  applyCollapse(tabs, 'category');
+}
+
+function renderBrandTabs(brands) {
+  brandList = brands;
+  const all = [{ name: '', count: total }].concat(brands);
+  brandTabs.innerHTML = all
+    .map((b) => chipHtml('brand', b.name, b.count, b.name === activeBrand))
+    .join('');
+  applyCollapse(brandTabs, 'brand');
+}
+
+/* 单行折叠：chip 列表始终保持一行；一行放不下（出现换行）时从尾部隐藏溢出项，
+   追加「展开 N 个」按钮（与可见项同排）；展开后全部显示可换行，点「收起」恢复单行。
+   手机端（<=480px）保持横向滑动全展示，不参与折叠。 */
+function sameRow(elms) {
+  if (!elms.length) return true;
+  const top = elms[0].getBoundingClientRect().top;
+  return elms.every((c) => Math.abs(c.getBoundingClientRect().top - top) < 2);
+}
+
+function applyCollapse(listEl, key) {
+  if (!listEl) return;
+  // 清理旧的隐藏标记与 toggle 按钮
+  listEl.querySelectorAll('.chip-hidden').forEach((c) => c.classList.remove('chip-hidden'));
+  listEl.querySelectorAll('.chip-toggle').forEach((t) => t.remove());
+  listEl.classList.remove('chip-collapsed');
+  if (window.matchMedia('(max-width: 480px)').matches) return; // 手机端横滑，不折叠
+
+  const expanded = key === 'category' ? categoryExpanded : brandExpanded;
+  if (expanded) {
+    listEl.insertAdjacentHTML('beforeend',
+      `<button class="chip chip-toggle" type="button" data-toggle="${key}" aria-expanded="true">收起</button>`);
+    return;
+  }
+  const chips = Array.from(listEl.querySelectorAll('.chip:not(.chip-toggle)'));
+  if (!chips.length || sameRow(chips)) return; // 一行放得下，无需折叠
+
+  // 预留 toggle 按钮空间：从尾部隐藏 chip，直到可见项与 toggle 同排
+  listEl.classList.add('chip-collapsed');
+  listEl.insertAdjacentHTML('beforeend',
+    `<button class="chip chip-toggle" type="button" data-toggle="${key}" aria-expanded="false">展开</button>`);
+  let hidden = 0;
+  const toggle = listEl.querySelector('.chip-toggle');
+  for (let i = chips.length - 1; i >= 0; i--) {
+    chips[i].classList.add('chip-hidden');
+    hidden++;
+    const rest = Array.from(listEl.querySelectorAll('.chip:not(.chip-hidden)'));
+    if (sameRow(rest)) break;
+  }
+  toggle.textContent = `展开 ${hidden} 个`;
+}
+
+function updateResultMeta() {
+  if (!resultMeta) return;
+  const q = searchInput.value.trim();
+  const parts = [];
+  if (activeCategory) parts.push(`品类「${activeCategory}」`);
+  if (activeBrand) parts.push(`品牌「${activeBrand}」`);
+  if (q) parts.push(`关键词「${q}」`);
+  const prefix = parts.length ? `筛选：${parts.join(' + ')} · 共 ` : '共 ';
+  resultMeta.textContent = `${prefix}${total} 件商品`;
 }
 
 function applyHero(hero) {
@@ -204,6 +279,7 @@ function updateStats() {
 async function fetchPage(offset) {
   const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
   if (activeCategory) params.set('category', activeCategory);
+  if (activeBrand) params.set('brand', activeBrand);
   const q = searchInput.value.trim();
   if (q) params.set('q', q);
   const res = await fetch(`/api/products?${params.toString()}`);
@@ -251,9 +327,10 @@ async function loadMore() {
 
 async function load() {
   try {
-    const [data, cRes, heroRes, priceRes, qrRes] = await Promise.all([
+    const [data, cRes, bRes, heroRes, priceRes, qrRes] = await Promise.all([
       fetchPage(0),
       fetch('/api/categories'),
+      fetch('/api/brands'),
       fetch('/api/site/hero'),
       fetch('/api/site/price'),
       fetch('/api/site/qr'),
@@ -261,10 +338,12 @@ async function load() {
     products = data.items || [];
     total = data.total || products.length;
     const categories = await cRes.json();
+    const brands = await bRes.json();
     const hero = await heroRes.json().catch(() => null);
     priceConfig = await priceRes.json().catch(() => null);
     const qrConfig = await qrRes.json().catch(() => null);
     renderTabs(categories);
+    renderBrandTabs(brands);
     render();
     updateStats();
     applyHero(hero);
@@ -274,38 +353,57 @@ async function load() {
   }
 }
 
-tabs.addEventListener('click', (e) => {
-  const btn = e.target.closest('.cat-tab');
-  if (!btn) return;
-  activeCategory = btn.dataset.category;
-  tabs.querySelectorAll('.cat-tab').forEach((b) => b.classList.toggle('active', b === btn));
-  btn.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
-  reload();
-});
+function bindChipList(container, selector, apply, key) {
+  if (!container) return;
+  container.addEventListener('click', (e) => {
+    const toggleBtn = e.target.closest('.chip-toggle');
+    if (toggleBtn) {
+      if (key === 'category') categoryExpanded = !categoryExpanded;
+      else brandExpanded = !brandExpanded;
+      renderTabs(categoryList);
+      renderBrandTabs(brandList);
+      return;
+    }
+    const btn = e.target.closest(selector);
+    if (!btn) return;
+    apply(btn);
+  });
+}
 
-/* 左右箭头（独立于滚动区两侧，不随内容滚动；移动端隐藏走触屏滑动） */
-const tabsPrev = document.querySelector('.tabs-prev');
-const tabsNext = document.querySelector('.tabs-next');
-function step() {
-  return Math.min(240, tabs.scrollWidth - tabs.clientWidth);
-}
-function updateNav() {
-  if (!tabsPrev || !tabsNext) return;
-  tabsPrev.disabled = tabs.scrollLeft <= 0;
-  tabsNext.disabled = tabs.scrollLeft >= tabs.scrollWidth - tabs.clientWidth - 1;
-}
-if (tabsPrev && tabsNext) {
-  tabsPrev.addEventListener('click', () => tabs.scrollBy({ left: -step(), behavior: 'smooth' }));
-  tabsNext.addEventListener('click', () => tabs.scrollBy({ left: step(), behavior: 'smooth' }));
-  tabs.addEventListener('scroll', updateNav, { passive: true });
-  window.addEventListener('resize', updateNav);
-  updateNav();
-}
+bindChipList(tabs, '.chip[data-category]', (btn) => {
+  activeCategory = btn.dataset.category;
+  tabs.querySelectorAll('.chip[data-category]').forEach((b) => {
+    const active = b === btn;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-pressed', String(active));
+  });
+  reload();
+}, 'category');
+
+bindChipList(brandTabs, '.chip[data-brand]', (btn) => {
+  activeBrand = btn.dataset.brand;
+  brandTabs.querySelectorAll('.chip[data-brand]').forEach((b) => {
+    const active = b === btn;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-pressed', String(active));
+  });
+  reload();
+}, 'brand');
 
 let searchTimer = null;
 searchInput.addEventListener('input', () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(reload, 300);
+});
+
+/* 窗口尺寸变化时重新计算单行折叠（防抖） */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    renderTabs(categoryList);
+    renderBrandTabs(brandList);
+  }, 200);
 });
 
 load();
