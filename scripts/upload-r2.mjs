@@ -5,12 +5,18 @@
  * 将 assets/images/ 下所有文件上传到 R2，产品图 key 与产品 JSON 中 image 字段一致（/img/p01.jpg -> key p01.jpg）
  */
 import { execSync } from 'node:child_process';
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const imgDir = join(__dirname, '..', 'assets', 'images');
+
+if (!existsSync(imgDir)) {
+  console.log('assets/images 不存在，跳过图片上传（图片已由 R2/KV 服务）');
+  process.exit(0);
+}
+
 const files = readdirSync(imgDir).filter((f) => !f.startsWith('.') && statSync(join(imgDir, f)).isFile());
 
 if (files.length === 0) {

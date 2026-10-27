@@ -71,4 +71,15 @@ JSON 输入若已用字段名（上表"字段名"列），白名单字段直接�
 - 管理接口统一 `x-admin-token: <ADMIN_PASSWORD>`，密码来自环境变量 `ADMIN_PASSWORD`
 - 本地：`.dev.vars`（已被 .gitignore 忽略）；线上：`npx wrangler secret put ADMIN_PASSWORD`
 - 生产建议 Cloudflare Access 双保险：脚本传 `--access-id` / `--access-secret` 或 `--header "CF-Access-Client-Id:..."` 等
+
+## 图片上传接口（补图用）
+
+| 方法 | 路径 | 说明 | 鉴权 |
+| --- | --- | --- | --- |
+| POST | `/api/upload` | 上传图片到 R2，body `{filename, base64}`，返回 `{url: "/img/<key>"}` | `x-admin-token` |
+
+- 响应字段以实际代码为准：`url` / `path` / `image` / `key` 任一均可作为 image 值（须带 `/` 前缀）
+- 图片建议 JPG、最长边 ≤ 800；PNG 先转 JPG
+- 上传后回写产品：生成仅含 `{name, brand, image}` 的 JSON，调 `POST /api/admin/products/import` 按 name+brand upsert（不破坏其它字段）
+- 标准链路请用 `scripts/upload-product-images.mjs`（自带浏览器 UA 绕过 CF 拦截、dry-run 预检）
 *（内容由AI生成，仅供参考）*
