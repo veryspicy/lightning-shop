@@ -50,7 +50,9 @@ function displayPrice(str) {
 
 function cardHtml(p) {
   const badge = p.badge
-    ? `<span class="card-badge${p.badge === '低GI' ? ' gi' : ''}">${escapeHtml(p.badge)}</span>`
+    ? `<span class="card-badges">${String(p.badge).split(/[,，|]/).map((s) => s.trim()).filter(Boolean)
+        .map((b) => `<span class="card-badge${b.includes('低GI') ? ' gi' : ''}">${escapeHtml(b)}</span>`)
+        .join('')}</span>`
     : '';
 
   const media = p.image
@@ -92,6 +94,7 @@ function cardHtml(p) {
 function render() {
   grid.innerHTML = products.map(cardHtml).join('');
   emptyState.hidden = products.length > 0;
+  updateNav();
   updateLoadMore();
 }
 
@@ -276,8 +279,28 @@ tabs.addEventListener('click', (e) => {
   if (!btn) return;
   activeCategory = btn.dataset.category;
   tabs.querySelectorAll('.cat-tab').forEach((b) => b.classList.toggle('active', b === btn));
+  btn.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
   reload();
 });
+
+/* 左右箭头（独立于滚动区两侧，不随内容滚动；移动端隐藏走触屏滑动） */
+const tabsPrev = document.querySelector('.tabs-prev');
+const tabsNext = document.querySelector('.tabs-next');
+function step() {
+  return Math.min(240, tabs.scrollWidth - tabs.clientWidth);
+}
+function updateNav() {
+  if (!tabsPrev || !tabsNext) return;
+  tabsPrev.disabled = tabs.scrollLeft <= 0;
+  tabsNext.disabled = tabs.scrollLeft >= tabs.scrollWidth - tabs.clientWidth - 1;
+}
+if (tabsPrev && tabsNext) {
+  tabsPrev.addEventListener('click', () => tabs.scrollBy({ left: -step(), behavior: 'smooth' }));
+  tabsNext.addEventListener('click', () => tabs.scrollBy({ left: step(), behavior: 'smooth' }));
+  tabs.addEventListener('scroll', updateNav, { passive: true });
+  window.addEventListener('resize', updateNav);
+  updateNav();
+}
 
 let searchTimer = null;
 searchInput.addEventListener('input', () => {
@@ -391,13 +414,14 @@ async function buildSharePoster(p) {
   ctx.fillStyle = 'rgba(255,255,255,.85)';
   ctx.fillText('Lightning Shop · 绿色助农 · 源头直供', padX, 68);
   if (p.badge) {
+    const badgeText = String(p.badge).split(/[,，|]/)[0] || String(p.badge);
     ctx.font = `700 14px ${FONT_BODY}`;
-    const bw = ctx.measureText(p.badge).width + 28;
+    const bw = ctx.measureText(badgeText).width + 28;
     ctx.fillStyle = '#ffffff';
     roundRectPath(ctx, W - padX - bw, 30, bw, 36, 999);
     ctx.fill();
     ctx.fillStyle = '#047857';
-    ctx.fillText(p.badge, W - padX - bw + 14, 48);
+    ctx.fillText(badgeText, W - padX - bw + 14, 48);
   }
   y += headerH;
 
@@ -574,7 +598,47 @@ async function openShareModal(p) {
   };
 }
 
+/* ================= 大图预览 ================= */
+let lightboxEl = null;
+function openLightbox(src, alt) {
+  if (!lightboxEl) {
+    lightboxEl = document.createElement('div');
+    lightboxEl.className = 'lightbox';
+    lightboxEl.innerHTML =
+      '<button class="lightbox-close" type="button" aria-label="关闭">×</button>' +
+      '<img class="lightbox-img" alt="" />' +
+      '<p class="lightbox-name"></p>';
+    lightboxEl.addEventListener('click', (e) => {
+      if (e.target === lightboxEl || e.target.closest('.lightbox-close')) closeLightbox();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeLightbox();
+    });
+    document.body.appendChild(lightboxEl);
+  }
+  const img = lightboxEl.querySelector('.lightbox-img');
+  img.src = src;
+  img.alt = alt || '';
+  lightboxEl.querySelector('.lightbox-name').textContent = alt || '';
+  lightboxEl.classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeLightbox() {
+  if (!lightboxEl) return;
+  lightboxEl.classList.remove('open');
+  document.body.style.overflow = '';
+  lightboxEl.querySelector('.lightbox-img').src = '';
+}
+
 grid.addEventListener('click', async (e) => {
+  // 点击产品图片 -> 预览大图
+  const cardImg = e.target.closest('.card-media img');
+  if (cardImg) {
+    const p = products.find((it) => it.image === cardImg.getAttribute('src'));
+    openLightbox(cardImg.getAttribute('src'), p ? p.name : '');
+    return;
+  }
   const btn = e.target.closest('.share-btn');
   if (!btn || btn.disabled) return;
   const p = products.find((it) => it.id === btn.dataset.pid);

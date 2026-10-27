@@ -8,11 +8,21 @@
   <style>
     body { background: #f0f5f1; }
     .admin-wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 60px; }
-    .admin-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+    .admin-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
     .admin-header h1 { font-size: 1.4rem; margin: 0; }
     .admin-header .sub { color: #667; font-size: .85rem; }
     .btn { border-radius: 8px; }
     .btn-sm { padding: 6px 12px; font-size: .8rem; }
+
+    /* ---- Tab 导航 ---- */
+    .tabs { display: flex; gap: 4px; overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 16px; background: #fff; border: 1px solid #e5ede7; border-radius: 12px; padding: 6px; box-shadow: 0 1px 3px rgba(0,0,0,.04); scrollbar-width: none; }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab-btn { flex: 0 0 auto; padding: 9px 18px; border: none; background: transparent; color: #556; font-size: .9rem; font-weight: 600; border-radius: 8px; cursor: pointer; white-space: nowrap; transition: background .15s, color .15s; }
+    .tab-btn:hover { background: #f0f5f1; color: #234; }
+    .tab-btn.active { background: #059669; color: #fff; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; animation: tab-in .18s ease; }
+    @keyframes tab-in { from { opacity: .4; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
     .panel { background: #fff; border: 1px solid #e5ede7; border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
     .login-panel { max-width: 360px; margin: 80px auto 0; text-align: center; }
@@ -20,10 +30,10 @@
     .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
     .field { display: flex; flex-direction: column; gap: 4px; }
     .field label { font-size: .78rem; color: #555; font-weight: 600; }
-    .field input, .field select, .field textarea { padding: 8px 10px; border: 1px solid #d7e2da; border-radius: 8px; font-size: .9rem; }
+    .field input, .field select, .field textarea { padding: 8px 10px; border: 1px solid #d7e2da; border-radius: 8px; font-size: .9rem; width: 100%; box-sizing: border-box; }
     .field textarea { min-height: 52px; resize: vertical; }
     .field.wide { grid-column: 1 / -1; }
-    .row-actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+    .row-actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; flex-wrap: wrap; }
 
     table.admin-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
     .admin-table th, .admin-table td { padding: 8px 6px; border-bottom: 1px solid #eef3ef; text-align: left; vertical-align: middle; }
@@ -77,9 +87,35 @@
       pointer-events: none;
     }
     .qr-preview-empty { color: #99a; font-size: .72rem; line-height: 132px; }
+    .badge-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+    .badge-chip { display: inline-block; background: #eef4ef; color: #066a4e; border: 1px solid #cfe0d5; font-size: .72rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+    .badge-chip.gi { background: #059669; color: #fff; border-color: #059669; }
     .qr-block-form { display: flex; flex-direction: column; gap: 10px; }
-    .qr-block-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 10px; padding: 0 14px 14px; }
+    .qr-block-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 10px; padding: 0 14px 14px; flex-wrap: wrap; }
+
+    /* ---- 响应式：中等屏双卡降单栏 ---- */
     @media (max-width: 1100px) { .qr-config-grid { grid-template-columns: 1fr; } .qr-block-body { grid-template-columns: 1fr; } }
+
+    /* ---- 响应式：小屏 / 手机 ---- */
+    @media (max-width: 768px) {
+      .admin-wrap { padding: 16px 10px 48px; }
+      .admin-header h1 { font-size: 1.15rem; }
+      .admin-header .sub { font-size: .78rem; }
+      .panel { padding: 12px; margin-bottom: 12px; }
+      .form-grid { grid-template-columns: 1fr; }
+      .field.wide { grid-column: auto; }
+      .row-actions .btn { flex: 1 1 auto; }
+      .bar input[type=search] { min-width: 0; width: 100%; box-sizing: border-box; }
+      .tab-btn { padding: 8px 13px; font-size: .85rem; }
+      .qr-block-body { gap: 12px; padding: 12px; }
+      .qr-block-actions { padding: 0 12px 12px; }
+      .admin-table th, .admin-table td { padding: 7px 5px; font-size: .8rem; }
+      .admin-table .ops button { margin-right: 2px; padding: 4px 8px; font-size: .72rem; }
+    }
+    @media (max-width: 420px) {
+      .qr-preview-img, .qr-preview-box { width: 116px; height: 116px; }
+      .qr-preview-empty { line-height: 116px; }
+    }
   </style>
 </head>
 <body>
@@ -101,178 +137,199 @@
 
     <!-- 主界面 -->
     <section id="admin-main" class="hidden">
-      <!-- Hero 站点配置 -->
-      <div class="panel">
-        <h2>首页 Hero 配置</h2>
-        <p class="muted" style="margin:4px 0 12px">用于首页首屏大图区：主标题、小字、背景图（可选）。留空则使用默认文案。</p>
-        <div class="form-grid">
-          <div class="field"><label>主标题</label><input id="f-hero-title" placeholder="如 农牧特产批发，源头厂家直供" /></div>
-          <div class="field"><label>小字</label><input id="f-hero-eyebrow" placeholder="如 绿色·助农·公益（完整展示，不自动拼接 SKU 数）" /></div>
-          <div class="field"><label>背景图</label><input type="file" id="f-hero-img-file" accept="image/*" /></div>
-          <div class="field"><label>背景图地址（上传后自动填写，可留空）</label><input id="f-hero-bg" placeholder="/img/hero.jpg" /></div>
-          <div class="field"><label>预览</label><img class="img-preview" id="hero-img-preview" alt="Hero预览" hidden /></div>
-        </div>
-        <div class="row-actions">
-          <button type="button" class="btn btn-outline btn-sm" id="hero-reset">恢复默认</button>
-          <button type="button" class="btn btn-primary btn-sm" id="hero-save">保存 Hero 配置</button>
-        </div>
-      </div>
+      <!-- Tab 导航 -->
+      <nav class="tabs" id="admin-tabs" role="tablist" aria-label="后台配置分区">
+        <button type="button" class="tab-btn active" data-tab="hero" role="tab" aria-selected="true">首页配置</button>
+        <button type="button" class="tab-btn" data-tab="qr" role="tab" aria-selected="false">二维码配置</button>
+        <button type="button" class="tab-btn" data-tab="price" role="tab" aria-selected="false">价格策略</button>
+        <button type="button" class="tab-btn" data-tab="products" role="tab" aria-selected="false">产品管理</button>
+        <button type="button" class="tab-btn" data-tab="categories" role="tab" aria-selected="false">分类管理</button>
+      </nav>
 
-      <!-- 二维码与链接配置 -->
-      <div class="panel">
-        <h2>二维码与链接配置</h2>
-        <p class="muted" style="margin:4px 0 12px">左卡（报价单）与右卡（商城）各自独立配置与预览，标题与链接均可后台修改。</p>
-        <div class="qr-config-grid">
-          <div class="qr-card-block">
-            <div class="qr-block-head">左卡 · 获取完整报价单</div>
-            <div class="qr-block-body">
-              <div class="qr-block-preview">
-                <b id="preview-quote-title">获取完整报价单</b>
-                <img class="qr-preview-img" id="qr-img-preview" alt="报价单二维码预览" hidden />
-              </div>
-              <div class="qr-block-form">
-                <div class="field"><label>左卡标题</label><input id="f-qr-quote-title" maxlength="20" placeholder="如 获取完整报价单" /></div>
-                <div class="field"><label>报价单二维码图片</label><input type="file" id="f-qr-img-file" accept="image/*" /></div>
-                <div class="field"><label>图片地址（上传后自动填写，可留空）</label><input id="f-qr-quote-image" placeholder="/img/quote-qr.jpg" /></div>
-              </div>
-            </div>
-          </div>
-          <div class="qr-card-block">
-            <div class="qr-block-head">右卡 · 扫码直达商城</div>
-            <div class="qr-block-body">
-              <div class="qr-block-preview">
-                <b id="preview-shop-title">扫码直达商城</b>
-                <div id="qr-url-preview" class="qr-preview-box"></div>
-              </div>
-              <div class="qr-block-form">
-                <div class="field"><label>右卡标题</label><input id="f-qr-shop-title" maxlength="20" placeholder="如 扫码直达商城" /></div>
-                <div class="field"><label>商城链接（二维码内容）</label><input id="f-qr-url" placeholder="https://lightning-shop.gora.dpdns.org" /></div>
-              </div>
-            </div>
-          </div>
-          <div class="qr-block-actions">
-            <button type="button" class="btn btn-outline btn-sm" id="qr-reset">恢复默认</button>
-            <button type="button" class="btn btn-primary btn-sm" id="qr-save">保存二维码配置</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- 价格策略配置 -->
-      <div class="panel">
-        <h2>价格策略</h2>
-        <p class="muted" style="margin:4px 0 12px">前台展示价 = 出厂价 ×（1 + 利润率%）。只影响前台展示，后台数据仍保留出厂价。价格支持区间、单位，自动按数值整体加成。</p>
-        <div class="form-grid">
-          <div class="field">
-            <label>启用价格策略</label>
-            <label class="check-label"><input type="checkbox" id="f-price-enabled" /> 前台价格按利润率加成</label>
-          </div>
-          <div class="field"><label>利润率（%）</label><input id="f-price-margin" type="number" min="0" max="500" step="0.1" placeholder="如 10" /></div>
-        </div>
-        <div class="row-actions">
-          <button type="button" class="btn btn-outline btn-sm" id="price-reset">恢复默认（10%）</button>
-          <button type="button" class="btn btn-primary btn-sm" id="price-save">保存价格策略</button>
-        </div>
-      </div>
-
-      <!-- 新增 / 编辑表单 -->
-      <div class="panel">
-        <h2 id="form-title">新增产品</h2>
-        <form id="product-form">
-          <input type="hidden" id="f-id" />
+      <!-- Tab: 首页配置 -->
+      <div id="tab-hero" class="tab-panel active">
+        <div class="panel">
+          <h2>首页 Hero 配置</h2>
+          <p class="muted" style="margin:4px 0 12px">用于首页首屏大图区：主标题、小字、背景图（可选）。留空则使用默认文案。</p>
           <div class="form-grid">
-            <div class="field"><label>品名 *</label><input id="f-name" required placeholder="如 低GI青稞荞麦速食面" /></div>
-            <div class="field"><label>品牌</label><input id="f-brand" placeholder="如 蒙降三高" /></div>
-            <div class="field"><label>卡片标签</label><input id="f-badge" placeholder="如 低GI / 火锅底料，留空不显示" /></div>
-            <div class="field"><label>分类</label><input id="f-category" list="category-list" placeholder="如 低GI杂粮" /></div>
-            <datalist id="category-list"></datalist>
-            <div class="field"><label>规格</label><input id="f-spec" placeholder="如 60g × 30袋/箱" /></div>
-            <div class="field"><label>批发价</label><input id="f-wholesale" placeholder="如 50元/箱" /></div>
-            <div class="field"><label>零售价</label><input id="f-retail" placeholder="如 99元/箱" /></div>
-            <div class="field"><label>价格备注</label><input id="f-price-note" placeholder="如 整箱起批" /></div>
-            <div class="field"><label>起订量</label><input id="f-moq" placeholder="如 1箱" /></div>
-            <div class="field"><label>储存方式</label><input id="f-storage" placeholder="如 常温、防潮、避光" /></div>
-            <div class="field"><label>保质期</label><input id="f-shelf-life" placeholder="如 18个月" /></div>
-            <div class="field"><label>背书 / 认证</label><input id="f-cert" placeholder="如 低GI认证" /></div>
-            <div class="field"><label>状态</label><select id="f-status"><option value="上架">上架</option><option value="下架">下架</option></select></div>
-            <div class="field wide"><label>核心卖点</label><textarea id="f-highlights" placeholder="如 低升糖 · 高蛋白 · 高膳食纤维"></textarea></div>
-            <div class="field"><label>产品图片</label><input type="file" id="f-img-file" accept="image/*" /></div>
-            <div class="field"><label>图片地址（上传后自动填写，也可手填）</label><input id="f-img" placeholder="/img/p28.jpg" /></div>
-            <div class="field"><label>预览</label><img class="img-preview" id="img-preview" alt="预览" hidden /></div>
+            <div class="field"><label>主标题</label><input id="f-hero-title" placeholder="如 农牧特产批发，源头厂家直供" /></div>
+            <div class="field"><label>小字</label><input id="f-hero-eyebrow" placeholder="如 绿色·助农·公益（完整展示，不自动拼接 SKU 数）" /></div>
+            <div class="field"><label>背景图</label><input type="file" id="f-hero-img-file" accept="image/*" /></div>
+            <div class="field"><label>背景图地址（上传后自动填写，可留空）</label><input id="f-hero-bg" placeholder="/img/hero.jpg" /></div>
+            <div class="field"><label>预览</label><img class="img-preview" id="hero-img-preview" alt="Hero预览" hidden /></div>
           </div>
           <div class="row-actions">
-            <button type="button" class="btn btn-outline btn-sm" id="form-reset">清空</button>
-            <button type="submit" class="btn btn-primary btn-sm" id="form-submit">保存产品</button>
+            <button type="button" class="btn btn-outline btn-sm" id="hero-reset">恢复默认</button>
+            <button type="button" class="btn btn-primary btn-sm" id="hero-save">保存 Hero 配置</button>
           </div>
-        </form>
-      </div>
-
-      <!-- 分类管理 -->
-      <div class="panel">
-        <h2>分类管理</h2>
-        <p class="muted" style="margin:4px 0 12px">配置可选分类，用于产品录入与批量修改。新增后即使暂无产品也会出现在下拉选项中；产品中出现的其他分类会自动追加显示。</p>
-        <div class="bar" style="justify-content:flex-start">
-          <div class="field" style="min-width:220px"><label>新增分类</label>
-            <input id="cat-new-name" placeholder="输入新分类名称，如 有机杂粮" />
-          </div>
-          <div class="field"><label style="visibility:hidden">.</label>
-            <button type="button" class="btn btn-primary btn-sm" id="cat-add-btn">新增分类</button>
-          </div>
-        </div>
-        <div class="cat-chips" id="cat-chips"><span class="muted">加载中…</span></div>
-      </div>
-
-      <!-- 批量修改 -->
-      <div class="panel">
-        <h2>批量修改</h2>
-        <p class="muted" style="margin:4px 0 12px">先按分类或勾选选择产品，再统一修改字段并一次生效。仅修改选中的字段，其他字段保持不变。</p>
-        <div class="bar" style="justify-content:flex-start">
-          <div class="field"><label>快捷选择分类</label>
-            <select id="batch-cat-select" style="min-width:180px"><option value="">— 选择分类 —</option></select>
-            <button type="button" class="btn btn-outline btn-sm" id="batch-cat-btn" style="margin-top:6px">勾选该分类全部产品</button>
-          </div>
-          <div class="field" style="min-width:140px"><label>当前已选</label><strong id="batch-count" style="font-size:1rem; line-height:34px">0</strong><span class="muted"> 个产品</span></div>
-          <div class="field"><label>修改字段</label>
-            <select id="batch-field">
-              <option value="badge">卡片标签</option>
-              <option value="category">分类</option>
-              <option value="spec">规格</option>
-              <option value="wholesale_price">批发价</option>
-              <option value="retail_price">零售价</option>
-              <option value="price_note">价格备注</option>
-              <option value="moq">起订量</option>
-              <option value="storage">储存方式</option>
-              <option value="shelf_life">保质期</option>
-              <option value="cert">背书 / 认证</option>
-              <option value="highlights">核心卖点</option>
-              <option value="status">状态（上架/下架）</option>
-            </select>
-          </div>
-          <div class="field" style="min-width:200px"><label>新值</label>
-            <input id="batch-value" placeholder="留空表示清空该字段" />
-            <select id="batch-status-value" class="hidden"><option value="上架">上架</option><option value="下架">下架</option></select>
-          </div>
-        </div>
-        <div class="row-actions">
-          <button type="button" class="btn btn-outline btn-sm" id="batch-clear">清空选择</button>
-          <button type="button" class="btn btn-primary btn-sm" id="batch-apply">应用到选中产品</button>
         </div>
       </div>
 
-      <!-- 产品列表 -->
-      <div class="panel">
-        <div class="bar">
-          <h2 style="margin:0">产品列表 <span class="muted" id="list-count"></span></h2>
-          <input type="search" id="list-search" placeholder="搜索品名 / 品牌" />
-        </div>
-        <div style="overflow-x:auto; margin-top:10px">
-          <table class="admin-table">
-            <thead>
-              <tr><th style="width:30px"><input type="checkbox" id="check-all" title="全选当前列表" /></th><th></th><th>ID</th><th>品名</th><th>标签</th><th>分类</th><th>规格</th><th>批发价</th><th>状态</th><th>操作</th></tr>
-            </thead>
-            <tbody id="list-body"></tbody>
-          </table>
+      <!-- Tab: 二维码配置 -->
+      <div id="tab-qr" class="tab-panel">
+        <div class="panel">
+          <h2>二维码与链接配置</h2>
+          <p class="muted" style="margin:4px 0 12px">左卡（报价单）与右卡（商城）各自独立配置，链接与图片均可后台修改。</p>
+          <div class="qr-config-grid">
+            <div class="qr-card-block">
+              <div class="qr-block-head">左卡 · 获取完整报价单</div>
+              <div class="qr-block-body">
+                <div class="qr-block-preview">
+                  <b id="preview-quote-title">获取完整报价单</b>
+                  <img class="qr-preview-img" id="qr-img-preview" alt="报价单二维码预览" hidden />
+                </div>
+                <div class="qr-block-form">
+                  <div class="field"><label>左卡标题</label><input id="f-qr-quote-title" maxlength="20" placeholder="如 获取完整报价单" /></div>
+                  <div class="field"><label>报价单二维码图片</label><input type="file" id="f-qr-img-file" accept="image/*" /></div>
+                  <div class="field"><label>图片地址（上传后自动填写，可留空）</label><input id="f-qr-quote-image" placeholder="/img/quote-qr.jpg" /></div>
+                </div>
+              </div>
+            </div>
+            <div class="qr-card-block">
+              <div class="qr-block-head">右卡 · 扫码直达商城</div>
+              <div class="qr-block-body">
+                <div class="qr-block-preview">
+                  <b id="preview-shop-title">扫码直达商城</b>
+                  <div id="qr-url-preview" class="qr-preview-box"></div>
+                </div>
+                <div class="qr-block-form">
+                  <div class="field"><label>右卡标题</label><input id="f-qr-shop-title" maxlength="20" placeholder="如 扫码直达商城" /></div>
+                  <div class="field"><label>商城链接（二维码内容）</label><input id="f-qr-url" placeholder="https://lightning-shop.gora.dpdns.org" /></div>
+                </div>
+              </div>
+            </div>
+            <div class="qr-block-actions">
+              <button type="button" class="btn btn-outline btn-sm" id="qr-reset">恢复默认</button>
+              <button type="button" class="btn btn-primary btn-sm" id="qr-save">保存二维码配置</button>
+            </div>
+          </div>
         </div>
       </div>
+
+      <!-- Tab: 价格策略 -->
+      <div id="tab-price" class="tab-panel">
+        <div class="panel">
+          <h2>价格策略</h2>
+          <p class="muted" style="margin:4px 0 12px">前台展示价 = 出厂价 ×（1 + 利润率%）。只影响前台展示，后台数据仍保留出厂价。价格支持区间、单位，自动按数值整体加成。</p>
+          <div class="form-grid">
+            <div class="field">
+              <label>启用价格策略</label>
+              <label class="check-label"><input type="checkbox" id="f-price-enabled" /> 前台价格按利润率加成</label>
+            </div>
+            <div class="field"><label>利润率（%）</label><input id="f-price-margin" type="number" min="0" max="500" step="0.1" placeholder="如 10" /></div>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="btn btn-outline btn-sm" id="price-reset">恢复默认（10%）</button>
+            <button type="button" class="btn btn-primary btn-sm" id="price-save">保存价格策略</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab: 产品管理（新增 / 编辑 + 产品列表） -->
+      <div id="tab-products" class="tab-panel">
+        <div class="panel">
+          <h2 id="form-title">新增产品</h2>
+          <form id="product-form">
+            <input type="hidden" id="f-id" />
+            <div class="form-grid">
+              <div class="field"><label>品名 *</label><input id="f-name" required placeholder="如 低GI青稞荞麦速食面" /></div>
+              <div class="field"><label>品牌</label><input id="f-brand" placeholder="如 蒙降三高" /></div>
+              <div class="field"><label>卡片标签（支持多个）</label><input id="f-badge" placeholder="多个用逗号分隔，如 低GI,火锅底料；留空不显示" /></div>
+              <div class="field"><label>分类</label><input id="f-category" list="category-list" placeholder="如 低GI杂粮" /></div>
+              <datalist id="category-list"></datalist>
+              <div class="field"><label>规格</label><input id="f-spec" placeholder="如 60g × 30袋/箱" /></div>
+              <div class="field"><label>批发价</label><input id="f-wholesale" placeholder="如 50元/箱" /></div>
+              <div class="field"><label>零售价</label><input id="f-retail" placeholder="如 99元/箱" /></div>
+              <div class="field"><label>价格备注</label><input id="f-price-note" placeholder="如 整箱起批" /></div>
+              <div class="field"><label>起订量</label><input id="f-moq" placeholder="如 1箱" /></div>
+              <div class="field"><label>储存方式</label><input id="f-storage" placeholder="如 常温、防潮、避光" /></div>
+              <div class="field"><label>保质期</label><input id="f-shelf-life" placeholder="如 18个月" /></div>
+              <div class="field"><label>背书 / 认证</label><input id="f-cert" placeholder="如 低GI认证" /></div>
+              <div class="field"><label>状态</label><select id="f-status"><option value="上架">上架</option><option value="下架">下架</option></select></div>
+              <div class="field wide"><label>核心卖点</label><textarea id="f-highlights" placeholder="如 低升糖 · 高蛋白 · 高膳食纤维"></textarea></div>
+              <div class="field"><label>产品图片</label><input type="file" id="f-img-file" accept="image/*" />
+                <label class="check-label" style="font-weight:400; margin-top:6px"><input type="checkbox" id="f-img-crop" checked /> 裁剪为正方形（推荐，上传自动缩放压缩）</label>
+              </div>
+              <div class="field"><label>图片地址（上传后自动填写，也可手填）</label><input id="f-img" placeholder="/img/p28.jpg" /></div>
+              <div class="field"><label>预览</label><img class="img-preview" id="img-preview" alt="预览" hidden /></div>
+            </div>
+            <div class="row-actions">
+              <button type="button" class="btn btn-outline btn-sm" id="form-reset">清空</button>
+              <button type="submit" class="btn btn-primary btn-sm" id="form-submit">保存产品</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="bar">
+            <h2 style="margin:0">产品列表 <span class="muted" id="list-count"></span></h2>
+            <input type="search" id="list-search" placeholder="搜索品名 / 品牌" autocomplete="off" />
+          </div>
+          <div style="overflow-x:auto; margin-top:10px">
+            <table class="admin-table">
+              <thead>
+                <tr><th style="width:30px"><input type="checkbox" id="check-all" title="全选当前列表" /></th><th></th><th>ID</th><th>品名</th><th>标签</th><th>分类</th><th>规格</th><th>批发价</th><th>状态</th><th>操作</th></tr>
+              </thead>
+              <tbody id="list-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 批量修改（并入产品管理 Tab） -->
+        <div class="panel">
+          <h2 style="margin:0 0 4px">批量修改</h2>
+          <p class="muted" style="margin:4px 0 12px">先按分类或勾选选择产品，再统一修改字段并一次生效。仅修改选中的字段，其他字段保持不变。</p>
+          <div class="bar" style="justify-content:flex-start">
+            <div class="field"><label>快捷选择分类</label>
+              <select id="batch-cat-select" style="min-width:180px"><option value="">— 选择分类 —</option></select>
+              <button type="button" class="btn btn-outline btn-sm" id="batch-cat-btn" style="margin-top:6px">勾选该分类全部产品</button>
+            </div>
+            <div class="field" style="min-width:140px"><label>当前已选</label><strong id="batch-count" style="font-size:1rem; line-height:34px">0</strong><span class="muted"> 个产品</span></div>
+            <div class="field"><label>修改字段</label>
+              <select id="batch-field">
+                <option value="badge">卡片标签（多个用逗号分隔）</option>
+                <option value="category">分类</option>
+                <option value="spec">规格</option>
+                <option value="wholesale_price">批发价</option>
+                <option value="retail_price">零售价</option>
+                <option value="price_note">价格备注</option>
+                <option value="moq">起订量</option>
+                <option value="storage">储存方式</option>
+                <option value="shelf_life">保质期</option>
+                <option value="cert">背书 / 认证</option>
+                <option value="highlights">核心卖点</option>
+                <option value="status">状态（上架/下架）</option>
+              </select>
+            </div>
+            <div class="field" style="min-width:200px"><label>新值</label>
+              <input id="batch-value" placeholder="留空表示清空该字段" />
+              <select id="batch-status-value" class="hidden"><option value="上架">上架</option><option value="下架">下架</option></select>
+            </div>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="btn btn-outline btn-sm" id="batch-clear">清空选择</button>
+            <button type="button" class="btn btn-primary btn-sm" id="batch-apply">应用到选中产品</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab: 分类管理 -->
+      <div id="tab-categories" class="tab-panel">
+        <div class="panel">
+          <h2>分类管理</h2>
+          <p class="muted" style="margin:4px 0 12px">配置可选分类，用于产品录入与批量修改。新增后即使暂无产品也会出现在下拉选项中；产品中出现的其他分类会自动追加显示。</p>
+          <div class="bar" style="justify-content:flex-start">
+            <div class="field" style="min-width:220px"><label>新增分类</label>
+              <input id="cat-new-name" placeholder="输入新分类名称，如 有机杂粮" />
+            </div>
+            <div class="field"><label style="visibility:hidden">.</label>
+              <button type="button" class="btn btn-primary btn-sm" id="cat-add-btn">新增分类</button>
+            </div>
+          </div>
+          <div class="cat-chips" id="cat-chips"><span class="muted">加载中…</span></div>
+        </div>
+      </div>
+
     </section>
   </div>
 

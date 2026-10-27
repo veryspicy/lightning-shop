@@ -188,6 +188,13 @@ function esc(s) {
   }[c]));
 }
 
+/* 多标签渲染：badge 字符串按逗号/顿号/竖线拆分，逐个输出小标签 */
+function badgeChips(raw) {
+  const list = String(raw || '').split(/[,，|]/).map((s) => s.trim()).filter(Boolean);
+  if (list.length === 0) return '';
+  return `<span class="badge-chips">${list.map((b) => `<span class="badge-chip${b.includes('低GI') ? ' gi' : ''}">${esc(b)}</span>`).join('')}</span>`;
+}
+
 function renderList() {
   const q = ($('list-search').value || '').trim().toLowerCase();
   const list = q
@@ -201,7 +208,7 @@ function renderList() {
         <td>${p.image ? `<img src="${p.image}" alt="" />` : '<div class="ph">无图</div>'}</td>
         <td>${esc(p.id)}</td>
         <td>${esc(p.name)}</td>
-        <td>${esc(p.badge || '')}</td>
+        <td>${badgeChips(p.badge)}</td>
         <td>${esc(p.category)}</td>
         <td>${esc(p.spec)}</td>
         <td>${esc(p.wholesale_price)}</td>
@@ -273,24 +280,44 @@ function collectForm() {
   };
 }
 
-function fileToJpgBase64(file) {
+/* 图片压缩/缩放/裁切：统一转 JPEG。
+ * opts.maxSize  最长边（或正方形边长）上限，默认 1200
+ * opts.square   是否中心裁切为正方形（产品卡片 1:1），默认 false
+ * opts.quality  JPEG 质量 0-1，默认 0.85 */
+function fileToJpgBase64(file, opts = {}) {
+  const MAX = opts.maxSize || 1200;
+  const QUALITY = typeof opts.quality === 'number' ? opts.quality : 0.85;
+  const SQUARE = !!opts.square;
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
     img.onload = () => {
       URL.revokeObjectURL(url);
-      const MAX = 1200;
-      let { width, height } = img;
-      if (width > MAX) { height = Math.round((height * MAX) / width); width = MAX; }
-      if (height > MAX) { width = Math.round((width * MAX) / height); height = MAX; }
       const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
       const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, width, height);
-      ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/jpeg', 0.85));
+      if (SQUARE) {
+        // 中心裁切正方形：取短边，居中裁剪，再缩放到 MAX×MAX
+        const side = Math.min(img.width, img.height);
+        const sx = (img.width - side) / 2;
+        const sy = (img.height - side) / 2;
+        const size = Math.min(side, MAX);
+        canvas.width = size;
+        canvas.height = size;
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, size, size);
+        ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+      } else {
+        // 等比缩放：最长边不超过 MAX
+        let { width, height } = img;
+        if (width > MAX) { height = Math.round((height * MAX) / width); width = MAX; }
+        if (height > MAX) { width = Math.round((width * MAX) / height); height = MAX; }
+        canvas.width = width;
+        canvas.height = height;
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+      }
+      resolve(canvas.toDataURL('image/jpeg', QUALITY));
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片读取失败')); };
     img.src = url;
@@ -301,7 +328,7 @@ async function handleUpload() {
   const file = $('f-img-file').files[0];
   if (!file) return toast('请选择图片文件', true);
   if (!/\.(jpe?g|png|webp)$/i.test(file.name)) return toast('仅支持 JPG / PNG / WebP', true);
-  const dataUrl = await fileToJpgBase64(file);
+  const dataUrl = await fileToJpgBase64(file, { square: $('f-img-crop')?.checked, maxSize: 1000, quality: 0.82 });
   const filename = file.name.replace(/\.[^.]+$/, '') + '.jpg';
   const r = await api('/api/upload', {
     method: 'POST',
@@ -346,7 +373,7 @@ async function handleHeroUpload() {
   const file = $('f-hero-img-file').files[0];
   if (!file) return toast('请选择背景图', true);
   if (!/\.(jpe?g|png|webp)$/i.test(file.name)) return toast('仅支持 JPG / PNG / WebP', true);
-  const dataUrl = await fileToJpgBase64(file);
+  const dataUrl = await fileToJpgBase64(file, { maxSize: 1600, quality: 0.8 });
   const filename = `hero-${Date.now()}.jpg`;
   const r = await api('/api/upload', {
     method: 'POST',
@@ -452,7 +479,7 @@ async function handleQrUpload() {
   const file = $('f-qr-img-file').files[0];
   if (!file) return toast('请选择报价单二维码图片', true);
   if (!/\.(jpe?g|png|webp)$/i.test(file.name)) return toast('仅支持 JPG / PNG / WebP', true);
-  const dataUrl = await fileToJpgBase64(file);
+  const dataUrl = await fileToJpgBase64(file, { maxSize: 800, quality: 0.85 });
   const filename = `quote-qr-${Date.now()}.jpg`;
   const r = await api('/api/upload', {
     method: 'POST',
@@ -665,6 +692,20 @@ $('batch-apply').addEventListener('click', async () => {
   } catch (err) {
     toast(err.message, true);
   }
+});
+
+/* ---- Tab 切换 ---- */
+$('admin-tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab-btn');
+  if (!btn) return;
+  document.querySelectorAll('.tab-btn').forEach((b) => {
+    const active = b === btn;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  document.querySelectorAll('.tab-panel').forEach((p) => {
+    p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab);
+  });
 });
 
 /* 初始化：有 token 直接尝试进入 */
