@@ -4,6 +4,7 @@ const TOKEN_KEY = 'ls_admin_token';
 const ROLE_LABELS = { admin: '管理员', ops: '运营', supplier: '供应商' };
 let ROLE_OPTIONS = []; // 角色下拉缓存（来自 /api/admin/roles）
 let PERM_META = {};    // 权限点元数据缓存（key -> {label, desc}）
+let USERS_CACHE = [];  // 用户全量缓存（供搜索过滤）
 
 function hasPerm(u, perm) {
   const perms = (u && (u.permissions || [])) || [];
@@ -676,24 +677,33 @@ async function onTableClick(e) {
 async function loadUsers() {
   try {
     const data = await api('/api/admin/users', { headers: authHeaders() });
-    renderUsers(Array.isArray(data) ? data : (data.users || []));
+    USERS_CACHE = Array.isArray(data) ? data : (data.users || []);
+    renderUsers(USERS_CACHE);
   } catch (err) {
     toast(err.message, true);
   }
 }
 
+function userRoleBadge(roleKey) {
+  const cls = { admin: 'badge-dark', ops: 'badge-blue', supplier: 'badge-amber' }[roleKey] || 'badge-slate';
+  const label = ROLE_OPTIONS.find((r) => r.key === roleKey)?.name || ROLE_LABELS[roleKey] || roleKey;
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
+}
+
 function renderUsers(users) {
   const body = $('users-body');
-  if (!users.length) {
-    body.innerHTML = '<tr><td colspan="7" class="muted">暂无账号</td></tr>';
+  const q = ($('u-search')?.value || '').trim().toLowerCase();
+  const list = q ? users.filter((u) => (u.username || '').toLowerCase().includes(q) || (u.name || '').toLowerCase().includes(q)) : users;
+  if (!list.length) {
+    body.innerHTML = `<tr class="empty-row"><td colspan="7" class="empty-cell">${q ? '未找到匹配的账号' : '暂无账号，点击右上角「新增账号」创建'}</td></tr>`;
     return;
   }
-  body.innerHTML = users
+  body.innerHTML = list
     .map((u) => {
       const brand = u.role === 'supplier' ? esc(u.supplierBrand || '-') : '-';
       const status = u.status === 'disabled'
-        ? '<span style="color:#c0392b">已停用</span>'
-        : '<span style="color:#059669">正常</span>';
+        ? '<span class="badge badge-red">已停用</span>'
+        : '<span class="badge badge-green">正常</span>';
       const created = (u.createdAt || '').slice(0, 10);
       const isMe = u.id === currentUser?.id;
       const actions = [
@@ -705,13 +715,13 @@ function renderUsers(users) {
         isMe ? '' : `<button type="button" class="btn btn-outline btn-xs danger" data-user-id="${esc(u.id)}" data-user-act="delete">删除</button>`,
       ].join('');
       return `<tr>
-        <td>${esc(u.username)}${isMe ? ' <span style="color:#059669">(我)</span>' : ''}</td>
+        <td><strong>${esc(u.username)}</strong>${isMe ? ' <span class="badge badge-green" style="font-size:.66rem;padding:1px 8px">我</span>' : ''}</td>
         <td>${esc(u.name || '-')}</td>
-        <td>${u.roleName || ROLE_LABELS[u.role] || esc(u.role)}</td>
+        <td>${userRoleBadge(u.role)}</td>
         <td>${brand}</td>
         <td>${status}</td>
-        <td>${created}</td>
-        <td>${actions}</td>
+        <td class="num">${created}</td>
+        <td><div class="row-actions">${actions}</div></td>
       </tr>`;
     })
     .join('');
@@ -828,27 +838,31 @@ function permLabel(key, short) {
 function renderRoles(roles) {
   const body = $('roles-body');
   if (!roles.length) {
-    body.innerHTML = '<tr><td colspan="6" class="muted">暂无角色</td></tr>';
+    body.innerHTML = '<tr class="empty-row"><td colspan="6" class="empty-cell">暂无角色，点击右上角「新增角色」创建</td></tr>';
     return;
   }
   body.innerHTML = roles
     .map((r) => {
-      const type = r.builtin ? '<span style="color:#b45309">内置</span>' : '<span style="color:#2563eb">自定义</span>';
+      const type = r.builtin ? '<span class="badge badge-amber">内置</span>' : '<span class="badge badge-blue">自定义</span>';
       const perms = r.permissions.includes('*')
-        ? '<span style="color:#059669">全部权限</span>'
-        : (r.permissions.map((p) => permLabel(p, true)).join('、') || '<span class="muted">无</span>');
+        ? '<span class="perm-tag all">全部权限</span>'
+        : (r.permissions.length
+          ? `<div class="perm-tags">${r.permissions.map((p) => `<span class="perm-tag">${esc(permLabel(p, true))}</span>`).join('')}</div>`
+          : '<span class="empty-cell">无</span>');
       const delBtn = r.builtin || r.userCount > 0
         ? ''
         : `<button type="button" class="btn btn-outline btn-xs danger" data-role-key="${esc(r.key)}" data-role-act="delete">删除</button>`;
       return `<tr>
-        <td>${esc(r.name)}</td>
+        <td><strong>${esc(r.name)}</strong></td>
         <td><code>${esc(r.key)}</code></td>
         <td>${type}</td>
         <td>${perms}</td>
-        <td>${r.userCount}</td>
+        <td class="num">${r.userCount}</td>
         <td>
-          <button type="button" class="btn btn-outline btn-xs" data-role-key="${esc(r.key)}" data-role-act="edit">编辑权限</button>
-          ${delBtn}
+          <div class="row-actions">
+            <button type="button" class="btn btn-outline btn-xs" data-role-key="${esc(r.key)}" data-role-act="edit">编辑权限</button>
+            ${delBtn}
+          </div>
         </td>
       </tr>`;
     })
@@ -1013,7 +1027,13 @@ document.addEventListener('click', (e) => {
 $('profile-close').addEventListener('click', closeProfile);
 $('profile-mask').addEventListener('click', closeProfile);
 $('profile-save').addEventListener('click', saveProfile);
-$('u-add-btn').addEventListener('click', addUser);
+$('u-add-btn').addEventListener('click', () => {
+  const card = $('u-add-card');
+  card.hidden = !card.hidden;
+  $('u-add-btn').textContent = card.hidden ? '新增账号' : '收起表单';
+});
+$('u-create-btn').addEventListener('click', addUser);
+$('u-search').addEventListener('input', () => renderUsers(USERS_CACHE));
 $('u-password').addEventListener('keydown', (e) => { if (e.key === 'Enter') addUser(); });
 $('users-body').addEventListener('click', onUsersAction);
 $('role-add-btn').addEventListener('click', () => openRoleEditor(null));

@@ -230,6 +230,102 @@
       .qr-preview-img, .qr-preview-box { width: 116px; height: 116px; }
       .qr-preview-empty { line-height: 116px; }
     }
+
+    /* ===== 管理页高级视觉（账号管理 / 角色管理） ===== */
+    :root {
+      --accent: #0e7a5f;
+      --accent-deep: #064e3b;
+      --accent-soft: #e6f5ef;
+      --ink: #16241f;
+      --ink-2: #4b5b54;
+      --ink-3: #8a9a93;
+      --line: #e6ece8;
+      --line-soft: #eef2ef;
+      --bg-soft: #f6f9f7;
+      --ring: rgba(14, 122, 95, .18);
+      --shadow-sm: 0 1px 2px rgba(16, 32, 26, .05), 0 2px 8px rgba(16, 32, 26, .04);
+      --shadow-md: 0 4px 16px rgba(16, 32, 26, .07), 0 12px 32px rgba(16, 32, 26, .06);
+    }
+    .page-panel { border-radius: 16px; overflow: hidden; }
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 22px 24px 18px; border-bottom: 1px solid var(--line-soft); background: linear-gradient(180deg, #fbfdfc 0%, #fff 100%); }
+    .page-title { margin: 0; font-size: 1.28rem; font-weight: 700; letter-spacing: -.01em; color: var(--ink); display: flex; align-items: center; gap: 10px; }
+    .page-title::before { content: ""; width: 4px; height: 20px; border-radius: 3px; background: linear-gradient(180deg, var(--accent) 0%, #34d399 100%); box-shadow: 0 0 8px rgba(14, 122, 95, .35); }
+    .page-desc { margin: 7px 0 0; font-size: .83rem; color: var(--ink-3); line-height: 1.55; max-width: 640px; }
+    .head-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .btn-primary { background: linear-gradient(180deg, #0e9f75 0%, #067a5b 100%); border-color: #067a5b; box-shadow: 0 1px 2px rgba(6, 122, 91, .25), inset 0 1px 0 rgba(255,255,255,.18); transition: transform .12s ease, box-shadow .12s ease, filter .12s ease; }
+    .btn-primary:hover { filter: brightness(1.05); box-shadow: 0 4px 12px rgba(6, 122, 91, .3), inset 0 1px 0 rgba(255,255,255,.18); transform: translateY(-1px); }
+    .btn-primary:active { transform: translateY(0); filter: brightness(.97); }
+    .btn-lg { padding: 9px 18px; font-size: .88rem; border-radius: 10px; }
+    .toolbar { display: flex; align-items: center; gap: 12px; padding: 14px 24px 0; }
+    .search-box { position: relative; flex: 0 0 300px; }
+    .search-box::before { content: ""; position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; border: 1.6px solid var(--ink-3); border-radius: 50%; box-sizing: border-box; }
+    .search-box::after { content: ""; position: absolute; left: 23px; top: calc(50% + 7px); width: 6px; height: 1.6px; background: var(--ink-3); transform: rotate(45deg); transform-origin: left center; border-radius: 2px; }
+    .search-box input { width: 100%; height: 40px; padding: 0 12px 0 36px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); font-size: .85rem; color: var(--ink); transition: border-color .15s ease, box-shadow .15s ease, background .15s ease; }
+    .search-box input::placeholder { color: var(--ink-3); }
+    .search-box input:focus { outline: none; border-color: var(--accent); background: #fff; box-shadow: 0 0 0 4px var(--ring); }
+    .form-card { margin: 18px 24px 0; padding: 18px 20px 6px; border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(180deg, #fbfdfc, #fff); box-shadow: var(--shadow-sm); }
+    .form-card .form-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 14px; }
+    .form-card .form-grid .field label { display: block; font-size: .76rem; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; letter-spacing: .02em; }
+    .form-card .form-grid .field input, .form-card .form-grid .field select { height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: .85rem; color: var(--ink); transition: border-color .15s ease, box-shadow .15s ease; }
+    .form-card .form-grid .field input:focus, .form-card .form-grid .field select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px var(--ring); }
+    .form-card .form-grid .field input::placeholder { color: var(--ink-3); }
+    .form-card .form-grid .submit-cell { display: flex; align-items: flex-end; }
+    .form-card .form-grid .submit-cell .btn { margin-bottom: 1px; }
+    .table-card { margin: 14px 24px 24px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow-sm); background: #fff; }
+    .table-card .list-table { margin: 0; border: none; }
+    .table-card .list-table thead th { background: var(--bg-soft); color: var(--ink-2); font-size: .73rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--line); padding: 12px 14px; white-space: nowrap; }
+    .table-card .list-table tbody td { padding: 12px 14px; font-size: .84rem; color: var(--ink-2); border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+    .table-card .list-table tbody tr:last-child td { border-bottom: none; }
+    .table-card .list-table tbody tr:hover td { background: #f7fbf9; }
+    .table-card .list-table tbody tr { transition: background .12s ease; }
+    .table-card .list-table .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+    .table-card .list-table .row-actions .btn { margin: 0; white-space: nowrap; }
+    .table-card .list-table th:last-child, .table-card .list-table td:last-child { text-align: right; }
+    .table-card .list-table td strong { color: var(--ink); font-weight: 600; }
+    .table-card .list-table td code { background: var(--bg-soft); border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; font-size: .76rem; color: var(--accent-deep); }
+    .table-card .list-table td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 600; }
+    .badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; font-size: .72rem; font-weight: 600; letter-spacing: .01em; line-height: 1.5; white-space: nowrap; }
+    .badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .85; }
+    .badge-green { background: #e7f6ef; color: #067a5b; }
+    .badge-red { background: #fdecec; color: #c0392b; }
+    .badge-amber { background: #fdf3e3; color: #b45309; }
+    .badge-blue { background: #eaf2fe; color: #2563eb; }
+    .badge-slate { background: #eef1f4; color: #4b5b68; }
+    .badge-dark { background: #e6f5ef; color: #064e3b; }
+    .perm-tags { display: flex; flex-wrap: wrap; gap: 5px; max-width: 380px; }
+    .perm-tag { display: inline-block; padding: 2px 9px; border-radius: 999px; background: #eef5f1; border: 1px solid #dde9e2; color: #3c5c4e; font-size: .72rem; font-weight: 500; white-space: nowrap; }
+    .perm-tag.all { background: #e7f6ef; border-color: #cbeadc; color: #067a5b; font-weight: 600; }
+    .empty-cell { color: var(--ink-3); }
+    .table-card .list-table .empty-row td { padding: 34px 14px; text-align: center; color: var(--ink-3); font-size: .85rem; }
+    .modal-lg { width: 560px; max-width: calc(100vw - 32px); padding: 22px 24px; }
+    .modal-lg .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .modal-lg .modal-head h3 { font-size: 1.06rem; }
+    .role-perms { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+    .role-perm-item { padding: 11px 12px; border-color: var(--line); border-radius: 11px; background: var(--bg-soft); transition: border-color .12s ease, background .12s ease, box-shadow .12s ease; }
+    .role-perm-item:hover { border-color: #c9ddd2; background: #fff; box-shadow: var(--shadow-sm); }
+    .role-perm-item:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 3px var(--ring); }
+    .role-perm-item input { accent-color: var(--accent); margin-top: 3px; }
+    .role-perm-item b { font-size: .84rem; color: var(--ink); }
+    .role-perm-item span { font-size: .73rem; color: var(--ink-3); }
+    .modal .field label { font-size: .76rem; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; letter-spacing: .02em; }
+    .modal .field input { height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; font-size: .85rem; box-sizing: border-box; width: 100%; }
+    .modal .field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px var(--ring); }
+    .modal .field input::placeholder { color: var(--ink-3); }
+    @media (max-width: 900px) {
+      .page-head { flex-direction: column; }
+      .head-actions { width: 100%; }
+      .head-actions .btn { flex: 1; }
+      .form-card .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .search-box { flex: 1 1 100%; }
+      .toolbar { padding: 14px 18px 0; }
+      .form-card { margin: 14px 18px 0; }
+      .table-card { margin: 12px 18px 18px; }
+    }
+    @media (max-width: 520px) {
+      .form-card .form-grid { grid-template-columns: 1fr; }
+      .modal-lg { padding: 16px; }
+      .role-perms { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -496,46 +592,68 @@
 
           <!-- 面板: 账号管理（RBAC，仅管理员可见） -->
           <div id="tab-users" class="tab-panel">
-            <div class="panel">
-              <h2>账号管理</h2>
-              <p class="muted" style="margin:4px 0 12px">支持管理员（admin）、运营（ops）、供应商（supplier）三类角色。供应商账号需绑定品牌，仅能管理自己品牌的产品。</p>
-              <div class="bar" style="justify-content:flex-start; flex-wrap:wrap">
-                <div class="field" style="min-width:150px"><label>用户名</label><input id="u-username" placeholder="登录用户名" /></div>
-                <div class="field" style="min-width:150px"><label>密码</label><input id="u-password" placeholder="初始密码" /></div>
-                <div class="field" style="min-width:140px"><label>昵称</label><input id="u-name" placeholder="显示名称" /></div>
-                <div class="field" style="min-width:130px"><label>角色</label>
-                  <select id="u-role">
-                    <option value="admin">管理员</option>
-                    <option value="ops">运营</option>
-                    <option value="supplier">供应商</option>
-                  </select>
+            <div class="panel page-panel">
+              <div class="page-head">
+                <div>
+                  <h2 class="page-title">账号管理</h2>
+                  <p class="page-desc">管理后台登录账号、角色分配与账号状态。供应商账号需绑定品牌，仅能管理自己品牌的产品。</p>
                 </div>
-                <div class="field" style="min-width:160px"><label>供应商品牌</label><input id="u-brand" placeholder="供应商必填，如 蒙降三高" /></div>
-                <div class="field"><label style="visibility:hidden">.</label>
-                  <button type="button" class="btn btn-primary btn-sm" id="u-add-btn">新增账号</button>
+                <div class="head-actions">
+                  <button type="button" class="btn btn-primary btn-lg" id="u-add-btn">新增账号</button>
                 </div>
               </div>
-              <table class="list-table">
-                <thead><tr><th>用户名</th><th>昵称</th><th>角色</th><th>品牌</th><th>状态</th><th>创建时间</th><th style="width:220px">操作</th></tr></thead>
-                <tbody id="users-body"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
-              </table>
+
+              <div class="form-card" id="u-add-card" hidden>
+                <div class="form-grid">
+                  <div class="field" style="min-width:150px"><label>用户名</label><input id="u-username" placeholder="登录用户名" /></div>
+                  <div class="field" style="min-width:150px"><label>密码</label><input id="u-password" placeholder="初始密码" /></div>
+                  <div class="field" style="min-width:140px"><label>昵称</label><input id="u-name" placeholder="显示名称" /></div>
+                  <div class="field" style="min-width:130px"><label>角色</label>
+                    <select id="u-role">
+                      <option value="admin">管理员</option>
+                      <option value="ops">运营</option>
+                      <option value="supplier">供应商</option>
+                    </select>
+                  </div>
+                  <div class="field" style="min-width:160px"><label>供应商品牌</label><input id="u-brand" placeholder="供应商必填，如 蒙降三高" /></div>
+                  <div class="field submit-cell"><label style="visibility:hidden">.</label>
+                    <button type="button" class="btn btn-primary" id="u-create-btn">创建账号</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="toolbar">
+                <div class="search-box"><input id="u-search" placeholder="搜索用户名或昵称…" /></div>
+              </div>
+
+              <div class="table-card">
+                <table class="list-table">
+                  <thead><tr><th>用户名</th><th>昵称</th><th>角色</th><th>品牌</th><th>状态</th><th>创建时间</th><th style="width:230px">操作</th></tr></thead>
+                  <tbody id="users-body"><tr class="empty-row"><td colspan="7" class="empty-cell">加载中…</td></tr></tbody>
+                </table>
+              </div>
             </div>
           </div>
 
           <!-- 面板: 角色管理（RBAC，可配置角色访问权限） -->
           <div id="tab-roles" class="tab-panel">
-            <div class="panel">
-              <h2>角色管理</h2>
-              <p class="muted" style="margin:4px 0 12px">配置各角色的访问权限（菜单/接口级）。内置角色不可删除，权限可调整；自定义角色可自由配置。</p>
-              <div class="bar" style="justify-content:flex-end">
-                <div class="field"><label style="visibility:hidden">.</label>
-                  <button type="button" class="btn btn-primary btn-sm" id="role-add-btn">新增角色</button>
+            <div class="panel page-panel">
+              <div class="page-head">
+                <div>
+                  <h2 class="page-title">角色管理</h2>
+                  <p class="page-desc">配置各角色的访问权限（菜单/接口级）。内置角色不可删除，权限可调整；自定义角色可自由配置。</p>
+                </div>
+                <div class="head-actions">
+                  <button type="button" class="btn btn-primary btn-lg" id="role-add-btn">新增角色</button>
                 </div>
               </div>
-              <table class="list-table">
-                <thead><tr><th>角色名称</th><th>标识</th><th>类型</th><th>访问权限</th><th>使用人数</th><th style="width:180px">操作</th></tr></thead>
-                <tbody id="roles-body"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
-              </table>
+
+              <div class="table-card">
+                <table class="list-table">
+                  <thead><tr><th>角色名称</th><th>标识</th><th>类型</th><th>访问权限</th><th class="num">使用人数</th><th style="width:200px">操作</th></tr></thead>
+                  <tbody id="roles-body"><tr class="empty-row"><td colspan="6" class="empty-cell">加载中…</td></tr></tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
@@ -545,7 +663,7 @@
 
   <!-- 角色编辑弹窗 -->
   <div class="modal-mask" id="role-mask" hidden></div>
-  <div class="modal" id="role-modal" hidden>
+  <div class="modal modal-lg" id="role-modal" hidden>
     <div class="modal-head"><h3 id="role-modal-title">新增角色</h3><button type="button" class="drawer-close" id="role-close" title="关闭">✕</button></div>
     <div class="modal-body">
       <div class="form-grid">
@@ -558,7 +676,7 @@
     </div>
     <div class="modal-foot">
       <button type="button" class="btn btn-outline btn-sm" id="role-cancel">取消</button>
-      <button type="button" class="btn btn-primary btn-sm" id="role-save">保存角色</button>
+      <button type="button" class="btn btn-primary" id="role-save">保存角色</button>
     </div>
   </div>
 
