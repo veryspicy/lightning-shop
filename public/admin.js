@@ -2,6 +2,13 @@
 const API = '/api';
 const TOKEN_KEY = 'ls_admin_token';
 const ROLE_LABELS = { admin: '管理员', ops: '运营', supplier: '供应商' };
+let ROLE_OPTIONS = []; // 角色下拉缓存（来自 /api/admin/roles）
+let PERM_META = {};    // 权限点元数据缓存（key -> {label, desc}）
+
+function hasPerm(u, perm) {
+  const perms = (u && (u.permissions || [])) || [];
+  return perms.includes('*') || perms.includes(perm);
+}
 
 const $ = (id) => document.getElementById(id);
 let products = [];
@@ -75,7 +82,7 @@ function renderUserMenu(user) {
   const initial = (u.name || u.username || '管').trim().charAt(0).toUpperCase();
   $('user-avatar-btn').textContent = initial;
   $('user-name').textContent = u.name || u.username;
-  $('user-role').textContent = ROLE_LABELS[u.role] || u.role;
+  $('user-role').textContent = u.roleName || ROLE_LABELS[u.role] || u.role;
   const brandEl = $('user-brand');
   if (u.role === 'supplier' && u.supplierBrand) {
     brandEl.textContent = '品牌：' + u.supplierBrand;
@@ -84,7 +91,9 @@ function renderUserMenu(user) {
     brandEl.hidden = true;
   }
   const menuUsers = $('menu-users');
-  if (menuUsers) menuUsers.hidden = u.role !== 'admin';
+  if (menuUsers) menuUsers.hidden = !hasPerm(u, 'users');
+  const menuRoles = $('menu-roles');
+  if (menuRoles) menuRoles.hidden = !hasPerm(u, 'roles');
 }
 
 function toggleUserDropdown(force) {
@@ -105,7 +114,9 @@ async function load() {
     me = { username: 'admin', name: '管理员', role: 'admin' };
   }
   renderUserMenu(me);
-  if ((me.user || me).role === 'admin') loadUsers();
+  const me2 = me.user || me;
+  if (hasPerm(me2, 'users')) loadUsers();
+  if (hasPerm(me2, 'roles')) loadRoles();
 
   const data = await api('/api/admin/products', { headers: authHeaders() });
   products = data;
@@ -696,7 +707,7 @@ function renderUsers(users) {
       return `<tr>
         <td>${esc(u.username)}${isMe ? ' <span style="color:#059669">(我)</span>' : ''}</td>
         <td>${esc(u.name || '-')}</td>
-        <td>${ROLE_LABELS[u.role] || esc(u.role)}</td>
+        <td>${u.roleName || ROLE_LABELS[u.role] || esc(u.role)}</td>
         <td>${brand}</td>
         <td>${status}</td>
         <td>${created}</td>
@@ -767,8 +778,11 @@ async function onUsersAction(e) {
     if (pwd.length < 6) return toast('密码至少 6 位', true);
     await updateUser(id, { password: pwd });
   } else if (act === 'edit') {
-    const role = prompt('设置角色：admin / ops / supplier');
-    if (!role || !['admin', 'ops', 'supplier'].includes(role)) return;
+    if (!ROLE_OPTIONS.length) return toast('角色列表未加载，请先打开角色管理', true);
+    const hint = ROLE_OPTIONS.map((r) => `${r.key}:${r.name}`).join(' / ');
+    const role = prompt(`设置角色（输入标识，可选：${hint}）`);
+    if (!role) return;
+    if (!ROLE_OPTIONS.some((r) => r.key === role)) return toast('无效的角色标识', true);
     const payload = { role };
     if (role === 'supplier') {
       const brand = prompt('供应商绑定品牌');
@@ -785,13 +799,177 @@ async function onUsersAction(e) {
   }
 }
 
+/* ---- 角色管理（RBAC，可配置角色访问权限） ---- */
+
+async function loadRoles() {
+  try {
+    const data = await api('/api/admin/roles', { headers: authHeaders() });
+    PERM_META = data.perms || {};
+    ROLE_OPTIONS = (data.roles || []).map((r) => ({ key: r.key, name: r.name }));
+    renderRoleOptions();
+    renderRoles(data.roles || []);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+function renderRoleOptions() {
+  const sel = $('u-role');
+  if (!sel) return;
+  sel.innerHTML = ROLE_OPTIONS.map((r) => `<option value="${esc(r.key)}">${esc(r.name)}</option>`).join('');
+}
+
+function permLabel(key, short) {
+  if (key === '*') return '全部权限';
+  const meta = PERM_META[key];
+  return meta ? (short ? meta.label : meta.desc) : key;
+}
+
+function renderRoles(roles) {
+  const body = $('roles-body');
+  if (!roles.length) {
+    body.innerHTML = '<tr><td colspan="6" class="muted">暂无角色</td></tr>';
+    return;
+  }
+  body.innerHTML = roles
+    .map((r) => {
+      const type = r.builtin ? '<span style="color:#b45309">内置</span>' : '<span style="color:#2563eb">自定义</span>';
+      const perms = r.permissions.includes('*')
+        ? '<span style="color:#059669">全部权限</span>'
+        : (r.permissions.map((p) => permLabel(p, true)).join('、') || '<span class="muted">无</span>');
+      const delBtn = r.builtin || r.userCount > 0
+        ? ''
+        : `<button type="button" class="btn btn-outline btn-xs danger" data-role-key="${esc(r.key)}" data-role-act="delete">删除</button>`;
+      return `<tr>
+        <td>${esc(r.name)}</td>
+        <td><code>${esc(r.key)}</code></td>
+        <td>${type}</td>
+        <td>${perms}</td>
+        <td>${r.userCount}</td>
+        <td>
+          <button type="button" class="btn btn-outline btn-xs" data-role-key="${esc(r.key)}" data-role-act="edit">编辑权限</button>
+          ${delBtn}
+        </td>
+      </tr>`;
+    })
+    .join('');
+}
+
+function openRoleEditor(key) {
+  const modal = $('role-modal');
+  const mask = $('role-mask');
+  $('role-modal-title').textContent = key ? '编辑角色' : '新增角色';
+  const rKey = $('r-key');
+  const rName = $('r-name');
+  const rPerms = $('r-perms');
+  if (key) {
+    // 编辑：异步请求角色详情（含权限）
+    api('/api/admin/roles', { headers: authHeaders() }).then((data) => {
+      const role = (data.roles || []).find((r) => r.key === key);
+      if (!role) return toast('未找到该角色', true);
+      rKey.value = role.key;
+      rName.value = role.name || '';
+      renderPermCheckboxes(role.permissions || []);
+    });
+  } else {
+    rKey.value = '';
+    rKey.disabled = false;
+    rName.value = '';
+    renderPermCheckboxes([]);
+  }
+  mask.hidden = false;
+  modal.hidden = false;
+}
+
+function renderPermCheckboxes(selected) {
+  const wrap = $('r-perms');
+  const hasAll = selected.includes('*');
+  if (hasAll) {
+    wrap.innerHTML = '<div class="role-perm-item"><input type="checkbox" checked disabled /><div><b>全部权限</b><span>该角色拥有所有菜单与接口访问权限（内置管理员）</span></div></div>';
+    $('r-key').disabled = true;
+    return;
+  }
+  $('r-key').disabled = false;
+  const keys = Object.keys(PERM_META);
+  if (!keys.length) {
+    wrap.innerHTML = '<span class="muted">权限定义加载失败，请刷新后重试</span>';
+    return;
+  }
+  wrap.innerHTML = keys
+    .map((k) => {
+      const m = PERM_META[k];
+      const checked = selected.includes(k) ? 'checked' : '';
+      return `<label class="role-perm-item"><input type="checkbox" value="${esc(k)}" ${checked} /><span><b>${esc(m.label)}</b><span>${esc(m.desc)}</span></span></label>`;
+    })
+    .join('');
+}
+
+function closeRoleEditor() {
+  $('role-mask').hidden = true;
+  $('role-modal').hidden = true;
+}
+
+async function saveRole() {
+  const key = $('r-key').value.trim().toLowerCase();
+  const name = $('r-name').value.trim();
+  if (!/^[a-z0-9_]{2,20}$/.test(key)) return toast('角色标识需 2-20 位小写字母/数字/下划线', true);
+  if (!name) return toast('角色名称必填', true);
+  let permissions;
+  const allBox = document.querySelector('#r-perms input[value="*"]');
+  if (allBox && allBox.checked) {
+    permissions = ['*'];
+  } else {
+    permissions = Array.from(document.querySelectorAll('#r-perms input[type="checkbox"]:checked')).map((el) => el.value);
+  }
+  const isEdit = $('role-modal-title').textContent === '编辑角色';
+  try {
+    if (isEdit) {
+      await api(`/api/admin/roles/${encodeURIComponent(key)}`, {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({ name, permissions }),
+      });
+    } else {
+      await api('/api/admin/roles', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ key, name, permissions }),
+      });
+    }
+    toast(isEdit ? '角色已保存' : '角色已创建');
+    closeRoleEditor();
+    loadRoles();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function deleteRole(key) {
+  if (!confirm('确认删除该角色？删除后不可恢复。')) return;
+  try {
+    await api(`/api/admin/roles/${encodeURIComponent(key)}`, { method: 'DELETE', headers: authHeaders() });
+    toast('角色已删除');
+    loadRoles();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+function onRolesAction(e) {
+  const btn = e.target.closest('[data-role-act]');
+  if (!btn) return;
+  const key = btn.dataset.roleKey;
+  if (btn.dataset.roleAct === 'edit') openRoleEditor(key);
+  else if (btn.dataset.roleAct === 'delete') deleteRole(key);
+}
+
 /* ---- 我的资料 ---- */
 
 function openProfile() {
   if (!currentUser) return;
   $('p-username').value = currentUser.username || '';
   $('p-name').value = currentUser.name || '';
-  $('p-role').value = ROLE_LABELS[currentUser.role] || currentUser.role;
+  $('p-role').value = currentUser.roleName || ROLE_LABELS[currentUser.role] || currentUser.role;
   $('p-brand').value = currentUser.role === 'supplier' ? (currentUser.supplierBrand || '') : '';
   $('p-password').value = '';
   $('profile-mask').hidden = false;
@@ -838,6 +1016,12 @@ $('profile-save').addEventListener('click', saveProfile);
 $('u-add-btn').addEventListener('click', addUser);
 $('u-password').addEventListener('keydown', (e) => { if (e.key === 'Enter') addUser(); });
 $('users-body').addEventListener('click', onUsersAction);
+$('role-add-btn').addEventListener('click', () => openRoleEditor(null));
+$('role-save').addEventListener('click', saveRole);
+$('role-cancel').addEventListener('click', closeRoleEditor);
+$('role-close').addEventListener('click', closeRoleEditor);
+$('role-mask').addEventListener('click', closeRoleEditor);
+$('roles-body').addEventListener('click', onRolesAction);
 $('product-form').addEventListener('submit', submitForm);
 $('form-reset').addEventListener('click', resetForm);
 $('f-img-file').addEventListener('change', () => handleUpload().catch((err) => { toast(err.message, true); $('f-img-file').value = ''; }));
@@ -974,7 +1158,7 @@ $('batch-apply').addEventListener('click', async () => {
 });
 
 /* ---- Tab 切换（菜单 → 标签栏联动） ---- */
-const MENU_TITLES = { dashboard: '看板', hero: '首页配置', qr: '二维码配置', categories: '分类管理', price: '价格策略', products: '产品管理', users: '账号管理' };
+const MENU_TITLES = { dashboard: '看板', hero: '首页配置', qr: '二维码配置', categories: '分类管理', price: '价格策略', products: '产品管理', users: '账号管理', roles: '角色管理' };
 const openTabs = new Set();
 
 function activateNavTag(tab) {

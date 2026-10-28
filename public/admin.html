@@ -69,6 +69,11 @@
     .user-menu-item.danger:hover { background: #fdecec; }
     .login-error { color: #c0392b; font-size: .84rem; margin-top: 10px; }
     .modal-mask { position: fixed; inset: 0; background: rgba(15, 40, 80, .45); z-index: 80; }
+.role-perms { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 4px; }
+.role-perm-item { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid #e3eae5; border-radius: 8px; background: #fafcfb; }
+.role-perm-item input { margin-top: 2px; }
+.role-perm-item b { display: block; font-size: .85rem; }
+.role-perm-item span { display: block; font-size: .74rem; color: #82908a; line-height: 1.4; }
     .modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 360px; max-width: calc(100vw - 32px); background: #fff; border-radius: 14px; box-shadow: 0 20px 60px rgba(15, 40, 80, .25); z-index: 90; padding: 18px 20px; }
     .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
     .modal-head h3 { margin: 0; font-size: 1rem; }
@@ -277,6 +282,10 @@
           <button type="button" class="tab-btn" data-tab="users" role="tab" aria-selected="false" id="menu-users" hidden>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             <span class="menu-label">账号管理</span>
+          </button>
+          <button type="button" class="tab-btn" data-tab="roles" role="tab" aria-selected="false" id="menu-roles" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+            <span class="menu-label">角色管理</span>
           </button>
         </nav>
         <div class="sidebar-foot">
@@ -512,10 +521,46 @@
               </table>
             </div>
           </div>
+
+          <!-- 面板: 角色管理（RBAC，可配置角色访问权限） -->
+          <div id="tab-roles" class="tab-panel">
+            <div class="panel">
+              <h2>角色管理</h2>
+              <p class="muted" style="margin:4px 0 12px">配置各角色的访问权限（菜单/接口级）。内置角色不可删除，权限可调整；自定义角色可自由配置。</p>
+              <div class="bar" style="justify-content:flex-end">
+                <div class="field"><label style="visibility:hidden">.</label>
+                  <button type="button" class="btn btn-primary btn-sm" id="role-add-btn">新增角色</button>
+                </div>
+              </div>
+              <table class="list-table">
+                <thead><tr><th>角色名称</th><th>标识</th><th>类型</th><th>访问权限</th><th>使用人数</th><th style="width:180px">操作</th></tr></thead>
+                <tbody id="roles-body"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </main>
     </div>
   </section>
+
+  <!-- 角色编辑弹窗 -->
+  <div class="modal-mask" id="role-mask" hidden></div>
+  <div class="modal" id="role-modal" hidden>
+    <div class="modal-head"><h3 id="role-modal-title">新增角色</h3><button type="button" class="drawer-close" id="role-close" title="关闭">✕</button></div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="field"><label>角色标识 *</label><input id="r-key" placeholder="如 editor，小写字母/数字/下划线" /></div>
+        <div class="field"><label>角色名称 *</label><input id="r-name" placeholder="如 内容编辑" /></div>
+      </div>
+      <div class="field" style="margin-top:10px"><label>访问权限</label>
+        <div id="r-perms" class="role-perms"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-outline btn-sm" id="role-cancel">取消</button>
+      <button type="button" class="btn btn-primary btn-sm" id="role-save">保存角色</button>
+    </div>
+  </div>
 
   <!-- 产品编辑抽屉 -->
   <div class="drawer-mask" id="drawer-mask"></div>

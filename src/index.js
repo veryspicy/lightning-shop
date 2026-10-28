@@ -92,11 +92,46 @@ function notFound() {
 /* ---- 管理后台：鉴权与写接口 ---- */
 
 const SESSION_TTL = 60 * 60 * 24 * 7; // 会话有效期 7 天
-const ROLES = {
-  admin: ['products:read', 'products:write', 'categories:write', 'site:write', 'users:manage', 'upload'],
-  ops: ['products:read', 'products:write', 'categories:write', 'upload'],
-  supplier: ['products:read', 'products:write', 'upload'],
+
+// 可配置权限点（角色管理界面可勾选）
+const PERM_DEFS = {
+  dashboard: { label: '看板', desc: '查看统计看板' },
+  products: { label: '产品管理', desc: '产品增删改查与图片上传' },
+  categories: { label: '分类管理', desc: '配置商品分类' },
+  price: { label: '价格策略', desc: '前台价格加成策略' },
+  hero: { label: '首页配置', desc: '首页文案与背景图' },
+  qr: { label: '二维码配置', desc: '二维码与卡片文案' },
+  users: { label: '账号管理', desc: '管理登录账号' },
+  roles: { label: '角色管理', desc: '管理角色与权限' },
 };
+
+// 内置角色（不可删除；权限可在角色管理中调整）
+const BUILTIN_ROLES = {
+  admin: { key: 'admin', name: '管理员', builtin: true, permissions: ['*'] },
+  ops: { key: 'ops', name: '运营', builtin: true, permissions: ['dashboard', 'products', 'categories', 'price', 'hero', 'qr'] },
+  supplier: { key: 'supplier', name: '供应商', builtin: true, permissions: ['dashboard', 'products'] },
+};
+
+// 角色表 = 内置角色 + KV 自定义角色（KV roles 存自定义角色数组）
+async function getRoles(env) {
+  const map = {};
+  for (const k of Object.keys(BUILTIN_ROLES)) map[k] = { ...BUILTIN_ROLES[k], permissions: [...BUILTIN_ROLES[k].permissions] };
+  const raw = await env.KV.get('roles', 'json');
+  if (Array.isArray(raw)) {
+    for (const r of raw) if (r && r.key) map[r.key] = { key: r.key, name: r.name, builtin: false, permissions: Array.isArray(r.permissions) ? r.permissions : [] };
+  }
+  return map;
+}
+
+async function saveRoles(env, roles) {
+  const custom = Object.values(roles).filter((r) => !r.builtin);
+  await env.KV.put('roles', JSON.stringify(custom));
+}
+
+// 角色权限解析：'*' 表示全部权限
+function rolePermissions(role) {
+  return (role && role.permissions) || [];
+}
 
 function unauthorized(msg = 'unauthorized') {
   return new Response(JSON.stringify({ error: msg }), {
@@ -143,7 +178,18 @@ function publicUser(u) {
     supplierBrand: u.supplierBrand || '',
     status: u.status || 'active',
     createdAt: u.createdAt || '',
+    lastLoginAt: u.lastLoginAt || '',
   };
+}
+
+// 附加角色名与权限（前端据此渲染菜单与权限控制）
+async function publicUserWithPerms(env, u) {
+  const pu = publicUser(u);
+  const map = await getRoles(env);
+  const role = map[pu.role] || map.ops;
+  pu.roleName = role ? role.name : pu.role;
+  pu.permissions = rolePermissions(role);
+  return pu;
 }
 
 function nextUserId(users) {
@@ -184,8 +230,12 @@ async function authUser(request, env) {
   return user || null;
 }
 
-function can(user, perm) {
-  return !!user && (ROLES[user.role] || []).includes(perm);
+async function can(env, user, perm) {
+  if (!user) return false;
+  const map = await getRoles(env);
+  const role = map[user.role];
+  const perms = rolePermissions(role);
+  return perms.includes('*') || perms.includes(perm);
 }
 
 async function readJson(request) {
@@ -324,7 +374,7 @@ async function handleApi(request, env, url) {
     await env.KV.put(`sessions:${token}`, JSON.stringify({ userId: user.id }), { expirationTtl: SESSION_TTL });
     user.lastLoginAt = new Date().toISOString();
     await saveUsers(env, users);
-    return json({ ok: true, token, user: publicUser(user) });
+    return json({ ok: true, token, user: await publicUserWithPerms(env, user) });
   }
 
   if (path === '/api/auth/logout' && method === 'POST') {
@@ -338,7 +388,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/auth/me') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (method === 'GET') return json({ ok: true, user: publicUser(user) });
+    if (method === 'GET') return json({ ok: true, user: await publicUserWithPerms(env, user) });
     if (method === 'PUT') {
       const body = await readJson(request);
       if (!body) return json({ error: 'bad_request' }, 400);
@@ -358,7 +408,7 @@ async function handleApi(request, env, url) {
         users[uidx] = user;
         await saveUsers(env, users);
       }
-      return json({ ok: true, user: publicUser(user) });
+      return json({ ok: true, user: await publicUserWithPerms(env, user) });
     }
     return notFound();
   }
@@ -367,20 +417,21 @@ async function handleApi(request, env, url) {
   if (path === '/api/admin/users' && method === 'GET') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!can(user, 'users:manage')) return forbidden();
-    const list = (await getUsers(env)).map(publicUser);
+    if (!await can(env, user, 'users:manage')) return forbidden();
+    const list = await Promise.all((await getUsers(env)).map((u) => publicUserWithPerms(env, u)));
     return jsonNoCache(list);
   }
 
   if (path === '/api/admin/users' && method === 'POST') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!can(user, 'users:manage')) return forbidden();
+    if (!await can(env, user, 'users:manage')) return forbidden();
     const body = await readJson(request);
     const username = String(body?.username || '').trim();
     const password = String(body?.password || '');
     const name = String(body?.name || '').trim();
-    const role = ['admin', 'ops', 'supplier'].includes(body?.role) ? body.role : 'ops';
+    const roleMap = await getRoles(env);
+    const role = roleMap[String(body?.role || '')] ? String(body.role) : 'ops';
     if (!username || !password) return json({ error: 'bad_request', message: '用户名和密码必填' }, 400);
     if (!/^[a-zA-Z0-9_]{2,20}$/.test(username)) return json({ error: 'bad_request', message: '用户名需 2-20 位字母/数字/下划线' }, 400);
     if (password.length < 6) return json({ error: 'bad_request', message: '密码至少 6 位' }, 400);
@@ -403,7 +454,7 @@ async function handleApi(request, env, url) {
     };
     users.push(nu);
     await saveUsers(env, users);
-    return json({ ok: true, user: publicUser(nu) }, 201);
+    return json({ ok: true, user: await publicUserWithPerms(env, nu) }, 201);
   }
 
   // /api/admin/users/:id
@@ -411,7 +462,7 @@ async function handleApi(request, env, url) {
   if (um) {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!can(user, 'users:manage')) return forbidden();
+    if (!await can(env, user, 'users:manage')) return forbidden();
     const users = await getUsers(env);
     const idx = users.findIndex((u) => u.id === um[1]);
     if (idx === -1) return notFound();
@@ -420,7 +471,8 @@ async function handleApi(request, env, url) {
       const body = await readJson(request);
       if (!body) return json({ error: 'bad_request' }, 400);
       if (body.name !== undefined) target.name = String(body.name).trim().slice(0, 20);
-      if (body.role !== undefined && ['admin', 'ops', 'supplier'].includes(body.role)) {
+      const roleMap = await getRoles(env);
+      if (body.role !== undefined && roleMap[String(body.role)]) {
         target.role = body.role;
         if (body.role === 'supplier') {
           const sb = String((body.supplierBrand ?? target.supplierBrand) || '').trim();
@@ -449,7 +501,7 @@ async function handleApi(request, env, url) {
       }
       users[idx] = target;
       await saveUsers(env, users);
-      return json({ ok: true, user: publicUser(target) });
+      return json({ ok: true, user: await publicUserWithPerms(env, target) });
     }
     if (method === 'DELETE') {
       if (target.id === user.id) return json({ error: 'bad_request', message: '不能删除当前登录账号' }, 400);
@@ -458,6 +510,78 @@ async function handleApi(request, env, url) {
       users.splice(idx, 1);
       await saveUsers(env, users);
       return json({ ok: true, id: target.id });
+    }
+    return notFound();
+  }
+
+  // ---- 角色管理（roles:manage 权限） ----
+  if (path === '/api/admin/roles') {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!await can(env, user, 'roles:manage')) return forbidden();
+    const map = await getRoles(env);
+    const users = await getUsers(env);
+    if (method === 'GET') {
+      const list = Object.values(map)
+        .map((r) => ({ ...r, userCount: users.filter((u) => u.role === r.key).length }))
+        .sort((a, b) => Number(a.builtin) - Number(b.builtin) || a.key.localeCompare(b.key));
+      return jsonNoCache({ ok: true, roles: list, perms: PERM_DEFS });
+    }
+    if (method === 'POST') {
+      const body = await readJson(request);
+      const key = String(body?.key || '').trim().toLowerCase();
+      const name = String(body?.name || '').trim();
+      if (!/^[a-z0-9_]{2,20}$/.test(key)) return json({ error: 'bad_request', message: '角色标识需 2-20 位小写字母/数字/下划线' }, 400);
+      if (!name) return json({ error: 'bad_request', message: '角色名称必填' }, 400);
+      if (map[key]) return json({ error: 'duplicated', message: '角色标识已存在' }, 400);
+      const permissions = (Array.isArray(body?.permissions) ? body.permissions : []).filter((p) => PERM_DEFS[p]);
+      map[key] = { key, name, builtin: false, permissions };
+      await saveRoles(env, map);
+      return json({ ok: true, role: { key, name, builtin: false, permissions, userCount: 0 } }, 201);
+    }
+    return notFound();
+  }
+
+  // /api/admin/roles/:key
+  const rm = path.match(/^\/api\/admin\/roles\/([^/]+)$/);
+  if (rm) {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!await can(env, user, 'roles:manage')) return forbidden();
+    const map = await getRoles(env);
+    const key = rm[1];
+    const role = map[key];
+    if (!role) return notFound();
+    if (method === 'PUT') {
+      const body = await readJson(request);
+      if (!body) return json({ error: 'bad_request' }, 400);
+      if (body.name !== undefined) {
+        const name = String(body.name).trim();
+        if (!name) return json({ error: 'bad_request', message: '角色名称必填' }, 400);
+        role.name = name;
+      }
+      if (body.permissions !== undefined) {
+        if (!Array.isArray(body.permissions)) return json({ error: 'bad_request', message: 'permissions 必须是数组' }, 400);
+        const perms = body.permissions.filter((p) => PERM_DEFS[p] || p === '*');
+        role.permissions = perms;
+      }
+      if (role.builtin) {
+        // 内置角色允许调权限，但保持原 key / builtin 标志
+        map[key] = { ...BUILTIN_ROLES[key], name: role.name, permissions: role.permissions };
+      } else {
+        map[key] = role;
+      }
+      await saveRoles(env, map);
+      const users = await getUsers(env);
+      return json({ ok: true, role: { ...map[key], userCount: users.filter((u) => u.role === key).length } });
+    }
+    if (method === 'DELETE') {
+      if (role.builtin) return json({ error: 'bad_request', message: '内置角色不可删除' }, 400);
+      const users = await getUsers(env);
+      if (users.some((u) => u.role === key)) return json({ error: 'bad_request', message: '该角色已被账号使用，请先调整账号角色' }, 400);
+      delete map[key];
+      await saveRoles(env, map);
+      return json({ ok: true, id: key });
     }
     return notFound();
   }
@@ -476,7 +600,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/admin/categories') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!can(user, 'categories:write')) return forbidden();
+    if (!await can(env, user, 'categories:write')) return forbidden();
     const configured = await getConfigCategories(env);
     if (method === 'GET') {
       const merged = buildCategories(onShelf, configured);
@@ -556,7 +680,7 @@ async function handleApi(request, env, url) {
     if (method === 'PUT') {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
-      if (!can(user, 'site:write')) return forbidden();
+      if (!await can(env, user, 'site:write')) return forbidden();
       const raw = await readJson(request);
       if (!raw) return json({ error: 'bad_request' }, 400);
       const hero = await saveHero(env, raw);
@@ -571,7 +695,7 @@ async function handleApi(request, env, url) {
     if (method === 'PUT') {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
-      if (!can(user, 'site:write')) return forbidden();
+      if (!await can(env, user, 'site:write')) return forbidden();
       const raw = await readJson(request);
       if (!raw) return json({ error: 'bad_request' }, 400);
       const price = await savePrice(env, raw);
@@ -586,7 +710,7 @@ async function handleApi(request, env, url) {
     if (method === 'PUT') {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
-      if (!can(user, 'site:write')) return forbidden();
+      if (!await can(env, user, 'site:write')) return forbidden();
       const raw = await readJson(request);
       if (!raw) return json({ error: 'bad_request' }, 400);
       const qr = await saveQr(env, raw);
@@ -601,7 +725,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/products/batch' && (method === 'PATCH' || method === 'PUT')) {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!can(user, 'products:write')) return forbidden();
+    if (!await can(env, user, 'products:write')) return forbidden();
     const raw = await readJson(request);
     if (!raw || !Array.isArray(raw.ids) || raw.ids.length === 0 || !raw.patch || typeof raw.patch !== 'object') {
       return json({ error: 'bad_request', message: 'ids 数组与 patch 对象必填' }, 400);
@@ -649,7 +773,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/admin/products/import' && method === 'POST') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!can(user, 'products:write')) return forbidden();
+    if (!await can(env, user, 'products:write')) return forbidden();
     const raw = await readJson(request);
     if (!raw || !Array.isArray(raw.products)) {
       return json({ error: 'bad_request', message: 'products 数组必填' }, 400);
@@ -719,7 +843,7 @@ async function handleApi(request, env, url) {
     if (method === 'PUT' || method === 'DELETE') {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
-      if (!can(user, 'products:write')) return forbidden();
+      if (!await can(env, user, 'products:write')) return forbidden();
       const idx = products.findIndex((x) => x.id === m[1]);
       if (idx === -1) return notFound();
       if (user.role === 'supplier' && products[idx].brand !== user.supplierBrand) return forbidden();
@@ -780,7 +904,7 @@ async function handleApi(request, env, url) {
     if (method === 'POST') {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
-      if (!can(user, 'products:write')) return forbidden();
+      if (!await can(env, user, 'products:write')) return forbidden();
       const raw = await readJson(request);
       if (!raw || !String(raw.name || '').trim()) {
         return json({ error: 'bad_request', message: '品名必填' }, 400);
@@ -800,7 +924,7 @@ async function handleApi(request, env, url) {
     if (method !== 'POST') return notFound();
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!can(user, 'upload')) return forbidden();
+    if (!await can(env, user, 'upload')) return forbidden();
     const body = await readJson(request);
     if (!body || !body.filename || !body.base64) {
       return json({ error: 'bad_request', message: 'filename 与 base64 必填' }, 400);
