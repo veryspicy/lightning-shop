@@ -21,6 +21,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Sync prod data to seed (pre-deploy)
+        run: |
+          SYNC_OUT="$(node scripts/sync-prod-to-seed.mjs --base-url https://lightning-shop.gora.dpdns.org)"
+          echo "$SYNC_OUT"
+          if echo "$SYNC_OUT" | grep -q '^CHANGED=1' ; then
+            echo "::notice::生产存在增量数据，已同步进 seed，后续部署将基于最新数据"
+          else
+            echo "::notice::生产与仓库 seed 无差异，按原流程继续部署"
+          fi
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_PASSWORD }}
+
       - name: Sync ADMIN_PASSWORD secret
         run: echo "${{ secrets.ADMIN_PASSWORD }}" | npx wrangler secret put ADMIN_PASSWORD
         env:
