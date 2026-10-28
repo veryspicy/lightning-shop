@@ -256,10 +256,9 @@
     .btn-primary:hover { filter: brightness(1.05); box-shadow: 0 4px 12px rgba(6, 122, 91, .3), inset 0 1px 0 rgba(255,255,255,.18); transform: translateY(-1px); }
     .btn-primary:active { transform: translateY(0); filter: brightness(.97); }
     .btn-lg { padding: 9px 18px; font-size: .88rem; border-radius: 10px; }
-    .toolbar { display: flex; align-items: center; gap: 12px; padding: 14px 24px 0; }
-    .search-box { position: relative; flex: 0 0 300px; }
-    .search-box::before { content: ""; position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; border: 1.6px solid var(--ink-3); border-radius: 50%; box-sizing: border-box; }
-    .search-box::after { content: ""; position: absolute; left: 23px; top: calc(50% + 7px); width: 6px; height: 1.6px; background: var(--ink-3); transform: rotate(45deg); transform-origin: left center; border-radius: 2px; }
+    .toolbar { display: flex; flex-direction: row; align-items: center; gap: 12px; padding: 14px 24px 0; }
+    .search-box { position: relative; flex: 0 0 300px; height: 40px; }
+    .search-ic { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--ink-3); pointer-events: none; }
     .search-box input { width: 100%; height: 40px; padding: 0 12px 0 36px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); font-size: .85rem; color: var(--ink); transition: border-color .15s ease, box-shadow .15s ease, background .15s ease; }
     .search-box input::placeholder { color: var(--ink-3); }
     .search-box input:focus { outline: none; border-color: var(--accent); background: #fff; box-shadow: 0 0 0 4px var(--ring); }
@@ -271,7 +270,7 @@
     .form-card .form-grid .field input::placeholder { color: var(--ink-3); }
     .form-card .form-grid .submit-cell { display: flex; align-items: flex-end; }
     .form-card .form-grid .submit-cell .btn { margin-bottom: 1px; }
-    .table-card { margin: 14px 24px 24px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow-sm); background: #fff; }
+    .table-card { margin: 14px 24px 24px; border: 1px solid var(--line); border-radius: 14px; overflow-x: auto; box-shadow: var(--shadow-sm); background: #fff; }
     .table-card .list-table { margin: 0; border: none; }
     .table-card .list-table thead th { background: var(--bg-soft); color: var(--ink-2); font-size: .73rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--line); padding: 12px 14px; white-space: nowrap; }
     .table-card .list-table tbody td { padding: 12px 14px; font-size: .84rem; color: var(--ink-2); border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
@@ -292,7 +291,7 @@
     .badge-blue { background: #eaf2fe; color: #2563eb; }
     .badge-slate { background: #eef1f4; color: #4b5b68; }
     .badge-dark { background: #e6f5ef; color: #064e3b; }
-    .perm-tags { display: flex; flex-wrap: wrap; gap: 5px; max-width: 380px; }
+    .perm-tags { display: flex; flex-wrap: wrap; gap: 5px; min-width: 440px; }
     .perm-tag { display: inline-block; padding: 2px 9px; border-radius: 999px; background: #eef5f1; border: 1px solid #dde9e2; color: #3c5c4e; font-size: .72rem; font-weight: 500; white-space: nowrap; }
     .perm-tag.all { background: #e7f6ef; border-color: #cbeadc; color: #067a5b; font-weight: 600; }
     .empty-cell { color: var(--ink-3); }
@@ -623,7 +622,10 @@
               </div>
 
               <div class="toolbar">
-                <div class="search-box"><input id="u-search" placeholder="搜索用户名或昵称…" /></div>
+                <div class="search-box">
+                  <svg class="search-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                  <input id="u-search" placeholder="搜索用户名或昵称…" />
+                </div>
               </div>
 
               <div class="table-card">
