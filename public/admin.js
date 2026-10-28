@@ -228,6 +228,17 @@ function updateBatchCount() {
   $('batch-count').textContent = selected.size;
 }
 
+/* ---- 产品编辑抽屉 ---- */
+function openDrawer() {
+  $('drawer-mask').classList.add('show');
+  $('product-drawer').classList.add('open');
+}
+
+function closeDrawer() {
+  $('drawer-mask').classList.remove('show');
+  $('product-drawer').classList.remove('open');
+}
+
 function fillForm(p) {
   $('form-title').textContent = '编辑产品';
   $('f-id').value = p.id;
@@ -248,7 +259,7 @@ function fillForm(p) {
   $('f-img').value = p.image || '';
   const prev = $('img-preview');
   if (p.image) { prev.src = p.image; prev.hidden = false; } else { prev.hidden = true; }
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  openDrawer();
 }
 
 function resetForm() {
@@ -535,6 +546,7 @@ async function submitForm(e) {
       toast('产品已上架');
     }
     resetForm();
+    closeDrawer();
     await reload();
   } catch (err) {
     toast(err.message, true);
@@ -630,6 +642,18 @@ $('f-img').addEventListener('input', () => {
 $('list-body').addEventListener('click', onTableClick);
 $('list-search').addEventListener('input', renderList);
 
+/* ---- 产品编辑抽屉 / 侧边栏 ---- */
+$('add-product-btn').addEventListener('click', () => { resetForm(); openDrawer(); });
+$('drawer-close').addEventListener('click', closeDrawer);
+$('drawer-mask').addEventListener('click', closeDrawer);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+$('sidebar-collapse').addEventListener('click', () => {
+  const sb = document.querySelector('.sidebar');
+  sb.classList.toggle('collapsed');
+  const label = document.querySelector('#sidebar-collapse .menu-label');
+  if (label) label.textContent = sb.classList.contains('collapsed') ? '展开菜单' : '收起菜单';
+});
+
 /* ---- 批量修改 ---- */
 $('check-all').addEventListener('change', (e) => {
   const q = ($('list-search').value || '').trim().toLowerCase();
@@ -695,6 +719,7 @@ $('batch-apply').addEventListener('click', async () => {
 });
 
 /* ---- Tab 切换 ---- */
+const MENU_TITLES = { hero: '首页配置', qr: '二维码配置', price: '价格策略', products: '产品管理', categories: '分类管理' };
 $('admin-tabs').addEventListener('click', (e) => {
   const btn = e.target.closest('.tab-btn');
   if (!btn) return;
@@ -706,6 +731,8 @@ $('admin-tabs').addEventListener('click', (e) => {
   document.querySelectorAll('.tab-panel').forEach((p) => {
     p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab);
   });
+  const cur = $('current-menu');
+  if (cur && MENU_TITLES[btn.dataset.tab]) cur.textContent = MENU_TITLES[btn.dataset.tab];
 });
 
 /* 初始化：有 token 直接尝试进入 */
