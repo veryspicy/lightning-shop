@@ -59,6 +59,8 @@ async function load() {
   loadHero();
   loadQr();
   loadPrice();
+  renderDashboard();
+  openTab('dashboard');
 }
 
 async function reload() {
@@ -66,6 +68,7 @@ async function reload() {
   products = data;
   renderList();
   loadCategoryOptions();
+  renderDashboard();
 }
 
 /* ---- 分类管理 ---- */
@@ -718,22 +721,129 @@ $('batch-apply').addEventListener('click', async () => {
   }
 });
 
-/* ---- Tab 切换 ---- */
-const MENU_TITLES = { hero: '首页配置', qr: '二维码配置', price: '价格策略', products: '产品管理', categories: '分类管理' };
-$('admin-tabs').addEventListener('click', (e) => {
-  const btn = e.target.closest('.tab-btn');
-  if (!btn) return;
-  document.querySelectorAll('.tab-btn').forEach((b) => {
-    const active = b === btn;
+/* ---- Tab 切换（菜单 → 标签栏联动） ---- */
+const MENU_TITLES = { dashboard: '看板', hero: '首页配置', qr: '二维码配置', categories: '分类管理', price: '价格策略', products: '产品管理' };
+const openTabs = new Set();
+
+function activateNavTag(tab) {
+  document.querySelectorAll('.nav-tag').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
+}
+
+function ensureTab(tab) {
+  if (openTabs.has(tab) || !MENU_TITLES[tab]) return;
+  openTabs.add(tab);
+  const el = document.createElement('button');
+  el.type = 'button';
+  el.className = 'nav-tag';
+  el.dataset.tab = tab;
+  el.setAttribute('role', 'tab');
+  el.innerHTML = `<span>${MENU_TITLES[tab]}</span><i class="nav-tag-close" title="关闭">×</i>`;
+  el.addEventListener('click', () => openTab(tab));
+  el.querySelector('.nav-tag-close').addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeTab(tab);
+  });
+  $('nav-tabs').appendChild(el);
+}
+
+function closeTab(tab) {
+  if (tab === 'dashboard') return; // 看板为固定标签，不可关闭
+  if (!openTabs.has(tab)) return;
+  openTabs.delete(tab);
+  const el = document.querySelector(`.nav-tag[data-tab="${tab}"]`);
+  if (el) el.remove();
+  const wasActive = document.querySelector('.tab-panel.active')?.id === 'tab-' + tab;
+  if (wasActive) {
+    const rest = [...openTabs];
+    openTab(rest.length ? rest[rest.length - 1] : 'dashboard');
+  }
+}
+
+function openTab(tab) {
+  if (!MENU_TITLES[tab]) return;
+  document.querySelectorAll('#admin-tabs .tab-btn').forEach((b) => {
+    const active = b.dataset.tab === tab;
     b.classList.toggle('active', active);
     b.setAttribute('aria-selected', active ? 'true' : 'false');
   });
   document.querySelectorAll('.tab-panel').forEach((p) => {
-    p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab);
+    p.classList.toggle('active', p.id === 'tab-' + tab);
   });
   const cur = $('current-menu');
-  if (cur && MENU_TITLES[btn.dataset.tab]) cur.textContent = MENU_TITLES[btn.dataset.tab];
+  if (cur) cur.textContent = MENU_TITLES[tab];
+  ensureTab(tab);
+  activateNavTag(tab);
+}
+
+$('admin-tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab-btn');
+  if (!btn) return;
+  openTab(btn.dataset.tab);
 });
+
+/* ---- 看板 ---- */
+const CHART_COLORS = ['#059669', '#7C4DFF', '#f59e0b', '#0ea5e9', '#ef4444', '#14b8a6', '#8b5cf6', '#f97316', '#64748b'];
+
+function drawChart(id, type, labels, data) {
+  if (typeof Chart === 'undefined') return;
+  const canvas = $(id);
+  if (!canvas) return;
+  if (canvas._chart) canvas._chart.destroy();
+  const isPie = type === 'pie' || type === 'doughnut';
+  canvas._chart = new Chart(canvas, {
+    type,
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: isPie ? CHART_COLORS.slice(0, labels.length) : CHART_COLORS[0],
+        borderColor: '#fff',
+        borderWidth: isPie ? 2 : 1,
+        borderRadius: 6,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: isPie ? { position: 'bottom', labels: { boxWidth: 12, padding: 12, font: { size: 12 } } } : { display: false },
+      },
+      scales: isPie ? {} : {
+        x: { ticks: { maxRotation: 45, font: { size: 11 } }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: '#eef3ef' } },
+      },
+    },
+  });
+}
+
+function renderDashboard() {
+  const cats = {};
+  let hasImg = 0;
+  let onShelf = 0;
+  const priceBands = { '50 元以下': 0, '50-100 元': 0, '100-200 元': 0, '200 元以上': 0 };
+  for (const p of products) {
+    const c = p.category || '未分类';
+    cats[c] = (cats[c] || 0) + 1;
+    if (p.image) hasImg += 1;
+    if (p.status === '下架') { /* off */ } else { onShelf += 1; }
+    const m = String(p.wholesale_price || '').match(/\d+(\.\d+)?/);
+    if (m) {
+      const v = parseFloat(m[0]);
+      if (v < 50) priceBands['50 元以下'] += 1;
+      else if (v < 100) priceBands['50-100 元'] += 1;
+      else if (v < 200) priceBands['100-200 元'] += 1;
+      else priceBands['200 元以上'] += 1;
+    }
+  }
+  $('dash-total').textContent = products.length;
+  $('dash-cats').textContent = Object.keys(cats).length;
+  $('dash-hasimg').textContent = hasImg;
+  $('dash-noimg').textContent = products.length - hasImg;
+  const catEntries = Object.entries(cats).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  drawChart('chart-cat', 'bar', catEntries.map((e) => e[0]), catEntries.map((e) => e[1]));
+  drawChart('chart-price', 'doughnut', Object.keys(priceBands), Object.values(priceBands));
+  drawChart('chart-status', 'pie', ['上架', '下架'], [onShelf, products.length - onShelf]);
+}
 
 /* 初始化：有 token 直接尝试进入 */
 if (sessionStorage.getItem(TOKEN_KEY)) {

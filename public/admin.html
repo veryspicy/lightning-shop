@@ -59,6 +59,30 @@
     .btn { border-radius: 8px; }
     .btn-sm { padding: 6px 12px; font-size: .8rem; }
 
+    /* ===== 菜单分组 ===== */
+    .menu-group-title { padding: 12px 14px 3px; font-size: .66rem; color: #93a39b; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; white-space: nowrap; }
+    .sidebar.collapsed .menu-group-title { display: none; }
+
+    /* ===== 顶部标签栏 ===== */
+    .nav-tabs { display: flex; align-items: stretch; gap: 2px; background: #fff; border-bottom: 1px solid var(--border); padding: 0 16px; overflow-x: auto; scrollbar-width: thin; }
+    .nav-tag { display: inline-flex; align-items: center; gap: 6px; padding: 10px 12px 9px; font-size: .84rem; color: #667; background: transparent; border: none; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; font-weight: 600; }
+    .nav-tag:hover { color: var(--primary); background: #f7faf8; }
+    .nav-tag.active { color: var(--primary); border-bottom-color: var(--primary); }
+    .nav-tag-close { font-style: normal; font-weight: 400; color: #aab; border-radius: 4px; padding: 0 2px; font-size: .95rem; line-height: 1; }
+    .nav-tag-close:hover { color: #dc2626; background: #fdecec; }
+
+    /* ===== 看板 ===== */
+    .dash-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px; }
+    .dash-card { background: #fff; border: 1px solid #e5ede7; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+    .dash-card b { display: block; font-size: 1.7rem; color: var(--primary); line-height: 1.2; }
+    .dash-card span { font-size: .78rem; color: #8aa; font-weight: 600; }
+    .dash-card .dash-sub { margin-top: 2px; font-size: .72rem; color: #aab; font-weight: 400; }
+    .dash-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .chart-card { background: #fff; border: 1px solid #e5ede7; border-radius: 12px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+    .chart-card h3 { margin: 0 0 10px; font-size: .9rem; color: #234; }
+    .chart-card canvas { max-height: 250px; }
+    @media (max-width: 900px) { .dash-grid { grid-template-columns: repeat(2, 1fr); } .dash-charts { grid-template-columns: 1fr; } }
+
     /* ===== 面板区（原有样式保留） ===== */
     .panel { background: #fff; border: 1px solid #e5ede7; border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
     .login-panel { max-width: 360px; margin: 80px auto 0; text-align: center; }
@@ -196,13 +220,23 @@
           <span class="logo-text">Lightning Shop</span>
         </div>
         <nav class="sidebar-menu" role="tablist">
-          <button type="button" class="tab-btn active" data-tab="hero" role="tab" aria-selected="true">
+          <button type="button" class="tab-btn active" data-tab="dashboard" role="tab" aria-selected="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+            <span class="menu-label">看板</span>
+          </button>
+          <div class="menu-group-title">站点配置</div>
+          <button type="button" class="tab-btn" data-tab="hero" role="tab" aria-selected="false">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5V21a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1v-10.5z"/></svg>
             <span class="menu-label">首页配置</span>
           </button>
           <button type="button" class="tab-btn" data-tab="qr" role="tab" aria-selected="false">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM21 14v3M14 21h3v-3M21 21v-1"/></svg>
             <span class="menu-label">二维码配置</span>
+          </button>
+          <div class="menu-group-title">商品</div>
+          <button type="button" class="tab-btn" data-tab="categories" role="tab" aria-selected="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5z"/></svg>
+            <span class="menu-label">分类管理</span>
           </button>
           <button type="button" class="tab-btn" data-tab="price" role="tab" aria-selected="false">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h9l9 9-9 9-9-9V3z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>
@@ -211,10 +245,6 @@
           <button type="button" class="tab-btn" data-tab="products" role="tab" aria-selected="false">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l10 5v12l-10 5L2 19V7l10-5z"/><path d="M2 7l10 5 10-5M12 12v10"/></svg>
             <span class="menu-label">产品管理</span>
-          </button>
-          <button type="button" class="tab-btn" data-tab="categories" role="tab" aria-selected="false">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5z"/></svg>
-            <span class="menu-label">分类管理</span>
           </button>
         </nav>
         <div class="sidebar-foot">
@@ -232,13 +262,29 @@
       <!-- 右侧展示区 -->
       <main class="main-area">
         <header class="topbar">
-          <div class="breadcrumb">后台管理 / <b id="current-menu">首页配置</b></div>
+          <div class="breadcrumb">后台管理 / <b id="current-menu">看板</b></div>
           <div class="topbar-actions">
             <div class="topbar-user" title="管理员">管</div>
           </div>
         </header>
+        <div class="nav-tabs" id="nav-tabs" role="tablist"></div>
 
         <div class="content">
+          <!-- 面板: 看板 -->
+          <div id="tab-dashboard" class="tab-panel active">
+            <div class="dash-grid">
+              <div class="dash-card"><b id="dash-total">-</b><span>产品总数</span></div>
+              <div class="dash-card"><b id="dash-cats">-</b><span>分类数</span></div>
+              <div class="dash-card"><b id="dash-hasimg">-</b><span>有图产品</span></div>
+              <div class="dash-card"><b id="dash-noimg">-</b><span>缺图产品</span></div>
+            </div>
+            <div class="dash-charts">
+              <div class="chart-card"><h3>分类产品分布</h3><canvas id="chart-cat" height="120"></canvas></div>
+              <div class="chart-card"><h3>批发价区间分布</h3><canvas id="chart-price" height="120"></canvas></div>
+              <div class="chart-card"><h3>上架 / 下架状态</h3><canvas id="chart-status" height="120"></canvas></div>
+            </div>
+          </div>
+
           <!-- 面板: 首页配置 -->
           <div id="tab-hero" class="tab-panel">
             <div class="panel">
@@ -439,6 +485,7 @@
 
   <div class="toast" id="toast"></div>
   <script src="/qrcode.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
   <script src="/admin.js" defer></script>
 </body>
 </html>
