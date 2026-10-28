@@ -1,9 +1,11 @@
-/* Lightning Shop 管理后台逻辑：登录、产品增删改、图片上传 */
+/* Lightning Shop 管理后台逻辑：登录鉴权、RBAC 账号管理、产品增删改、图片上传 */
 const API = '/api';
 const TOKEN_KEY = 'ls_admin_token';
+const ROLE_LABELS = { admin: '管理员', ops: '运营', supplier: '供应商' };
 
 const $ = (id) => document.getElementById(id);
 let products = [];
+let currentUser = null;
 const selected = new Set();
 
 function toast(msg, isErr) {
@@ -22,7 +24,7 @@ async function api(path, options = {}) {
   const res = await fetch(path, options);
   if (res.status === 401) {
     logout();
-    throw new Error('登录已失效，请重新输入密码');
+    throw new Error('登录已失效，请重新登录');
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -32,28 +34,85 @@ async function api(path, options = {}) {
   return data;
 }
 
-function login() {
+async function login() {
+  const username = $('login-user').value.trim() || 'admin';
   const pass = $('login-pass').value.trim();
-  if (!pass) return toast('请输入管理密码', true);
-  sessionStorage.setItem(TOKEN_KEY, pass);
-  load().catch((err) => toast(err.message, true));
+  if (!pass) return toast('请输入密码', true);
+  try {
+    const data = await api('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: pass }),
+    });
+    sessionStorage.setItem(TOKEN_KEY, data.token);
+    $('login-error').classList.add('hidden');
+    await load();
+  } catch (err) {
+    const errEl = $('login-error');
+    errEl.textContent = err.message;
+    errEl.classList.remove('hidden');
+  }
 }
 
-function logout() {
+async function logout() {
+  const token = sessionStorage.getItem(TOKEN_KEY);
+  if (token) {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', headers: { 'x-admin-token': token } });
+    } catch { /* 忽略登出接口异常 */ }
+  }
   sessionStorage.removeItem(TOKEN_KEY);
+  currentUser = null;
+  $('login-pass').value = '';
   $('login-panel').classList.remove('hidden');
   $('admin-main').classList.add('hidden');
-  $('logout-btn').hidden = true;
+  $('user-dropdown').classList.add('hidden');
+}
+
+function renderUserMenu(user) {
+  const u = (user && user.user) || user || {};
+  currentUser = u;
+  const initial = (u.name || u.username || '管').trim().charAt(0).toUpperCase();
+  $('user-avatar-btn').textContent = initial;
+  $('user-name').textContent = u.name || u.username;
+  $('user-role').textContent = ROLE_LABELS[u.role] || u.role;
+  const brandEl = $('user-brand');
+  if (u.role === 'supplier' && u.supplierBrand) {
+    brandEl.textContent = '品牌：' + u.supplierBrand;
+    brandEl.hidden = false;
+  } else {
+    brandEl.hidden = true;
+  }
+  const menuUsers = $('menu-users');
+  if (menuUsers) menuUsers.hidden = u.role !== 'admin';
+}
+
+function toggleUserDropdown(force) {
+  const dd = $('user-dropdown');
+  const show = typeof force === 'boolean' ? force : dd.classList.contains('hidden');
+  dd.classList.toggle('hidden', !show);
+  $('user-avatar-btn').setAttribute('aria-expanded', show ? 'true' : 'false');
 }
 
 async function load() {
-  // 用全量接口校验密码并拉取列表（含下架产品）
+  // 获取当前登录用户（校验 token 并取得角色）
+  let me;
+  try {
+    me = await api('/api/auth/me', { headers: authHeaders() });
+  } catch (err) {
+    if (/登录已失效/.test(err.message)) throw err;
+    // 老版本仅密码登录：无用户表时 auth/me 不可用，回退为 token 即密码
+    me = { username: 'admin', name: '管理员', role: 'admin' };
+  }
+  renderUserMenu(me);
+  if ((me.user || me).role === 'admin') loadUsers();
+
   const data = await api('/api/admin/products', { headers: authHeaders() });
   products = data;
   renderList();
   $('login-panel').classList.add('hidden');
   $('admin-main').classList.remove('hidden');
-  $('logout-btn').hidden = false;
+  $('login-error').classList.add('hidden');
   loadCategoryOptions();
   loadConfigCategories();
   loadHero();
@@ -601,10 +660,184 @@ async function onTableClick(e) {
   }
 }
 
+/* ---- 账号管理（RBAC） ---- */
+
+async function loadUsers() {
+  try {
+    const data = await api('/api/admin/users', { headers: authHeaders() });
+    renderUsers(Array.isArray(data) ? data : (data.users || []));
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+function renderUsers(users) {
+  const body = $('users-body');
+  if (!users.length) {
+    body.innerHTML = '<tr><td colspan="7" class="muted">暂无账号</td></tr>';
+    return;
+  }
+  body.innerHTML = users
+    .map((u) => {
+      const brand = u.role === 'supplier' ? esc(u.supplierBrand || '-') : '-';
+      const status = u.status === 'disabled'
+        ? '<span style="color:#c0392b">已停用</span>'
+        : '<span style="color:#059669">正常</span>';
+      const created = (u.createdAt || '').slice(0, 10);
+      const isMe = u.id === currentUser?.id;
+      const actions = [
+        `<button type="button" class="btn btn-outline btn-xs" data-user-id="${esc(u.id)}" data-user-act="password">改密</button>`,
+        `<button type="button" class="btn btn-outline btn-xs" data-user-id="${esc(u.id)}" data-user-act="edit">编辑</button>`,
+        u.status === 'disabled'
+          ? `<button type="button" class="btn btn-outline btn-xs" data-user-id="${esc(u.id)}" data-user-act="enable">启用</button>`
+          : `<button type="button" class="btn btn-outline btn-xs" data-user-id="${esc(u.id)}" data-user-act="disable">停用</button>`,
+        isMe ? '' : `<button type="button" class="btn btn-outline btn-xs danger" data-user-id="${esc(u.id)}" data-user-act="delete">删除</button>`,
+      ].join('');
+      return `<tr>
+        <td>${esc(u.username)}${isMe ? ' <span style="color:#059669">(我)</span>' : ''}</td>
+        <td>${esc(u.name || '-')}</td>
+        <td>${ROLE_LABELS[u.role] || esc(u.role)}</td>
+        <td>${brand}</td>
+        <td>${status}</td>
+        <td>${created}</td>
+        <td>${actions}</td>
+      </tr>`;
+    })
+    .join('');
+}
+
+async function addUser() {
+  const username = $('u-username').value.trim();
+  const password = $('u-password').value.trim();
+  const name = $('u-name').value.trim();
+  const role = $('u-role').value;
+  const supplierBrand = $('u-brand').value.trim();
+  if (!username || !password) return toast('用户名与密码必填', true);
+  if (role === 'supplier' && !supplierBrand) return toast('供应商账号需绑定品牌', true);
+  try {
+    await api('/api/admin/users', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ username, password, name, role, supplierBrand }),
+    });
+    $('u-username').value = '';
+    $('u-password').value = '';
+    $('u-name').value = '';
+    $('u-brand').value = '';
+    toast('账号已创建');
+    loadUsers();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function updateUser(id, payload) {
+  try {
+    await api(`/api/admin/users/${id}`, {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify(payload),
+    });
+    toast('已保存');
+    loadUsers();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function deleteUser(id) {
+  if (!confirm('确认删除该账号？此操作不可恢复。')) return;
+  try {
+    await api(`/api/admin/users/${id}`, { method: 'DELETE', headers: authHeaders() });
+    toast('账号已删除');
+    loadUsers();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function onUsersAction(e) {
+  const btn = e.target.closest('[data-user-act]');
+  if (!btn) return;
+  const id = btn.dataset.userId;
+  const act = btn.dataset.userAct;
+  if (act === 'password') {
+    const pwd = prompt('输入新密码（至少 6 位）');
+    if (!pwd) return;
+    if (pwd.length < 6) return toast('密码至少 6 位', true);
+    await updateUser(id, { password: pwd });
+  } else if (act === 'edit') {
+    const role = prompt('设置角色：admin / ops / supplier');
+    if (!role || !['admin', 'ops', 'supplier'].includes(role)) return;
+    const payload = { role };
+    if (role === 'supplier') {
+      const brand = prompt('供应商绑定品牌');
+      if (!brand) return toast('供应商需绑定品牌', true);
+      payload.supplierBrand = brand;
+    }
+    await updateUser(id, payload);
+  } else if (act === 'enable') {
+    await updateUser(id, { status: 'enabled' });
+  } else if (act === 'disable') {
+    await updateUser(id, { status: 'disabled' });
+  } else if (act === 'delete') {
+    await deleteUser(id);
+  }
+}
+
+/* ---- 我的资料 ---- */
+
+function openProfile() {
+  if (!currentUser) return;
+  $('p-username').value = currentUser.username || '';
+  $('p-name').value = currentUser.name || '';
+  $('p-role').value = ROLE_LABELS[currentUser.role] || currentUser.role;
+  $('p-brand').value = currentUser.role === 'supplier' ? (currentUser.supplierBrand || '') : '';
+  $('p-password').value = '';
+  $('profile-mask').hidden = false;
+  $('profile-modal').hidden = false;
+  toggleUserDropdown(false);
+}
+
+function closeProfile() {
+  $('profile-mask').hidden = true;
+  $('profile-modal').hidden = true;
+}
+
+async function saveProfile() {
+  if (!currentUser) return;
+  const payload = { name: $('p-name').value.trim() };
+  const pwd = $('p-password').value;
+  if (pwd) {
+    if (pwd.length < 6) return toast('密码至少 6 位', true);
+    payload.password = pwd;
+  }
+  try {
+    const data = await api('/api/auth/me', { method: 'PUT', headers: authHeaders(), body: JSON.stringify(payload) });
+    renderUserMenu(data.user || currentUser);
+    closeProfile();
+    toast('资料已更新');
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
 /* 事件绑定 */
 $('login-btn').addEventListener('click', login);
 $('login-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
+$('login-user').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
 $('logout-btn').addEventListener('click', logout);
+$('user-avatar-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleUserDropdown(); });
+$('user-profile-btn').addEventListener('click', openProfile);
+document.addEventListener('click', (e) => {
+  if (!$('user-menu').contains(e.target)) toggleUserDropdown(false);
+});
+$('profile-close').addEventListener('click', closeProfile);
+$('profile-mask').addEventListener('click', closeProfile);
+$('profile-save').addEventListener('click', saveProfile);
+$('u-add-btn').addEventListener('click', addUser);
+$('u-password').addEventListener('keydown', (e) => { if (e.key === 'Enter') addUser(); });
+$('users-body').addEventListener('click', onUsersAction);
 $('product-form').addEventListener('submit', submitForm);
 $('form-reset').addEventListener('click', resetForm);
 $('f-img-file').addEventListener('change', () => handleUpload().catch((err) => { toast(err.message, true); $('f-img-file').value = ''; }));
@@ -741,7 +974,7 @@ $('batch-apply').addEventListener('click', async () => {
 });
 
 /* ---- Tab 切换（菜单 → 标签栏联动） ---- */
-const MENU_TITLES = { dashboard: '看板', hero: '首页配置', qr: '二维码配置', categories: '分类管理', price: '价格策略', products: '产品管理' };
+const MENU_TITLES = { dashboard: '看板', hero: '首页配置', qr: '二维码配置', categories: '分类管理', price: '价格策略', products: '产品管理', users: '账号管理' };
 const openTabs = new Set();
 
 function activateNavTag(tab) {

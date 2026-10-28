@@ -91,16 +91,101 @@ function notFound() {
 
 /* ---- 管理后台：鉴权与写接口 ---- */
 
-function unauthorized() {
-  return new Response(JSON.stringify({ error: 'unauthorized' }), {
+const SESSION_TTL = 60 * 60 * 24 * 7; // 会话有效期 7 天
+const ROLES = {
+  admin: ['products:read', 'products:write', 'categories:write', 'site:write', 'users:manage', 'upload'],
+  ops: ['products:read', 'products:write', 'categories:write', 'upload'],
+  supplier: ['products:read', 'products:write', 'upload'],
+};
+
+function unauthorized(msg = 'unauthorized') {
+  return new Response(JSON.stringify({ error: msg }), {
     status: 401,
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' },
   });
 }
 
-function checkAuth(request, env) {
+function forbidden() {
+  return new Response(JSON.stringify({ error: 'forbidden', message: '无权限执行该操作' }), {
+    status: 403,
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' },
+  });
+}
+
+async function getUsers(env) {
+  const raw = await env.KV.get('users', 'json');
+  if (Array.isArray(raw)) return raw;
+  return [];
+}
+
+async function saveUsers(env, users) {
+  await env.KV.put('users', JSON.stringify(users));
+}
+
+function randomToken() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function hashPassword(password, salt) {
+  const data = new TextEncoder().encode(`${salt}:${password}`);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function publicUser(u) {
+  return {
+    id: u.id,
+    username: u.username,
+    name: u.name || '',
+    role: u.role || 'ops',
+    supplierBrand: u.supplierBrand || '',
+    status: u.status || 'active',
+    createdAt: u.createdAt || '',
+  };
+}
+
+function nextUserId(users) {
+  const max = users.reduce((m, u) => Math.max(m, Number(String(u.id || 'u0').replace('u', '')) || 0), 0);
+  return `u${max + 1}`;
+}
+
+// 迁移兼容：系统中尚无 admin 用户时，以 env.ADMIN_PASSWORD 作为初始 admin 密码自动创建
+async function ensureAdminUser(env, users, username, password) {
+  const hasAdmin = users.some((u) => u.role === 'admin' && u.status !== 'disabled');
+  if (hasAdmin) return null;
+  if (username !== 'admin' || !env.ADMIN_PASSWORD || password !== env.ADMIN_PASSWORD) return null;
+  const salt = randomToken();
+  const passwordHash = await hashPassword(password, salt);
+  const admin = {
+    id: nextUserId(users),
+    username: 'admin',
+    name: '管理员',
+    role: 'admin',
+    supplierBrand: '',
+    status: 'active',
+    passwordHash,
+    salt,
+    createdAt: new Date().toISOString(),
+  };
+  users.push(admin);
+  await saveUsers(env, users);
+  return admin;
+}
+
+async function authUser(request, env) {
   const token = (request.headers.get('x-admin-token') || '').trim();
-  return !!env.ADMIN_PASSWORD && token === env.ADMIN_PASSWORD;
+  if (!token) return null;
+  const session = await env.KV.get(`sessions:${token}`, 'json');
+  if (!session || !session.userId) return null;
+  const users = await getUsers(env);
+  const user = users.find((u) => u.id === session.userId && u.status !== 'disabled');
+  return user || null;
+}
+
+function can(user, perm) {
+  return !!user && (ROLES[user.role] || []).includes(perm);
 }
 
 async function readJson(request) {
@@ -221,15 +306,177 @@ async function handleApi(request, env, url) {
   const products = await getProducts(env);
   const onShelf = products.filter((p) => p.status !== '下架');
 
+  // ---- 登录 / 会话 / 当前用户 ----
+  if (path === '/api/auth/login' && method === 'POST') {
+    const body = await readJson(request);
+    if (!body || !String(body.username || '').trim() || !String(body.password || '')) {
+      return json({ error: 'bad_request', message: '用户名和密码必填' }, 400);
+    }
+    const username = String(body.username).trim();
+    const password = String(body.password);
+    const users = await getUsers(env);
+    const migrated = await ensureAdminUser(env, users, username, password);
+    let user = migrated || users.find((u) => u.username === username && u.status !== 'disabled');
+    if (!user) return unauthorized('用户名或密码错误');
+    const hash = await hashPassword(password, user.salt);
+    if (hash !== user.passwordHash) return unauthorized('用户名或密码错误');
+    const token = randomToken();
+    await env.KV.put(`sessions:${token}`, JSON.stringify({ userId: user.id }), { expirationTtl: SESSION_TTL });
+    user.lastLoginAt = new Date().toISOString();
+    await saveUsers(env, users);
+    return json({ ok: true, token, user: publicUser(user) });
+  }
+
+  if (path === '/api/auth/logout' && method === 'POST') {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    const token = (request.headers.get('x-admin-token') || '').trim();
+    if (token) await env.KV.delete(`sessions:${token}`);
+    return json({ ok: true });
+  }
+
+  if (path === '/api/auth/me') {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (method === 'GET') return json({ ok: true, user: publicUser(user) });
+    if (method === 'PUT') {
+      const body = await readJson(request);
+      if (!body) return json({ error: 'bad_request' }, 400);
+      if (body.name !== undefined) user.name = String(body.name).trim().slice(0, 20);
+      if (body.newPassword) {
+        if (!body.oldPassword) return json({ error: 'bad_request', message: '请输入当前密码' }, 400);
+        const oldHash = await hashPassword(String(body.oldPassword), user.salt);
+        if (oldHash !== user.passwordHash) return json({ error: 'bad_request', message: '当前密码不正确' }, 400);
+        const pwd = String(body.newPassword);
+        if (pwd.length < 6) return json({ error: 'bad_request', message: '新密码至少 6 位' }, 400);
+        user.salt = randomToken();
+        user.passwordHash = await hashPassword(pwd, user.salt);
+      }
+      const uidx = (await getUsers(env)).findIndex((u) => u.id === user.id);
+      if (uidx >= 0) {
+        const users = await getUsers(env);
+        users[uidx] = user;
+        await saveUsers(env, users);
+      }
+      return json({ ok: true, user: publicUser(user) });
+    }
+    return notFound();
+  }
+
+  // ---- 账号管理（仅 admin） ----
+  if (path === '/api/admin/users' && method === 'GET') {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!can(user, 'users:manage')) return forbidden();
+    const list = (await getUsers(env)).map(publicUser);
+    return jsonNoCache(list);
+  }
+
+  if (path === '/api/admin/users' && method === 'POST') {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!can(user, 'users:manage')) return forbidden();
+    const body = await readJson(request);
+    const username = String(body?.username || '').trim();
+    const password = String(body?.password || '');
+    const name = String(body?.name || '').trim();
+    const role = ['admin', 'ops', 'supplier'].includes(body?.role) ? body.role : 'ops';
+    if (!username || !password) return json({ error: 'bad_request', message: '用户名和密码必填' }, 400);
+    if (!/^[a-zA-Z0-9_]{2,20}$/.test(username)) return json({ error: 'bad_request', message: '用户名需 2-20 位字母/数字/下划线' }, 400);
+    if (password.length < 6) return json({ error: 'bad_request', message: '密码至少 6 位' }, 400);
+    const users = await getUsers(env);
+    if (users.some((u) => u.username === username)) return json({ error: 'duplicated', message: '用户名已存在' }, 400);
+    const supplierBrand = role === 'supplier' ? String(body?.supplierBrand || '').trim() : '';
+    if (role === 'supplier' && !supplierBrand) return json({ error: 'bad_request', message: '供应商账号需绑定品牌' }, 400);
+    const salt = randomToken();
+    const passwordHash = await hashPassword(password, salt);
+    const nu = {
+      id: nextUserId(users),
+      username,
+      name: name || username,
+      role,
+      supplierBrand,
+      status: 'active',
+      passwordHash,
+      salt,
+      createdAt: new Date().toISOString(),
+    };
+    users.push(nu);
+    await saveUsers(env, users);
+    return json({ ok: true, user: publicUser(nu) }, 201);
+  }
+
+  // /api/admin/users/:id
+  const um = path.match(/^\/api\/admin\/users\/([^/]+)$/);
+  if (um) {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!can(user, 'users:manage')) return forbidden();
+    const users = await getUsers(env);
+    const idx = users.findIndex((u) => u.id === um[1]);
+    if (idx === -1) return notFound();
+    const target = users[idx];
+    if (method === 'PUT') {
+      const body = await readJson(request);
+      if (!body) return json({ error: 'bad_request' }, 400);
+      if (body.name !== undefined) target.name = String(body.name).trim().slice(0, 20);
+      if (body.role !== undefined && ['admin', 'ops', 'supplier'].includes(body.role)) {
+        target.role = body.role;
+        if (body.role === 'supplier') {
+          const sb = String((body.supplierBrand ?? target.supplierBrand) || '').trim();
+          if (!sb) return json({ error: 'bad_request', message: '供应商账号需绑定品牌' }, 400);
+          target.supplierBrand = sb;
+        } else {
+          target.supplierBrand = '';
+        }
+      } else if (body.supplierBrand !== undefined && target.role === 'supplier') {
+        const sb = String(body.supplierBrand || '').trim();
+        if (!sb) return json({ error: 'bad_request', message: '供应商账号需绑定品牌' }, 400);
+        target.supplierBrand = sb;
+      }
+      if (body.password) {
+        if (String(body.password).length < 6) return json({ error: 'bad_request', message: '密码至少 6 位' }, 400);
+        target.salt = randomToken();
+        target.passwordHash = await hashPassword(String(body.password), target.salt);
+      }
+      if (body.status !== undefined) {
+        if (body.status === 'disabled') {
+          if (target.id === user.id) return json({ error: 'bad_request', message: '不能停用当前登录账号' }, 400);
+          const admins = users.filter((u) => u.role === 'admin' && u.status !== 'disabled');
+          if (target.role === 'admin' && admins.length <= 1) return json({ error: 'bad_request', message: '至少保留一个启用中的管理员' }, 400);
+        }
+        target.status = body.status === 'active' ? 'active' : 'disabled';
+      }
+      users[idx] = target;
+      await saveUsers(env, users);
+      return json({ ok: true, user: publicUser(target) });
+    }
+    if (method === 'DELETE') {
+      if (target.id === user.id) return json({ error: 'bad_request', message: '不能删除当前登录账号' }, 400);
+      const admins = users.filter((u) => u.role === 'admin' && u.status !== 'disabled');
+      if (target.role === 'admin' && admins.length <= 1) return json({ error: 'bad_request', message: '至少保留一个管理员' }, 400);
+      users.splice(idx, 1);
+      await saveUsers(env, users);
+      return json({ ok: true, id: target.id });
+    }
+    return notFound();
+  }
+
   // GET /api/admin/products：后台全量列表（含下架）
   if (path === '/api/admin/products' && method === 'GET') {
-    if (!checkAuth(request, env)) return unauthorized();
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (user.role === 'supplier') {
+      return json(products.filter((p) => p.brand === user.supplierBrand));
+    }
     return json(products);
   }
 
   // 分类配置管理：GET 返回配置分类与产品自动发现分类；POST 新增配置分类
   if (path === '/api/admin/categories') {
-    if (!checkAuth(request, env)) return unauthorized();
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!can(user, 'categories:write')) return forbidden();
     const configured = await getConfigCategories(env);
     if (method === 'GET') {
       const merged = buildCategories(onShelf, configured);
@@ -307,7 +554,9 @@ async function handleApi(request, env, url) {
   if (path === '/api/site/hero') {
     if (method === 'GET') return jsonNoCache(await getHero(env));
     if (method === 'PUT') {
-      if (!checkAuth(request, env)) return unauthorized();
+      const user = await authUser(request, env);
+      if (!user) return unauthorized();
+      if (!can(user, 'site:write')) return forbidden();
       const raw = await readJson(request);
       if (!raw) return json({ error: 'bad_request' }, 400);
       const hero = await saveHero(env, raw);
@@ -320,7 +569,9 @@ async function handleApi(request, env, url) {
   if (path === '/api/site/price') {
     if (method === 'GET') return jsonNoCache(await getPrice(env));
     if (method === 'PUT') {
-      if (!checkAuth(request, env)) return unauthorized();
+      const user = await authUser(request, env);
+      if (!user) return unauthorized();
+      if (!can(user, 'site:write')) return forbidden();
       const raw = await readJson(request);
       if (!raw) return json({ error: 'bad_request' }, 400);
       const price = await savePrice(env, raw);
@@ -333,7 +584,9 @@ async function handleApi(request, env, url) {
   if (path === '/api/site/qr') {
     if (method === 'GET') return jsonNoCache(await getQr(env));
     if (method === 'PUT') {
-      if (!checkAuth(request, env)) return unauthorized();
+      const user = await authUser(request, env);
+      if (!user) return unauthorized();
+      if (!can(user, 'site:write')) return forbidden();
       const raw = await readJson(request);
       if (!raw) return json({ error: 'bad_request' }, 400);
       const qr = await saveQr(env, raw);
@@ -346,7 +599,9 @@ async function handleApi(request, env, url) {
   // body: { ids: [id...], patch: { badge: '火锅底料', ... } }
   // 仅合并 patch 中出现的字段（白名单），未传字段保留原值，批量回写 KV
   if (path === '/api/products/batch' && (method === 'PATCH' || method === 'PUT')) {
-    if (!checkAuth(request, env)) return unauthorized();
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!can(user, 'products:write')) return forbidden();
     const raw = await readJson(request);
     if (!raw || !Array.isArray(raw.ids) || raw.ids.length === 0 || !raw.patch || typeof raw.patch !== 'object') {
       return json({ error: 'bad_request', message: 'ids 数组与 patch 对象必填' }, 400);
@@ -355,7 +610,12 @@ async function handleApi(request, env, url) {
     if (patchKeys.length === 0) {
       return json({ error: 'bad_request', message: 'patch 中无有效字段' }, 400);
     }
-    const idSet = new Set(raw.ids);
+    let ids = raw.ids;
+    if (user.role === 'supplier') {
+      const owned = new Set(products.filter((p) => p.brand === user.supplierBrand).map((p) => p.id));
+      ids = ids.filter((id) => owned.has(id));
+    }
+    const idSet = new Set(ids);
     let updated = 0;
     const changed = [];
     for (let i = 0; i < products.length; i++) {
@@ -387,7 +647,9 @@ async function handleApi(request, env, url) {
   // body: { products: [ {...产品字段}, ... ] }
   // 按 name+brand upsert：已存在则仅合并传入字段，不存在则新增；逐行校验，失败行跳过不中断
   if (path === '/api/admin/products/import' && method === 'POST') {
-    if (!checkAuth(request, env)) return unauthorized();
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!can(user, 'products:write')) return forbidden();
     const raw = await readJson(request);
     if (!raw || !Array.isArray(raw.products)) {
       return json({ error: 'bad_request', message: 'products 数组必填' }, 400);
@@ -409,7 +671,7 @@ async function handleApi(request, env, url) {
         errors.push({ index: i, message: '品名必填' });
         continue;
       }
-      const brand = String(row.brand || '').trim();
+      const brand = String(user.role === 'supplier' ? user.supplierBrand : (row.brand || '')).trim();
       const key = `${name}\u0000${brand}`;
       const hit = upsert.get(key);
       if (hit) {
@@ -455,13 +717,17 @@ async function handleApi(request, env, url) {
       return p ? json(p) : notFound();
     }
     if (method === 'PUT' || method === 'DELETE') {
-      if (!checkAuth(request, env)) return unauthorized();
+      const user = await authUser(request, env);
+      if (!user) return unauthorized();
+      if (!can(user, 'products:write')) return forbidden();
       const idx = products.findIndex((x) => x.id === m[1]);
       if (idx === -1) return notFound();
+      if (user.role === 'supplier' && products[idx].brand !== user.supplierBrand) return forbidden();
 
       if (method === 'PUT') {
         const raw = await readJson(request);
         if (!raw) return json({ error: 'bad_request' }, 400);
+        if (user.role === 'supplier') raw.brand = user.supplierBrand;
         const merged = { ...products[idx], ...sanitizeProduct(raw) };
         products[idx] = merged;
         await saveProduct(env, products, merged);
@@ -512,11 +778,14 @@ async function handleApi(request, env, url) {
       return json(list);
     }
     if (method === 'POST') {
-      if (!checkAuth(request, env)) return unauthorized();
+      const user = await authUser(request, env);
+      if (!user) return unauthorized();
+      if (!can(user, 'products:write')) return forbidden();
       const raw = await readJson(request);
       if (!raw || !String(raw.name || '').trim()) {
         return json({ error: 'bad_request', message: '品名必填' }, 400);
       }
+      if (user.role === 'supplier') raw.brand = user.supplierBrand;
       const { id, seq } = nextId(products);
       const item = { id, seq, ...sanitizeProduct(raw) };
       products.push(item);
@@ -529,7 +798,9 @@ async function handleApi(request, env, url) {
   // POST /api/upload：图片上传（base64 -> R2）
   if (path === '/api/upload') {
     if (method !== 'POST') return notFound();
-    if (!checkAuth(request, env)) return unauthorized();
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!can(user, 'upload')) return forbidden();
     const body = await readJson(request);
     if (!body || !body.filename || !body.base64) {
       return json({ error: 'bad_request', message: 'filename 与 base64 必填' }, 400);

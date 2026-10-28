@@ -53,11 +53,36 @@
     .breadcrumb { color: #99a; font-size: .88rem; }
     .breadcrumb b { color: var(--text); }
     .topbar-actions { display: flex; align-items: center; gap: 10px; }
-    .topbar-user { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #7C4DFF, #059669); color: #fff; display: flex; align-items: center; justify-content: center; font-size: .8rem; font-weight: 700; }
+    .topbar-user { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #7C4DFF, #059669); color: #fff; display: flex; align-items: center; justify-content: center; font-size: .8rem; font-weight: 700; border: none; cursor: pointer; padding: 0; }
+    .topbar-user:hover { opacity: .9; }
+    .user-menu { position: relative; }
+    .user-dropdown { position: absolute; right: 0; top: calc(100% + 8px); width: 220px; background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 32px rgba(15, 40, 80, .14); z-index: 50; padding: 8px; }
+    .user-dropdown-head { padding: 10px 12px; border-bottom: 1px solid #eef3ef; margin-bottom: 6px; }
+    .user-dropdown-name { font-weight: 700; font-size: .92rem; color: var(--text); }
+    .user-dropdown-role { font-size: .76rem; color: var(--primary); margin-top: 2px; }
+    .user-dropdown-brand { font-size: .74rem; color: #889; margin-top: 2px; }
+    .user-dropdown-divider { height: 1px; background: #eef3ef; margin: 4px 0; }
+    .user-menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 12px; border: none; background: transparent; color: var(--text); font-size: .86rem; font-weight: 500; border-radius: 8px; cursor: pointer; }
+    .user-menu-item:hover { background: #f4f8f5; }
+    .user-menu-item svg { width: 16px; height: 16px; flex: none; }
+    .user-menu-item.danger { color: #c0392b; }
+    .user-menu-item.danger:hover { background: #fdecec; }
+    .login-error { color: #c0392b; font-size: .84rem; margin-top: 10px; }
+    .modal-mask { position: fixed; inset: 0; background: rgba(15, 40, 80, .45); z-index: 80; }
+    .modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 360px; max-width: calc(100vw - 32px); background: #fff; border-radius: 14px; box-shadow: 0 20px 60px rgba(15, 40, 80, .25); z-index: 90; padding: 18px 20px; }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .modal-head h3 { margin: 0; font-size: 1rem; }
+    .modal-body .field { margin-bottom: 10px; }
+    .modal-foot { display: flex; justify-content: flex-end; margin-top: 14px; }
     .content { padding: 24px; }
 
     .btn { border-radius: 8px; }
     .btn-sm { padding: 6px 12px; font-size: .8rem; }
+    .btn-xs { padding: 3px 8px; font-size: .74rem; border-radius: 6px; }
+    .btn-xs.danger { color: #c0392b; border-color: #f0c4bc; }
+    .btn-xs.danger:hover { background: #fdecec; }
+    .btn-outline { border: 1px solid #d7e2da; background: #fff; color: #334; }
+    .btn-outline:hover { background: #f4f8f5; }
 
     /* ===== 菜单分组 ===== */
     .menu-group-title { padding: 12px 14px 3px; font-size: .66rem; color: #93a39b; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; white-space: nowrap; }
@@ -205,9 +230,11 @@
 <body>
   <!-- 登录 -->
   <section class="panel login-panel" id="login-panel">
-    <h2>管理密码</h2>
-    <input type="password" id="login-pass" placeholder="输入管理密码" autocomplete="current-password" />
-    <button class="btn btn-primary btn-block" id="login-btn">进入后台</button>
+    <h2>后台登录</h2>
+    <input type="text" id="login-user" placeholder="用户名（默认 admin）" autocomplete="username" />
+    <input type="password" id="login-pass" placeholder="输入密码" autocomplete="current-password" />
+    <button class="btn btn-primary btn-block" id="login-btn">登 录</button>
+    <p id="login-error" class="login-error hidden"></p>
   </section>
 
   <!-- 主界面 -->
@@ -246,15 +273,16 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l10 5v12l-10 5L2 19V7l10-5z"/><path d="M2 7l10 5 10-5M12 12v10"/></svg>
             <span class="menu-label">产品管理</span>
           </button>
+          <div class="menu-group-title">系统</div>
+          <button type="button" class="tab-btn" data-tab="users" role="tab" aria-selected="false" id="menu-users" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            <span class="menu-label">账号管理</span>
+          </button>
         </nav>
         <div class="sidebar-foot">
           <button type="button" class="collapse-btn" id="sidebar-collapse" title="折叠/展开菜单">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
             <span class="menu-label">收起菜单</span>
-          </button>
-          <button type="button" class="logout-btn-side" id="logout-btn" hidden>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
-            <span class="menu-label">退出登录</span>
           </button>
         </div>
       </aside>
@@ -264,7 +292,25 @@
         <header class="topbar">
           <div class="breadcrumb">后台管理 / <b id="current-menu">看板</b></div>
           <div class="topbar-actions">
-            <div class="topbar-user" title="管理员">管</div>
+            <div class="user-menu" id="user-menu">
+              <button type="button" class="topbar-user" id="user-avatar-btn" title="用户菜单" aria-haspopup="true" aria-expanded="false">管</button>
+              <div class="user-dropdown hidden" id="user-dropdown">
+                <div class="user-dropdown-head">
+                  <div class="user-dropdown-name" id="user-name">-</div>
+                  <div class="user-dropdown-role" id="user-role">-</div>
+                  <div class="user-dropdown-brand" id="user-brand" hidden></div>
+                </div>
+                <div class="user-dropdown-divider"></div>
+                <button type="button" class="user-menu-item" id="user-profile-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                  <span>我的资料</span>
+                </button>
+                <button type="button" class="user-menu-item danger" id="logout-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+                  <span>退出登录</span>
+                </button>
+              </div>
+            </div>
           </div>
         </header>
         <div class="nav-tabs" id="nav-tabs" role="tablist"></div>
@@ -438,6 +484,34 @@
               <div class="cat-chips" id="cat-chips"><span class="muted">加载中…</span></div>
             </div>
           </div>
+
+          <!-- 面板: 账号管理（RBAC，仅管理员可见） -->
+          <div id="tab-users" class="tab-panel">
+            <div class="panel">
+              <h2>账号管理</h2>
+              <p class="muted" style="margin:4px 0 12px">支持管理员（admin）、运营（ops）、供应商（supplier）三类角色。供应商账号需绑定品牌，仅能管理自己品牌的产品。</p>
+              <div class="bar" style="justify-content:flex-start; flex-wrap:wrap">
+                <div class="field" style="min-width:150px"><label>用户名</label><input id="u-username" placeholder="登录用户名" /></div>
+                <div class="field" style="min-width:150px"><label>密码</label><input id="u-password" placeholder="初始密码" /></div>
+                <div class="field" style="min-width:140px"><label>昵称</label><input id="u-name" placeholder="显示名称" /></div>
+                <div class="field" style="min-width:130px"><label>角色</label>
+                  <select id="u-role">
+                    <option value="admin">管理员</option>
+                    <option value="ops">运营</option>
+                    <option value="supplier">供应商</option>
+                  </select>
+                </div>
+                <div class="field" style="min-width:160px"><label>供应商品牌</label><input id="u-brand" placeholder="供应商必填，如 蒙降三高" /></div>
+                <div class="field"><label style="visibility:hidden">.</label>
+                  <button type="button" class="btn btn-primary btn-sm" id="u-add-btn">新增账号</button>
+                </div>
+              </div>
+              <table class="list-table">
+                <thead><tr><th>用户名</th><th>昵称</th><th>角色</th><th>品牌</th><th>状态</th><th>创建时间</th><th style="width:220px">操作</th></tr></thead>
+                <tbody id="users-body"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </main>
     </div>
@@ -483,6 +557,25 @@
       <button type="submit" class="btn btn-primary btn-sm" form="product-form" id="form-submit">保存产品</button>
     </div>
   </aside>
+
+  <!-- 我的资料弹窗 -->
+  <div class="modal-mask" id="profile-mask" hidden></div>
+  <div class="modal" id="profile-modal" hidden>
+    <div class="modal-head">
+      <h3>我的资料</h3>
+      <button type="button" class="drawer-close" id="profile-close" title="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label>用户名</label><input id="p-username" disabled /></div>
+      <div class="field"><label>昵称</label><input id="p-name" /></div>
+      <div class="field"><label>角色</label><input id="p-role" disabled /></div>
+      <div class="field"><label>绑定品牌（供应商）</label><input id="p-brand" disabled /></div>
+      <div class="field"><label>修改密码（留空则不修改）</label><input id="p-password" type="password" placeholder="输入新密码" autocomplete="new-password" /></div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-primary btn-sm" id="profile-save">保存</button>
+    </div>
+  </div>
 
   <div class="toast" id="toast"></div>
   <script src="/qrcode.min.js" defer></script>
