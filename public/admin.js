@@ -232,6 +232,19 @@ function updateBatchCount() {
 }
 
 /* ---- 产品编辑抽屉 ---- */
+let imgUploading = false;
+
+function setImgUploading(on) {
+  imgUploading = !!on;
+  const btn = $('form-submit');
+  if (btn) {
+    btn.disabled = on;
+    btn.textContent = on ? '图片上传中…' : '保存产品';
+  }
+  const tip = $('img-upload-tip');
+  if (tip) tip.hidden = !on;
+}
+
 function openDrawer() {
   $('drawer-mask').classList.add('show');
   $('product-drawer').classList.add('open');
@@ -342,18 +355,23 @@ async function handleUpload() {
   const file = $('f-img-file').files[0];
   if (!file) return toast('请选择图片文件', true);
   if (!/\.(jpe?g|png|webp)$/i.test(file.name)) return toast('仅支持 JPG / PNG / WebP', true);
-  const dataUrl = await fileToJpgBase64(file, { square: $('f-img-crop')?.checked, maxSize: 1000, quality: 0.82 });
-  const filename = file.name.replace(/\.[^.]+$/, '') + '.jpg';
-  const r = await api('/api/upload', {
-    method: 'POST',
-    headers: authHeaders(),
-    body: JSON.stringify({ filename, base64: dataUrl }),
-  });
-  $('f-img').value = r.url;
-  const prev = $('img-preview');
-  prev.src = r.url;
-  prev.hidden = false;
-  toast('图片上传成功');
+  setImgUploading(true);
+  try {
+    const dataUrl = await fileToJpgBase64(file, { square: $('f-img-crop')?.checked, maxSize: 1000, quality: 0.82 });
+    const filename = file.name.replace(/\.[^.]+$/, '') + '.jpg';
+    const r = await api('/api/upload', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ filename, base64: dataUrl }),
+    });
+    $('f-img').value = r.url;
+    const prev = $('img-preview');
+    prev.src = r.url;
+    prev.hidden = false;
+    toast('图片上传成功');
+  } finally {
+    setImgUploading(false);
+  }
 }
 
 /* ---- Hero 站点配置 ---- */
@@ -538,6 +556,7 @@ async function savePrice() {
 
 async function submitForm(e) {
   e.preventDefault();
+  if (imgUploading) return toast('图片上传中，请稍候再保存', true);
   const id = $('f-id').value;
   const body = collectForm();
   try {
@@ -588,7 +607,7 @@ $('login-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') logi
 $('logout-btn').addEventListener('click', logout);
 $('product-form').addEventListener('submit', submitForm);
 $('form-reset').addEventListener('click', resetForm);
-$('f-img-file').addEventListener('change', () => handleUpload().catch((err) => toast(err.message, true)));
+$('f-img-file').addEventListener('change', () => handleUpload().catch((err) => { toast(err.message, true); $('f-img-file').value = ''; }));
 $('hero-save').addEventListener('click', saveHero);
 $('cat-add-btn').addEventListener('click', addCategory);
 $('cat-new-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') addCategory(); });

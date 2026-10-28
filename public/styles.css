@@ -75,6 +75,9 @@ a:hover { color: var(--primary-dark); }
   transition: background var(--dur) var(--ease), transform 120ms var(--ease), box-shadow var(--dur) var(--ease);
 }
 .btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: .6; cursor: not-allowed; }
+.img-upload-tip { display: block; color: var(--primary); font-size: 12px; margin-top: 6px; }
+.img-upload-tip[hidden] { display: none; }
 .btn-primary { background: var(--primary); color: #fff; }
 .btn-primary:hover { background: var(--primary-dark); color: #fff; box-shadow: var(--shadow-md); }
 .btn-ghost { background: transparent; color: #fff; border-color: rgba(255,255,255,.55); }
