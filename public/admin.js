@@ -429,7 +429,7 @@ async function handleUpload() {
   setImgUploading(true);
   try {
     const dataUrl = await fileToJpgBase64(file, { square: $('f-img-crop')?.checked, maxSize: 1000, quality: 0.82 });
-    const filename = file.name.replace(/\.[^.]+$/, '') + '.jpg';
+    const filename = `${file.name.replace(/\.[^.]+$/, '')}-${Date.now().toString(36)}.jpg`;
     const r = await api('/api/upload', {
       method: 'POST',
       headers: authHeaders(),
@@ -437,7 +437,7 @@ async function handleUpload() {
     });
     $('f-img').value = r.url;
     const prev = $('img-preview');
-    prev.src = r.url;
+    prev.src = r.url + '?t=' + Date.now();
     prev.hidden = false;
     toast('图片上传成功');
   } finally {
