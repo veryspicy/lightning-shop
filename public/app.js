@@ -129,9 +129,9 @@ function toggleHighlight(btn) {
   if (!wrap) return;
   const p = wrap.querySelector('.card-highlight');
   if (!p) return;
-  const expanded = !p.classList.contains('clamped');
-  p.classList.toggle('clamped', !expanded);
-  btn.textContent = expanded ? '更多' : '收起';
+  const isClamped = p.classList.contains('clamped');
+  p.classList.toggle('clamped', !isClamped);
+  btn.textContent = isClamped ? '收起' : '更多';
 }
 
 /* 端判定：768px 断点与 CSS 响应式一致（PC=分页器 / 移动=触底加载） */
