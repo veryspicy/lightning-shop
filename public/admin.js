@@ -251,13 +251,22 @@ async function deleteCategory() {
 }
 
 async function loadCategoryOptions() {
-  const cats = await api('/api/categories', { headers: authHeaders() });
-  const dl = $('category-list');
-  dl.innerHTML = cats.map((c) => `<option value="${c.name}"></option>`).join('');
+  // 编辑产品/批量筛选的分类选项与「分类管理」同源：配置分类 + 自动发现分类
+  const data = await api('/api/admin/categories', { headers: authHeaders() });
+  const all = [];
+  const seen = new Set();
+  for (const c of [...(data.configured || []), ...(data.extra || [])]) {
+    if (!seen.has(c.name)) { seen.add(c.name); all.push(c); }
+  }
+  const opts = (suffix) => all.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}${suffix ? `（${c.count}）` : ''}</option>`).join('');
+  const fcat = $('f-category');
+  const cur = fcat.value;
+  fcat.innerHTML = '<option value="">— 未设置 —</option>' + opts(false);
+  fcat.value = cur;
   const sel = $('batch-cat-select');
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">— 选择分类 —</option>' + cats.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}（${c.count}）</option>`).join('');
-  sel.value = cur;
+  const selCur = sel.value;
+  sel.innerHTML = '<option value="">— 选择分类 —</option>' + opts(true);
+  sel.value = selCur;
 }
 
 function esc(s) {
