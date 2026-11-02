@@ -279,7 +279,7 @@ function renderList() {
     .map(
       (p) => `<tr>
         <td><input type="checkbox" class="row-check" data-id="${esc(p.id)}" ${selected.has(p.id) ? 'checked' : ''} /></td>
-        <td>${p.image ? `<img src="${p.image}" alt="" />` : '<div class="ph">无图</div>'}</td>
+        <td>${p.image ? `<span class="thumb-wrap"><img src="${p.image}" alt="" data-lightbox="${esc(p.id)}" /><i class="thumb-zoom" title="点击查看大图"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="10" height="10"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></i></span>` : '<div class="ph">无图</div>'}</td>
         <td>${esc(p.id)}</td>
         <td>${esc(p.name)}</td>
         <td>${badgeChips(p.badge)}</td>
@@ -1099,6 +1099,33 @@ $('f-img').addEventListener('input', () => {
   if (v) { prev.src = v; prev.hidden = false; } else { prev.hidden = true; }
 });
 $('list-body').addEventListener('click', onTableClick);
+
+/* ---- 产品图片大图预览（lightbox） ---- */
+function openLightbox(src) {
+  const mask = $('lightbox-mask');
+  const img = $('lightbox-img');
+  if (!mask || !img || !src) return;
+  img.src = src;
+  mask.hidden = false;
+  document.body.style.overflow = 'hidden';
+}
+function closeLightbox() {
+  const mask = $('lightbox-mask');
+  if (!mask || mask.hidden) return;
+  mask.hidden = true;
+  $('lightbox-img').removeAttribute('src');
+  document.body.style.overflow = '';
+}
+$('list-body').addEventListener('click', (e) => {
+  const img = e.target.closest('img[data-lightbox]');
+  if (img) openLightbox(img.getAttribute('src'));
+});
+$('lightbox-close').addEventListener('click', closeLightbox);
+$('lightbox-mask').addEventListener('click', (e) => {
+  if (e.target === $('lightbox-mask')) closeLightbox();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
+
 $('list-search').addEventListener('input', renderList);
 
 /* ---- 产品编辑抽屉 / 侧边栏 ---- */

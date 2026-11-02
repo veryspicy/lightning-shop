@@ -14,6 +14,8 @@ let activeBrand = '';
 let priceConfig = null;
 let loading = false;
 const PAGE_SIZE = 24;
+let currentPage = 0; // 当前页码（0-based），PC 分页器使用
+let totalPages = 0;  // 总页数
 // 单行折叠状态：chip 列表始终保持一行，放不下时溢出项隐藏 + 「展开 N 个」按钮
 let categoryExpanded = false;
 let brandExpanded = false;
@@ -107,6 +109,7 @@ function render() {
   emptyState.hidden = products.length > 0;
   updateResultMeta();
   updateLoadMore();
+  updatePagination();
   initHighlightToggles();
 }
 
@@ -131,10 +134,50 @@ function toggleHighlight(btn) {
   btn.textContent = expanded ? '更多' : '收起';
 }
 
+/* 端判定：768px 断点与 CSS 响应式一致（PC=分页器 / 移动=触底加载） */
+function isMobile() {
+  return window.matchMedia('(max-width: 768px)').matches;
+}
+
 function updateLoadMore() {
   const moreBtn = document.getElementById('load-more');
   if (!moreBtn) return;
+  // PC 端由页码分页器接管，按钮隐藏；移动端保留按钮作触底加载兜底
+  if (!isMobile()) { moreBtn.hidden = true; return; }
   moreBtn.hidden = products.length >= total;
+}
+
+function updatePagination() {
+  const pager = document.getElementById('pagination');
+  if (!pager) return;
+  totalPages = Math.ceil(total / PAGE_SIZE);
+  if (isMobile() || totalPages <= 1) {
+    pager.hidden = true;
+    pager.innerHTML = '';
+    return;
+  }
+  pager.hidden = false;
+  pager.innerHTML = pagerHtml(totalPages, currentPage);
+}
+
+/* 页码窗口：首/尾页 + 当前页前后各 2 页，其余用省略号折叠；页数少时全量展示 */
+function pagerHtml(totalPages, page) {
+  const parts = [];
+  const pushBtn = (text, key, cls, disabled) => {
+    const activeMark = (!disabled && key !== 'prev' && key !== 'next' && Number(key) === page)
+      ? ' aria-current="page"' : '';
+    parts.push(`<button type="button" class="pager-btn${cls ? ' ' + cls : ''}" data-page="${key}" ${disabled ? 'disabled' : ''}${activeMark}>${text}</button>`);
+  };
+  pushBtn('‹ 上一页', 'prev', '', page <= 0);
+  const start = Math.max(0, page - 2);
+  const end = Math.min(totalPages - 1, page + 2);
+  if (start > 0) pushBtn('1', '0', '', false);
+  if (start > 1) parts.push('<span class="pager-ellipsis">…</span>');
+  for (let i = start; i <= end; i++) pushBtn(String(i + 1), String(i), i === page ? 'active' : '', false);
+  if (end < totalPages - 2) parts.push('<span class="pager-ellipsis">…</span>');
+  if (end < totalPages - 1) pushBtn(String(totalPages), String(totalPages - 1), '', false);
+  pushBtn('下一页 ›', 'next', '', page >= totalPages - 1);
+  return parts.join('');
 }
 
 function chipHtml(key, name, count, active) {
@@ -261,34 +304,43 @@ function styleQrGradient(box) {
 
 function applyQr(qr) {
   if (!qr) return;
-  const quoteImg = document.getElementById('quote-qr-img');
-  if (quoteImg && qr.quoteImage) {
-    quoteImg.src = qr.quoteImage;
-    quoteImg.alt = '报价单二维码';
+  // 报价二维码：.b2b 区块 + 联系方式面板同步
+  const quoteImgs = ['quote-qr-img', 'contact-quote-img']
+    .map((id) => document.getElementById(id)).filter(Boolean);
+  if (qr.quoteImage) {
+    quoteImgs.forEach((img) => { img.src = qr.quoteImage; img.alt = '报价单二维码'; });
   }
   const quoteTitle = document.getElementById('quote-qr-title');
-  if (quoteTitle && qr.quoteTitle) quoteTitle.textContent = qr.quoteTitle;
+  const contactQuoteTitle = document.getElementById('contact-quote-title');
+  if (qr.quoteTitle && quoteTitle) quoteTitle.textContent = qr.quoteTitle;
+  if (qr.quoteTitle && contactQuoteTitle) contactQuoteTitle.textContent = qr.quoteTitle;
   const shopTitle = document.getElementById('shop-qr-title');
-  if (shopTitle && qr.shopTitle) shopTitle.textContent = qr.shopTitle;
-  const box = document.getElementById('site-qr');
-  if (box && qr.url && typeof QRCode !== 'undefined') {
-    try {
-      box.innerHTML = '';
-      // 移动端按 220px 容器生成 206px 位图，微信内长按识别更稳
-      const qrSize = window.matchMedia('(max-width: 768px)').matches ? 206 : 180;
-      new QRCode(box, {
-        text: qr.url,
-        width: qrSize,
-        height: qrSize,
-        colorDark: '#111111',
-        colorLight: '#ffffff',
-        correctLevel: QRCode.CorrectLevel.M,
-      });
-      styleQrGradient(box);
-      box.hidden = false;
-    } catch {
-      /* 二维码生成失败不阻塞页面 */
-    }
+  const contactShopTitle = document.getElementById('contact-shop-title');
+  if (qr.shopTitle && shopTitle) shopTitle.textContent = qr.shopTitle;
+  if (qr.shopTitle && contactShopTitle) contactShopTitle.textContent = qr.shopTitle;
+  // 商城二维码：.b2b 区块与联系方式面板各生成一份（同配置同尺寸）
+  const boxes = ['site-qr', 'contact-site-qr']
+    .map((id) => document.getElementById(id)).filter(Boolean);
+  if (qr.url && typeof QRCode !== 'undefined') {
+    boxes.forEach((box) => {
+      try {
+        box.innerHTML = '';
+        // 移动端按 220px 容器生成 206px 位图，微信内长按识别更稳
+        const qrSize = window.matchMedia('(max-width: 768px)').matches ? 206 : 180;
+        new QRCode(box, {
+          text: qr.url,
+          width: qrSize,
+          height: qrSize,
+          colorDark: '#111111',
+          colorLight: '#ffffff',
+          correctLevel: QRCode.CorrectLevel.M,
+        });
+        styleQrGradient(box);
+        box.hidden = false;
+      } catch {
+        /* 二维码生成失败不阻塞页面 */
+      }
+    });
   }
 }
 
@@ -319,6 +371,7 @@ async function reload() {
     const data = await fetchPage(0);
     products = data.items || [];
     total = data.total || products.length;
+    currentPage = 0;
     render();
     updateStats();
   } catch (err) {
@@ -346,6 +399,26 @@ async function loadMore() {
       moreBtn.disabled = false;
       moreBtn.textContent = '加载更多';
     }
+    loading = false;
+  }
+}
+
+/* PC 分页：切换页码直接替换当前列表（加载指定页） */
+async function goToPage(page) {
+  if (loading) return;
+  if (page < 0 || page >= totalPages) return;
+  currentPage = page;
+  loading = true;
+  try {
+    const data = await fetchPage(currentPage * PAGE_SIZE);
+    products = data.items || [];
+    total = data.total || products.length;
+    render();
+    const productsEl = document.getElementById('products');
+    if (productsEl) productsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (err) {
+    grid.innerHTML = '<p style="color:#dc2626">加载失败，请刷新重试。</p>';
+  } finally {
     loading = false;
   }
 }
@@ -428,6 +501,8 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(() => {
     renderTabs(categoryList);
     renderBrandTabs(brandList);
+    updatePagination();
+    updateLoadMore();
   }, 200);
 });
 
@@ -436,6 +511,67 @@ load();
 /* 商品分页：加载更多 */
 const loadMoreBtn = document.getElementById('load-more');
 if (loadMoreBtn) loadMoreBtn.addEventListener('click', loadMore);
+
+/* 页码分页器事件委托（PC 宽屏） */
+const pager = document.getElementById('pagination');
+if (pager) {
+  pager.addEventListener('click', (e) => {
+    const btn = e.target.closest('button.pager-btn');
+    if (!btn || btn.disabled) return;
+    const key = btn.dataset.page;
+    if (key === 'prev') goToPage(currentPage - 1);
+    else if (key === 'next') goToPage(currentPage + 1);
+    else goToPage(Number(key));
+  });
+}
+
+/* 移动端触底自动加载：滚动接近列表底部自动追加下一页（PC 端由分页器接管，不触发） */
+const loadSentinel = document.getElementById('load-sentinel');
+if (loadSentinel && 'IntersectionObserver' in window) {
+  const io = new IntersectionObserver((entries) => {
+    if (!entries.some((en) => en.isIntersecting)) return;
+    if (!isMobile()) return;
+    if (loading || products.length >= total) return;
+    loadMore();
+  }, { rootMargin: '220px 0px' });
+  io.observe(loadSentinel);
+}
+
+/* 顶部导航「联系方式」入口：弹出报价二维码 + 商城二维码面板 */
+(function () {
+  const openBtn = document.getElementById('contact-open');
+  const mask = document.getElementById('contact-mask');
+  if (!openBtn || !mask) return;
+  function openPanel() {
+    mask.hidden = false;
+    openBtn.setAttribute('aria-expanded', 'true');
+    document.body.style.overflow = 'hidden';
+    syncPanelQr();
+  }
+  function closePanel() {
+    mask.hidden = true;
+    openBtn.setAttribute('aria-expanded', 'false');
+    document.body.style.overflow = '';
+  }
+  /* 兜底：若商城二维码尚未由 applyQr 生成，从 .b2b 容器复制一份 */
+  function syncPanelQr() {
+    const target = document.getElementById('contact-site-qr');
+    const source = document.getElementById('site-qr');
+    if (!target || !source) return;
+    if (target.querySelector('canvas,img') || !source.querySelector('canvas,img')) return;
+    const node = source.querySelector('canvas,img');
+    target.innerHTML = '';
+    target.appendChild(node.cloneNode(true));
+    target.hidden = false;
+  }
+  openBtn.addEventListener('click', openPanel);
+  mask.addEventListener('click', (e) => {
+    if (e.target === mask || e.target.closest('.contact-close')) closePanel();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !mask.hidden) closePanel();
+  });
+})();
 
 /* 页脚隐蔽管理入口：输入 admin 口令后显示供应链管理链接 */
 (function () {

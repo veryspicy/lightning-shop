@@ -10,6 +10,7 @@
     "upload:images": "node scripts/upload-r2.mjs"
   },
   "devDependencies": {
-    "wrangler": "^3.90.0"
+    "@cloudflare/workerd-windows-64": "^1.20261029.1",
+    "wrangler": "^4.155.0"
   }
 }

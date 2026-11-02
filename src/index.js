@@ -957,7 +957,9 @@ async function handleImage(request, env, url) {
 
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
-  headers.set('Cache-Control', 'public, max-age=86400');
+  // 图片使用协商缓存：no-cache + ETag/Last-Modified（writeHttpMetadata 已带），
+  // 每次回源 304 校验，避免 R2 对象更新后浏览器仍展示旧图
+  headers.set('Cache-Control', 'no-cache');
   return new Response(obj.body, { headers });
 }
 
