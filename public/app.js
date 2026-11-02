@@ -541,8 +541,16 @@ if (loadSentinel && 'IntersectionObserver' in window) {
 (function () {
   const openBtn = document.getElementById('contact-open');
   const mask = document.getElementById('contact-mask');
-  if (!openBtn || !mask) return;
+  const expressBtn = document.getElementById('express-open');
+  const expressMask = document.getElementById('express-mask');
+  function closeExpress() {
+    if (!expressMask || expressMask.hidden) return;
+    expressMask.hidden = true;
+    if (expressBtn) expressBtn.setAttribute('aria-expanded', 'false');
+    document.body.style.overflow = '';
+  }
   function openPanel() {
+    closeExpress();
     mask.hidden = false;
     openBtn.setAttribute('aria-expanded', 'true');
     document.body.style.overflow = 'hidden';
@@ -571,6 +579,24 @@ if (loadSentinel && 'IntersectionObserver' in window) {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !mask.hidden) closePanel();
   });
+
+  /* 顶部导航「特惠快递」入口：弹出寄件省钱海报 */
+  (function () {
+    if (!expressBtn || !expressMask) return;
+    function openExpress() {
+      closePanel();
+      expressMask.hidden = false;
+      expressBtn.setAttribute('aria-expanded', 'true');
+      document.body.style.overflow = 'hidden';
+    }
+    expressBtn.addEventListener('click', openExpress);
+    expressMask.addEventListener('click', (e) => {
+      if (e.target === expressMask || e.target.closest('.contact-close')) closeExpress();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !expressMask.hidden) closeExpress();
+    });
+  })();
 })();
 
 /* 页脚隐蔽管理入口：输入 admin 口令后显示供应链管理链接 */

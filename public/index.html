@@ -26,6 +26,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
         <span>联系方式</span>
       </button>
+      <button type="button" class="header-contact-btn express" id="express-open" aria-haspopup="dialog" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3v9l-3 3v3l2 1v2h-8v-2l2-1v-3l-3-3V3"/><path d="M9 3h6"/><path d="M12 3v3"/></svg>
+        <span>特惠快递</span>
+      </button>
     </div>
   </header>
 
@@ -118,6 +122,21 @@
           <h4 id="contact-shop-title">扫码直达商城</h4>
           <div id="contact-site-qr" class="qr-box" hidden></div>
           <p>微信扫一扫，随时随地查看货盘与报价</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 特惠快递面板：顶部导航右上角入口弹出 -->
+  <div class="contact-mask express-mask" id="express-mask" hidden>
+    <div class="contact-panel express-panel" role="dialog" aria-modal="true" aria-label="特惠快递">
+      <div class="contact-head">
+        <b>特惠快递</b>
+        <button type="button" class="contact-close" aria-label="关闭">✕</button>
+      </div>
+      <div class="contact-body express-body">
+        <div class="express-card">
+          <img src="/express-poster.jpg" alt="寄件省钱计划" class="express-img" />
         </div>
       </div>
     </div>
