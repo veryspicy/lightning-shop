@@ -158,9 +158,9 @@ async function loadConfigCategories() {
       configured
         .map((c) => `<span class="chip" data-name="${esc(c.name)}"><span class="cat-name" data-name="${esc(c.name)}" title="点击修改分类名">${esc(c.name)}</span><span class="chip-count">${c.count}</span><button class="chip-del" title="删除分类">✕</button></span>`)
         .join('') +
-      (extra.length
-        ? `<span class="chip chip-extra" title="产品中自动发现的分类">${extra.map((c) => esc(c.name)).join('、')}<span class="chip-count">${extra.reduce((s, c) => s + c.count, 0)}</span></span>`
-        : '');
+      extra
+        .map((c) => `<span class="chip chip-extra" data-name="${esc(c.name)}"><span class="cat-name" data-name="${esc(c.name)}" title="点击修改分类名（产品自动发现，改名后自动纳入配置分类）">${esc(c.name)}</span><span class="chip-count">${c.count}</span><button class="chip-del" title="删除分类（产品分类将置为未分类）">✕</button></span>`)
+        .join('');
   } catch (err) {
     toast(err.message, true);
   }
@@ -232,7 +232,11 @@ function makeCatName(name, display) {
 async function deleteCategory() {
   const chip = this.closest('.chip');
   const name = chip.dataset.name;
-  if (!confirm(`确定删除分类「${name}」？\n仅从分类配置移除，产品数据不受影响。`)) return;
+  const isExtra = chip.classList.contains('chip-extra');
+  const hint = isExtra
+    ? `该分类为产品自动发现分类，删除后 ${chip.querySelector('.chip-count').textContent} 个产品的分类将置为「未分类」。`
+    : '仅从分类配置移除，产品数据不受影响。';
+  if (!confirm(`确定删除分类「${name}」？\n${hint}`)) return;
   try {
     await api('/api/admin/categories', {
       method: 'DELETE',
@@ -269,12 +273,57 @@ function badgeChips(raw) {
   return `<span class="badge-chips">${list.map((b) => `<span class="badge-chip${b.includes('低GI') ? ' gi' : ''}">${esc(b)}</span>`).join('')}</span>`;
 }
 
-function renderList() {
+/* ---- 表头筛选（品牌 / 标签 / 分类 / 状态） ---- */
+function filterState(key) {
+  const el = document.querySelector(`.th-filter[data-filter="${key}"]`);
+  return el ? el.value : '';
+}
+
+/* 标签列可能是逗号/顿号/竖线分隔的多标签，命中任意一个即通过 */
+function tagHits(raw, val) {
+  if (!val) return true;
+  return String(raw || '').split(/[,，|]/).map((s) => s.trim()).filter(Boolean).includes(val);
+}
+
+let filtersFilled = false;
+function fillFilters() {
+  const sets = { brand: new Set(), badge: new Set(), category: new Set() };
+  for (const p of products) {
+    if (p.brand) sets.brand.add(String(p.brand).trim());
+    String(p.badge || '').split(/[,，|]/).map((s) => s.trim()).filter(Boolean).forEach((t) => sets.badge.add(t));
+    sets.category.add(p.category || '未分类');
+  }
+  for (const key of ['brand', 'badge', 'category']) {
+    const sel = document.querySelector(`.th-filter[data-filter="${key}"]`);
+    if (!sel) continue;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">全部</option>' + [...sets[key]].sort().map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+    sel.value = cur;
+  }
+  filtersFilled = true;
+}
+
+/* 搜索关键词 + 四个表头筛选共同作用，返回当前可见产品 */
+function visibleProducts() {
   const q = ($('list-search').value || '').trim().toLowerCase();
-  const list = q
-    ? products.filter((p) => (p.name || '').toLowerCase().includes(q) || (p.brand || '').toLowerCase().includes(q))
-    : products;
-  $('list-count').textContent = `共 ${products.length} 个`;
+  const fBrand = filterState('brand');
+  const fBadge = filterState('badge');
+  const fCat = filterState('category');
+  const fStatus = filterState('status');
+  return products.filter((p) => {
+    if (q && !((p.name || '').toLowerCase().includes(q) || (p.brand || '').toLowerCase().includes(q))) return false;
+    if (fBrand && (p.brand || '').trim() !== fBrand) return false;
+    if (fBadge && !tagHits(p.badge, fBadge)) return false;
+    if (fCat && (p.category || '未分类') !== fCat) return false;
+    if (fStatus && (p.status || '上架') !== fStatus) return false;
+    return true;
+  });
+}
+
+function renderList() {
+  if (!filtersFilled) fillFilters();
+  const list = visibleProducts();
+  $('list-count').textContent = `共 ${list.length} 个`;
   $('list-body').innerHTML = list
     .map(
       (p) => `<tr>
@@ -282,6 +331,7 @@ function renderList() {
         <td>${p.image ? `<span class="thumb-wrap"><img src="${p.image}" alt="" data-lightbox="${esc(p.id)}" /><i class="thumb-zoom" title="点击查看大图"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="10" height="10"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></i></span>` : '<div class="ph">无图</div>'}</td>
         <td>${esc(p.id)}</td>
         <td>${esc(p.name)}</td>
+        <td>${esc(p.brand || '—')}</td>
         <td>${badgeChips(p.badge)}</td>
         <td>${esc(p.category)}</td>
         <td>${esc(p.spec)}</td>
@@ -1127,6 +1177,7 @@ $('lightbox-mask').addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
 
 $('list-search').addEventListener('input', renderList);
+document.querySelectorAll('.th-filter').forEach((sel) => sel.addEventListener('change', renderList));
 
 /* ---- 产品编辑抽屉 / 侧边栏 ---- */
 $('add-product-btn').addEventListener('click', () => { resetForm(); openDrawer(); });
@@ -1142,10 +1193,7 @@ $('sidebar-collapse').addEventListener('click', () => {
 
 /* ---- 批量修改 ---- */
 $('check-all').addEventListener('change', (e) => {
-  const q = ($('list-search').value || '').trim().toLowerCase();
-  const visible = q
-    ? products.filter((p) => (p.name || '').toLowerCase().includes(q) || (p.brand || '').toLowerCase().includes(q))
-    : products;
+  const visible = visibleProducts();
   for (const p of visible) {
     if (e.target.checked) selected.add(p.id);
     else selected.delete(p.id);

@@ -336,12 +336,25 @@ async function saveQr(env, raw) {
   return q;
 }
 
+// 分类名规范化：多级路径（→ / > / | 等分隔）取末级，避免「米面粮油→食用油→葵花籽油」整串入库；
+// 与品牌同名视为品牌误当分类，置「未分类」；去空白并限长 20 字（与配置分类上限一致）
+function normalizeCategory(raw, brand) {
+  let c = String(raw || '').trim();
+  if (!c) return '未分类';
+  const parts = c.split(/[→➜>｜|/、]/).map((s) => s.trim()).filter(Boolean);
+  if (parts.length > 1) c = parts[parts.length - 1];
+  if (c.length > 20) c = c.slice(0, 20);
+  const b = String(brand || '').trim();
+  if (b && c === b) return '未分类';
+  return c || '未分类';
+}
+
 function sanitizeProduct(raw) {
   const p = {};
   for (const f of PRODUCT_FIELDS) p[f] = String(raw[f] ?? '').trim();
   p.image = (raw.image || '').trim();
   p.status = raw.status === '下架' ? '下架' : '上架';
-  if (!p.category) p.category = '未分类';
+  p.category = normalizeCategory(p.category, p.brand);
   return p;
 }
 
@@ -625,15 +638,19 @@ async function handleApi(request, env, url) {
       const old = String(raw?.old || '').trim();
       const name = String(raw?.name || '').trim();
       if (!old) return json({ error: 'bad_request', message: '原分类名必填' }, 400);
-      if (!configured.includes(old)) return json({ error: 'not_found', message: '分类不存在' }, 404);
       if (!name) return json({ error: 'bad_request', message: '新分类名必填' }, 400);
       if (name.length > 20) return json({ error: 'bad_request', message: '分类名称过长（≤20字）' }, 400);
-      if (name !== old && configured.includes(name)) return json({ error: 'duplicated', message: '目标分类名已存在' }, 400);
-      const next = configured.map((c) => (c === old ? name : c));
-      await env.KV.put('config:categories', JSON.stringify(next));
-      // 同步重命名产品中的该分类（仅改 category 字段，其余不动）
-      let renamed = 0;
+      const isConfigured = configured.includes(old);
+      if (isConfigured && name !== old && configured.includes(name)) {
+        return json({ error: 'duplicated', message: '目标分类名已存在' }, 400);
+      }
+      // 自动发现分类（extra）重命名：同步改产品分类，新名自动纳入配置分类（可编辑）
       const changed = products.filter((p) => p.category === old);
+      if (!isConfigured && changed.length === 0) return json({ error: 'not_found', message: '分类不存在' }, 404);
+      let next = isConfigured ? configured.map((c) => (c === old ? name : c)) : configured;
+      if (!next.includes(name)) next = [...next, name];
+      await env.KV.put('config:categories', JSON.stringify(next));
+      let renamed = 0;
       if (changed.length) {
         for (const p of changed) p.category = name;
         await env.KV.put('products', JSON.stringify(products));
@@ -646,11 +663,20 @@ async function handleApi(request, env, url) {
       const raw = await readJson(request);
       const name = String(raw?.name || '').trim();
       if (!name) return json({ error: 'bad_request', message: '分类名必填' }, 400);
-      if (!configured.includes(name)) return json({ error: 'not_found', message: '分类不存在' }, 404);
-      // 仅移除配置分类，产品中引用该分类的产品保留原分类（自动出现在 extra）
-      const next = configured.filter((c) => c !== name);
-      await env.KV.put('config:categories', JSON.stringify(next));
-      return jsonNoCache({ ok: true, categories: next });
+      const isConfigured = configured.includes(name);
+      const used = products.filter((p) => p.category === name);
+      if (!isConfigured && used.length === 0) return json({ error: 'not_found', message: '分类不存在' }, 404);
+      if (isConfigured) {
+        // 配置分类：仅移除配置（保持原设计，产品分类保留并自动出现在自动发现区）
+        const next = configured.filter((c) => c !== name);
+        await env.KV.put('config:categories', JSON.stringify(next));
+        return jsonNoCache({ ok: true, categories: next, removed: 0 });
+      }
+      // 自动发现分类（extra）：同步清理产品分类，避免删除后重新聚合出现
+      for (const p of used) p.category = '未分类';
+      await env.KV.put('products', JSON.stringify(products));
+      for (const p of used) await env.KV.put(`products:${p.id}`, JSON.stringify(p));
+      return jsonNoCache({ ok: true, categories: configured, removed: used.length });
     }
     return notFound();
   }
@@ -804,6 +830,7 @@ async function handleApi(request, env, url) {
           if (row[f] !== undefined && row[f] !== null) {
             if (f === 'image') merged.image = String(row.image).trim();
             else if (f === 'status') merged.status = row.status === '下架' ? '下架' : '上架';
+            else if (f === 'category') merged.category = normalizeCategory(row[f], merged.brand);
             else merged[f] = String(row[f]).trim();
           }
         }
