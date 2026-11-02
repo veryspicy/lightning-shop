@@ -341,8 +341,9 @@ async function saveQr(env, raw) {
 function normalizeCategory(raw, brand) {
   let c = String(raw || '').trim();
   if (!c) return '未分类';
+  // 多级路径（→/➜/>/｜/|/、）取首级分类，避免杂糅分类名
   const parts = c.split(/[→➜>｜|/、]/).map((s) => s.trim()).filter(Boolean);
-  if (parts.length > 1) c = parts[parts.length - 1];
+  if (parts.length > 1) c = parts[0];
   if (c.length > 20) c = c.slice(0, 20);
   const b = String(brand || '').trim();
   if (b && c === b) return '未分类';
