@@ -551,7 +551,6 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 
 /* ---------- 顶部导航：联系方式入口 ---------- */
 .header-contact-btn {
-  margin-left: auto;
   display: inline-flex; align-items: center; gap: 7px;
   padding: 9px 16px;
   border: 1.5px solid var(--primary);
@@ -600,7 +599,7 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .contact-card p { font-size: 12px; color: var(--muted); }
 
 /* ---------- 特惠快递（顶部导航入口 + 寄件海报弹层） ---------- */
-.header-contact-btn.express { border-color: var(--accent); background: #fff7ed; color: var(--accent-dark); margin-left: 8px; }
+.header-contact-btn.express { border-color: var(--accent); background: #fff7ed; color: var(--accent-dark); }
 .header-contact-btn.express:hover { background: var(--accent); color: #fff; }
 .express-mask .contact-panel { max-width: 480px; }
 .express-body { grid-template-columns: 1fr; }
