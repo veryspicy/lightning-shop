@@ -1012,26 +1012,21 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // 只读公开 API 边缘缓存（Cache API 60s）：GET /api/* 非后台接口，无管理 token
-    // 响应带 no-cache, s-maxage=60：浏览器不缓存（保证后台改动 60s 内生效），
-    // 边缘共享缓存 60s 内直读，避免每次刷新都穿透 Worker + KV
+    // 只读公开 API 边缘缓存（CDN 60s）：GET /api/* 非后台接口，无管理 token
+    // 响应头 public, max-age=0, s-maxage=60：浏览器 max-age=0 每次回源校验，
+    // CDN 共享缓存 s-maxage=60 直读，避免每次刷新都穿透 Worker + KV
     if (
       url.pathname.startsWith('/api/') &&
       request.method === 'GET' &&
       !url.pathname.startsWith('/api/admin/') &&
       !request.headers.has('x-admin-token')
     ) {
-      const cache = caches.default;
-      const cacheKey = new Request(url.toString(), { method: 'GET' });
-      const hit = await cache.match(cacheKey);
-      if (hit) return hit;
       const resp = await handleApi(request, env, url);
       if (resp && resp.status === 200 && (resp.headers.get('Content-Type') || '').includes('application/json')) {
-        const cached = resp.clone();
-        // 仅 s-maxage：浏览器不缓存（无 max-age），边缘共享缓存 60s；避免 no-cache 被 Cache API 拒绝存储
-        cached.headers.set('Cache-Control', 's-maxage=60');
-        cached.headers.delete('Set-Cookie');
-        await cache.put(cacheKey, cached);
+        const out = new Response(resp.body, resp);
+        out.headers.set('Cache-Control', 'public, max-age=0, s-maxage=60');
+        out.headers.delete('Set-Cookie');
+        return out;
       }
       return resp;
     }
