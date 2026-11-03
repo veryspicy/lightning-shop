@@ -1028,7 +1028,8 @@ export default {
       const resp = await handleApi(request, env, url);
       if (resp && resp.status === 200 && (resp.headers.get('Content-Type') || '').includes('application/json')) {
         const cached = resp.clone();
-        cached.headers.set('Cache-Control', 'no-cache, s-maxage=60');
+        // 仅 s-maxage：浏览器不缓存（无 max-age），边缘共享缓存 60s；避免 no-cache 被 Cache API 拒绝存储
+        cached.headers.set('Cache-Control', 's-maxage=60');
         cached.headers.delete('Set-Cookie');
         await cache.put(cacheKey, cached);
       }
