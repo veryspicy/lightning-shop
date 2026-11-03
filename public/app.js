@@ -271,6 +271,15 @@ function applyHero(hero) {
       heroEl.style.backgroundImage = `linear-gradient(135deg, rgba(6,78,59,.82) 0%, rgba(5,110,80,.72) 60%, rgba(16,185,129,.66) 100%), url('${hero.bgImage}')`;
       heroEl.style.backgroundSize = 'cover';
       heroEl.style.backgroundPosition = 'center';
+      // 首屏 hero 大图预加载：CSS 背景图不走浏览器预加载，显式 fetchPriority 抢占
+      if (!document.querySelector(`link[rel="preload"][href="${hero.bgImage}"]`)) {
+        const link = document.createElement('link');
+        link.rel = 'preload';
+        link.as = 'image';
+        link.href = hero.bgImage;
+        link.fetchPriority = 'high';
+        document.head.appendChild(link);
+      }
     } else {
       heroEl.style.backgroundImage = '';
     }
