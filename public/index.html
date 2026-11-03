@@ -73,7 +73,14 @@
     </div>
 
     <p class="result-meta" id="result-meta" role="status" aria-live="polite"></p>
-    <div class="product-grid" id="product-grid" aria-live="polite"></div>
+    <div class="product-grid" id="product-grid" aria-live="polite" aria-busy="true">
+      <div class="skeleton-card" aria-hidden="true"><div class="skeleton-media shimmer"></div><div class="skeleton-line shimmer"></div><div class="skeleton-line skeleton-line--short shimmer"></div></div>
+      <div class="skeleton-card" aria-hidden="true"><div class="skeleton-media shimmer"></div><div class="skeleton-line shimmer"></div><div class="skeleton-line skeleton-line--short shimmer"></div></div>
+      <div class="skeleton-card" aria-hidden="true"><div class="skeleton-media shimmer"></div><div class="skeleton-line shimmer"></div><div class="skeleton-line skeleton-line--short shimmer"></div></div>
+      <div class="skeleton-card" aria-hidden="true"><div class="skeleton-media shimmer"></div><div class="skeleton-line shimmer"></div><div class="skeleton-line skeleton-line--short shimmer"></div></div>
+      <div class="skeleton-card" aria-hidden="true"><div class="skeleton-media shimmer"></div><div class="skeleton-line shimmer"></div><div class="skeleton-line skeleton-line--short shimmer"></div></div>
+      <div class="skeleton-card" aria-hidden="true"><div class="skeleton-media shimmer"></div><div class="skeleton-line shimmer"></div><div class="skeleton-line skeleton-line--short shimmer"></div></div>
+    </div>
     <div class="empty-state" id="empty-state" hidden>未找到匹配产品，换个关键词试试。</div>
     <nav class="pagination" id="pagination" aria-label="产品分页" hidden></nav>
     <div class="load-more-wrap">
@@ -144,7 +151,7 @@
     </div>
   </div>
 
-  <script src="/qrcode.min.js" defer></script>
-  <script src="/app.js" defer></script>
+  <script src="/qrcode.min.js?v=20261103" defer></script>
+  <script src="/app.js?v=20261103" defer></script>
 </body>
 </html>

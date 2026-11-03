@@ -7,6 +7,8 @@ compatibility_date = "2026-10-25"
 directory = "./public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+# 请求先进入 Worker fetch（主站化 301、指纹脚本长缓存等逻辑生效），未命中再走 ASSETS 兜底
+run_worker_first = true
 
 # KV：产品货盘数据
 [[kv_namespaces]]

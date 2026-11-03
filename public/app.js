@@ -106,6 +106,7 @@ function cardHtml(p) {
 
 function render() {
   grid.innerHTML = products.map(cardHtml).join('');
+  grid.removeAttribute('aria-busy');
   emptyState.hidden = products.length > 0;
   updateResultMeta();
   updateLoadMore();

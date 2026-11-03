@@ -1012,6 +1012,19 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // 自定义域名主站化：页面级 GET 请求命中 workers.dev 时 301 到主站域名，
+    // 避免双入口与微信内 workers.dev 访问不稳；API/图片路由不受影响
+    const CANONICAL_HOST = 'lightning-shop.gora.dpdns.org';
+    if (
+      request.method === 'GET' &&
+      url.hostname !== CANONICAL_HOST &&
+      url.hostname.endsWith('.workers.dev') &&
+      !url.pathname.startsWith('/api/') &&
+      !url.pathname.startsWith('/img/')
+    ) {
+      return Response.redirect(`https://${CANONICAL_HOST}${url.pathname}${url.search}`, 301);
+    }
+
     // 只读公开 API 边缘缓存（Cache API 60s）：GET /api/* 非后台接口，无管理 token
     // 缓存副本仅 s-maxage=60：命中时浏览器不缓存（无 max-age），边缘共享缓存 60s 直读
     if (
@@ -1042,7 +1055,14 @@ export default {
 
     // 静态资源：public/ 目录
     if (env.ASSETS) {
-      return env.ASSETS.fetch(request);
+      const resp = await env.ASSETS.fetch(request);
+      // 指纹化脚本（index.html 引用带 ?v= 版本号）走一年强缓存，发版时改版本号即可破缓存
+      if (url.pathname === '/app.js' || url.pathname === '/qrcode.min.js') {
+        const headers = new Headers(resp.headers);
+        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+        return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
+      }
+      return resp;
     }
 
     return new Response('Lightning Shop', { status: 200 });

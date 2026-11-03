@@ -267,6 +267,46 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
   grid-template-columns: repeat(auto-fill, minmax(264px, 1fr));
   gap: 24px;
 }
+
+/* 商品列表骨架屏：首屏数据未返回前展示，render() 首次填充后整体替换 */
+.skeleton-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+}
+.skeleton-media {
+  aspect-ratio: 1 / 1;
+  border-radius: calc(var(--radius) - 4px);
+  background: var(--surface-alt);
+}
+.skeleton-line {
+  height: 14px;
+  border-radius: 7px;
+  background: var(--surface-alt);
+}
+.skeleton-line--short {
+  width: 55%;
+}
+.shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .4), transparent);
+  animation: skeleton-shimmer 1.6s infinite;
+}
+@keyframes skeleton-shimmer {
+  100% { transform: translateX(100%); }
+}
 .product-card {
   background: var(--surface);
   border: 1px solid var(--line);
