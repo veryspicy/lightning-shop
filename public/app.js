@@ -66,7 +66,7 @@ function cardHtml(p) {
     : '';
 
   const media = p.image
-    ? `<img src="${p.image}" alt="${escapeHtml(p.name)}" loading="lazy" />`
+    ? `<img src="${p.image}" alt="${escapeHtml(p.name)}" loading="lazy" decoding="async" />`
     : `<div class="card-placeholder" aria-hidden="true">🍱</div>`;
 
   const retailText = p.retail_price && !p.retail_price.includes('报价') ? p.retail_price : '议价';
