@@ -440,8 +440,8 @@ function collectForm() {
 /* 图片压缩/缩放/裁切：统一转 JPEG。
  * opts.maxSize  最长边（或正方形边长）上限，默认 1200
  * opts.square   是否中心裁切为正方形（产品卡片 1:1），默认 false
- * opts.quality  JPEG 质量 0-1，默认 0.85 */
-function fileToJpgBase64(file, opts = {}) {
+ * opts.quality  质量 0-1（WebP 优先，不支持时回退 JPEG），默认 0.85 */
+function fileToImageBase64(file, opts = {}) {
   const MAX = opts.maxSize || 1200;
   const QUALITY = typeof opts.quality === 'number' ? opts.quality : 0.85;
   const SQUARE = !!opts.square;
@@ -474,7 +474,11 @@ function fileToJpgBase64(file, opts = {}) {
         ctx.fillRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
       }
-      resolve(canvas.toDataURL('image/jpeg', QUALITY));
+      // WebP 优先（编码 Safari 17+ / Chromium 均支持），不支持时回退 JPEG
+      const webp = canvas.toDataURL('image/webp', QUALITY);
+      resolve(webp.startsWith('data:image/webp')
+        ? { dataUrl: webp, ext: 'webp' }
+        : { dataUrl: canvas.toDataURL('image/jpeg', QUALITY), ext: 'jpg' });
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片读取失败')); };
     img.src = url;
@@ -487,8 +491,8 @@ async function handleUpload() {
   if (!/\.(jpe?g|png|webp)$/i.test(file.name)) return toast('仅支持 JPG / PNG / WebP', true);
   setImgUploading(true);
   try {
-    const dataUrl = await fileToJpgBase64(file, { square: $('f-img-crop')?.checked, maxSize: 1000, quality: 0.82 });
-    const filename = `${file.name.replace(/\.[^.]+$/, '')}-${Date.now().toString(36)}.jpg`;
+    const { dataUrl, ext } = await fileToImageBase64(file, { square: $('f-img-crop')?.checked, maxSize: 1000, quality: 0.82 });
+    const filename = `${file.name.replace(/\.[^.]+$/, '')}-${Date.now().toString(36)}.${ext}`;
     const r = await api('/api/upload', {
       method: 'POST',
       headers: authHeaders(),
@@ -535,8 +539,8 @@ async function handleHeroUpload() {
   const file = $('f-hero-img-file').files[0];
   if (!file) return toast('请选择背景图', true);
   if (!/\.(jpe?g|png|webp)$/i.test(file.name)) return toast('仅支持 JPG / PNG / WebP', true);
-  const dataUrl = await fileToJpgBase64(file, { maxSize: 1600, quality: 0.8 });
-  const filename = `hero-${Date.now()}.jpg`;
+  const { dataUrl, ext } = await fileToImageBase64(file, { maxSize: 1600, quality: 0.8 });
+  const filename = `hero-${Date.now()}.${ext}`;
   const r = await api('/api/upload', {
     method: 'POST',
     headers: authHeaders(),
@@ -641,8 +645,8 @@ async function handleQrUpload() {
   const file = $('f-qr-img-file').files[0];
   if (!file) return toast('请选择报价单二维码图片', true);
   if (!/\.(jpe?g|png|webp)$/i.test(file.name)) return toast('仅支持 JPG / PNG / WebP', true);
-  const dataUrl = await fileToJpgBase64(file, { maxSize: 800, quality: 0.85 });
-  const filename = `quote-qr-${Date.now()}.jpg`;
+  const { dataUrl, ext } = await fileToImageBase64(file, { maxSize: 800, quality: 0.85 });
+  const filename = `quote-qr-${Date.now()}.${ext}`;
   const r = await api('/api/upload', {
     method: 'POST',
     headers: authHeaders(),
