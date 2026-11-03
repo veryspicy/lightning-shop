@@ -1166,12 +1166,16 @@ function openLightbox(src) {
   if (!mask || !img || !src) return;
   img.src = src;
   mask.hidden = false;
+  const box = mask.querySelector('.lightbox');
+  if (box) box.classList.add('open');
   document.body.style.overflow = 'hidden';
 }
 function closeLightbox() {
   const mask = $('lightbox-mask');
   if (!mask || mask.hidden) return;
   mask.hidden = true;
+  const box = mask.querySelector('.lightbox');
+  if (box) box.classList.remove('open');
   $('lightbox-img').removeAttribute('src');
   document.body.style.overflow = '';
 }
