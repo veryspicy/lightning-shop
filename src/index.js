@@ -980,21 +980,31 @@ async function handleApi(request, env, url) {
 
 async function handleImage(request, env, url) {
   const key = url.pathname.replace(/^\/img\//, '');
+  // 指纹化 key：URL 唯一、内容不可变 -> 边缘缓存（Cache API）+ 1 年 immutable 强缓存
+  // 固定名 key：理论存在覆盖可能 -> 不缓存，直接回源走协商缓存，避免旧图
+  const fingerprinted = /[-_][0-9a-z]{6,}\.(jpe?g|png|webp)$/i.test(key);
+
+  if (fingerprinted) {
+    const cache = caches.default;
+    const cached = await cache.match(new Request(url));
+    if (cached) return cached;
+    const obj = await env.R2.get(key);
+    if (!obj) return new Response('Not Found', { status: 404 });
+    const headers = new Headers();
+    obj.writeHttpMetadata(headers);
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    const resp = new Response(obj.body, { headers });
+    await cache.put(new Request(url), resp.clone());
+    return resp;
+  }
+
   const obj = await env.R2.get(key);
   if (!obj) return new Response('Not Found', { status: 404 });
-
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
-  // 缓存策略（按 key 是否带指纹分流）：
-  // 1) 指纹化 key（上传时已带时间戳，URL 唯一、内容不可变）：public + 1 年 immutable 强缓存，
-  //    命中 Cloudflare 边缘缓存，图片加载不再回源 R2；
-  // 2) 固定名 key（历史遗留，如 p03.jpg，理论存在覆盖可能）：保留 no-cache 协商缓存，
-  //    每次回源 304 校验，避免覆盖后浏览器仍展示旧图（历史踩坑）。
-  if (/[-_][0-9a-z]{6,}\.(jpe?g|png|webp)$/i.test(key)) {
-    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-  } else {
-    headers.set('Cache-Control', 'no-cache');
-  }
+  // 固定名 key 保留协商缓存：no-cache + ETag/Last-Modified（writeHttpMetadata 已带），
+  // 每次回源 304 校验，避免 R2 对象更新后浏览器仍展示旧图（历史踩坑）
+  headers.set('Cache-Control', 'no-cache');
   return new Response(obj.body, { headers });
 }
 
