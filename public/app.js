@@ -44,8 +44,13 @@ function formatNum(n) {
 
 function applyMargin(priceStr, cfg) {
   if (!cfg || !cfg.enabled || !cfg.margin || !priceStr) return priceStr;
-  if (!/元/.test(priceStr)) return priceStr; // 议价/报价说明等无价格数字的文案原样
   const rate = 1 + cfg.margin / 100;
+  // 无「元」的纯价格串（"990"）同样属于价格，需与后端结算口径一致；纯文案（"面议"）原样
+  if (!/元/.test(priceStr)) {
+    return /^\s*\d+(?:\.\d+)?(\s*[\/\-]\s*\d+(?:\.\d+)?)*\s*$/.test(priceStr)
+      ? priceStr.replace(/\d+(?:\.\d+)?/g, (m) => formatNum(parseFloat(m) * rate))
+      : priceStr;
+  }
   // 只加成"元"前的价格数字（含区间 9.9-13.9、多档 12/11.5/11、阶梯 100斤起12元），数量单位数字不动
   const tokenRe = /(\d+(?:\.\d+)?(?:\s*[\/\-]\s*\d+(?:\.\d+)?)*)\s*元/g;
   return priceStr.replace(tokenRe, (whole, nums) => {
@@ -987,14 +992,15 @@ function addToCart(p, qty) {
   const n = Math.max(1, parseInt(qty, 10) || 1);
   const idx = cart.findIndex((it) => it.id === p.id);
   if (idx >= 0) cart[idx].qty = (parseInt(cart[idx].qty, 10) || 0) + n;
-  else cart.push({ id: p.id, name: p.name, spec: p.spec, price: p.wholesale_price, retail: p.retail_price, moq: p.moq, brand: p.brand, image: p.image, qty: n });
+  else cart.push({ id: p.id, name: p.name, spec: p.spec, price: p.wholesale_price, base_price: p.wholesale_price, retail: p.retail_price, moq: p.moq, brand: p.brand, image: p.image, qty: n });
   setCart(cart);
   toastTip('已加入购物车');
 }
 function cartEstimate(cart) {
   let total = 0, ok = true;
   for (const it of cart) {
-    const m = String(it.price || '').match(/\d+(?:\.\d+)?/);
+    // 合计按下单价（含加价）估算，与 /api/orders 服务端结算口径保持一致
+    const m = String(displayPrice(it.price || '') || '').match(/\d+(?:\.\d+)?/);
     if (!m) { ok = false; break; }
     total += parseFloat(m[0]) * (parseInt(it.qty, 10) || 1);
   }
@@ -1106,8 +1112,8 @@ function detailHtml(p) {
       ${detailRow('品牌', p.brand)}
       ${detailRow('分类', p.category)}
       ${detailRow('规格', p.spec)}
-      ${detailRow('批发价', p.wholesale_price)}
-      ${detailRow('零售价', retailText)}
+      ${detailRow('批发价', displayPrice(p.wholesale_price))}
+      ${detailRow('零售价', displayPrice(retailText))}
       ${detailRow('起订量', p.moq)}
       ${detailRow('储存方式', p.storage)}
       ${detailRow('保质期', p.shelf_life)}
@@ -1156,7 +1162,7 @@ function renderCart() {
           <div class="cart-item-info">
             <b class="cart-item-name">${escapeHtml(it.name)}</b>
             <span class="cart-item-spec">${escapeHtml(it.spec || '')}${it.brand ? ' · ' + escapeHtml(it.brand) : ''}</span>
-            <span class="cart-item-price">批发 ${escapeHtml(it.price || '议价')}</span>
+            <span class="cart-item-price">批发 ${escapeHtml(displayPrice(it.price) || '议价')}</span>
           </div>
           <div class="cart-item-side">
             <div class="qty-picker small">
@@ -1169,7 +1175,7 @@ function renderCart() {
         </div>`).join('')}
     </div>
     <div class="cart-summary">
-      <div class="cart-total">合计（估算）<b>${estimate !== null ? '¥' + estimate : '人工核算'}</b><span class="cart-total-tip">批发价按数量人工核算，最终以报价单为准</span></div>
+      <div class="cart-total">合计（下单金额）<b>${estimate !== null ? '¥' + estimate : '人工核算'}</b><span class="cart-total-tip">按当前价目计算，多档批发价可在备注中说明</span></div>
     </div>
     <div class="checkout-form panel-params">
       <h2>提交订单</h2>

@@ -798,6 +798,9 @@
                   <button type="button" class="btn btn-primary btn-lg" id="brand-add-btn">新增品牌档案</button>
                 </div>
               </div>
+              <div class="toolbar">
+                <input type="search" id="brands-search" placeholder="搜索品牌 Key / 名称 / 简介" class="toolbar-input" autocomplete="off" />
+              </div>
               <div class="table-card">
                 <table class="list-table">
                   <thead><tr><th>品牌 Key</th><th>品牌名称</th><th>产品数</th><th class="num">资质数</th><th>简介</th><th>更新时间</th><th style="width:120px">操作</th></tr></thead>
@@ -832,6 +835,28 @@
     <div class="modal-head"><h3 id="brand-modal-title">编辑品牌档案</h3><button type="button" class="drawer-close" id="brand-close" title="关闭">✕</button></div>
     <div class="modal-body" id="brand-modal-body"></div>
     <div class="modal-foot"><button type="button" class="btn btn-primary" id="brand-save-btn">保存档案</button></div>
+  </div>
+
+  <!-- 通用输入弹窗（替代原生 prompt） -->
+  <div class="modal-mask" id="prompt-mask" hidden></div>
+  <div class="modal" id="prompt-modal" hidden>
+    <div class="modal-head"><h3 id="prompt-modal-title">请输入</h3><button type="button" class="drawer-close" id="prompt-close" title="关闭">✕</button></div>
+    <div class="modal-body" id="prompt-modal-body"></div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-outline" id="prompt-cancel">取消</button>
+      <button type="button" class="btn btn-primary" id="prompt-ok">确定</button>
+    </div>
+  </div>
+
+  <!-- 通用确认弹窗（替代原生 confirm） -->
+  <div class="modal-mask" id="confirm-mask" hidden></div>
+  <div class="modal" id="confirm-modal" hidden>
+    <div class="modal-head"><h3 id="confirm-modal-title">确认操作</h3><button type="button" class="drawer-close" id="confirm-close" title="关闭">✕</button></div>
+    <div class="modal-body" id="confirm-modal-body"></div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-outline" id="confirm-cancel">取消</button>
+      <button type="button" class="btn btn-primary" id="confirm-ok">确定</button>
+    </div>
   </div>
 
   <!-- 角色编辑弹窗 -->

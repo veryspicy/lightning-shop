@@ -242,7 +242,7 @@ async function deleteCategory() {
   const hint = isExtra
     ? `该分类为产品自动发现分类，删除后 ${chip.querySelector('.chip-count').textContent} 个产品的分类将置为「未分类」。`
     : '仅从分类配置移除，产品数据不受影响。';
-  if (!confirm(`确定删除分类「${name}」？\n${hint}`)) return;
+  if (!await askConfirm('删除分类', `确定删除分类「${name}」？\n${hint}`, '删除')) return;
   try {
     await api('/api/admin/categories', {
       method: 'DELETE',
@@ -732,7 +732,7 @@ async function onTableClick(e) {
       await reload();
     } catch (err) { toast(err.message, true); }
   } else if (btn.dataset.action === 'delete') {
-    if (!confirm(`确认删除「${p.name}」？关联图片也会一并删除。`)) return;
+    if (!await askConfirm('删除产品', `确认删除「${p.name}」？关联图片也会一并删除。`, '删除')) return;
     try {
       await api(`/api/products/${id}`, { method: 'DELETE', headers: authHeaders() });
       toast('已删除');
@@ -836,7 +836,7 @@ async function updateUser(id, payload) {
 }
 
 async function deleteUser(id) {
-  if (!confirm('确认删除该账号？此操作不可恢复。')) return;
+  if (!await askConfirm('删除账号', '确认删除该账号？此操作不可恢复。', '删除')) return;
   try {
     await api(`/api/admin/users/${id}`, { method: 'DELETE', headers: authHeaders() });
     toast('账号已删除');
@@ -852,19 +852,20 @@ async function onUsersAction(e) {
   const id = btn.dataset.userId;
   const act = btn.dataset.userAct;
   if (act === 'password') {
-    const pwd = prompt('输入新密码（至少 6 位）');
+    const pwd = await askText({ title: '设置新密码', label: '新密码（至少 6 位）', placeholder: '请输入新密码', okText: '保存' });
     if (!pwd) return;
     if (pwd.length < 6) return toast('密码至少 6 位', true);
     await updateUser(id, { password: pwd });
   } else if (act === 'edit') {
     if (!ROLE_OPTIONS.length) return toast('角色列表未加载，请先打开角色管理', true);
     const hint = ROLE_OPTIONS.map((r) => `${r.key}:${r.name}`).join(' / ');
-    const role = prompt(`设置角色（输入标识，可选：${hint}）`);
+    const cur = (USERS_CACHE || []).find((u) => String(u.id) === String(id)) || {};
+    const role = await askText({ title: '设置角色', label: `角色标识（可选：${hint}）`, value: cur.role || '', okText: '下一步' });
     if (!role) return;
     if (!ROLE_OPTIONS.some((r) => r.key === role)) return toast('无效的角色标识', true);
     const payload = { role };
     if (role === 'supplier') {
-      const brand = prompt('供应商绑定品牌');
+      const brand = await askText({ title: '绑定供应商品牌', label: '品牌名称（与产品品牌一致）', okText: '保存' });
       if (!brand) return toast('供应商需绑定品牌', true);
       payload.supplierBrand = brand;
     }
@@ -1028,7 +1029,7 @@ async function saveRole() {
 }
 
 async function deleteRole(key) {
-  if (!confirm('确认删除该角色？删除后不可恢复。')) return;
+  if (!await askConfirm('删除角色', '确认删除该角色？删除后不可恢复。', '删除')) return;
   try {
     await api(`/api/admin/roles/${encodeURIComponent(key)}`, { method: 'DELETE', headers: authHeaders() });
     toast('角色已删除');
@@ -1261,7 +1262,7 @@ $('batch-apply').addEventListener('click', async () => {
   const field = $('batch-field').value;
   const value = field === 'status' ? $('batch-status-value').value : $('batch-value').value;
   const fieldLabel = $('batch-field').selectedOptions[0]?.textContent || field;
-  if (!confirm(`确认将「${fieldLabel}」批量修改为「${value || '(清空)'}」？将影响 ${ids.length} 个产品。`)) return;
+  if (!await askConfirm('批量修改', `确认将「${fieldLabel}」批量修改为「${value || '(清空)'}」？将影响 ${ids.length} 个产品。`, '确认修改')) return;
   try {
     const r = await api('/api/products/batch', {
       method: 'PATCH',
@@ -1451,6 +1452,65 @@ function closeModalAdmin(maskId, modalId) {
   if (d) d.hidden = true;
 }
 
+/* ---- 站内弹窗：替代原生 prompt / confirm，统一视觉与键盘行为 ---- */
+function askConfirm(title, message, okText = '确定') {
+  return new Promise((resolve) => {
+    $('confirm-modal-title').textContent = title;
+    $('confirm-modal-body').innerHTML = `<p style="margin:0;line-height:1.7">${escapeHtml(message).replace(/\n/g, '<br>')}</p>`;
+    $('confirm-ok').textContent = okText;
+    const finish = (val) => {
+      closeModalAdmin('confirm-mask', 'confirm-modal');
+      $('confirm-ok').onclick = null;
+      $('confirm-cancel').onclick = null;
+      $('confirm-close').onclick = null;
+      $('confirm-mask').onclick = null;
+      resolve(val);
+    };
+    $('confirm-ok').onclick = () => finish(true);
+    $('confirm-cancel').onclick = () => finish(false);
+    $('confirm-close').onclick = () => finish(false);
+    $('confirm-mask').onclick = () => finish(false);
+    openModalAdmin('confirm-mask', 'confirm-modal');
+    $('confirm-ok').focus();
+  });
+}
+
+function askText(opts) {
+  const o = opts || {};
+  const title = o.title || '请输入';
+  const label = o.label || '内容';
+  const okText = o.okText || '确定';
+  return new Promise((resolve) => {
+    $('prompt-modal-title').textContent = title;
+    $('prompt-modal-body').innerHTML = `<div class="field"><label>${escapeHtml(label)}</label>`
+      + `<input id="prompt-input" type="text" autocomplete="off" placeholder="${escapeHtml(o.placeholder || '')}" value="${escapeHtml(o.value || '')}" /></div>`
+      + (o.tip ? `<p class="muted" style="margin:8px 0 0;font-size:.78rem">${escapeHtml(o.tip)}</p>` : '');
+    $('prompt-ok').textContent = okText;
+    const finish = (val) => {
+      closeModalAdmin('prompt-mask', 'prompt-modal');
+      $('prompt-ok').onclick = null;
+      $('prompt-cancel').onclick = null;
+      $('prompt-close').onclick = null;
+      $('prompt-mask').onclick = null;
+      const input = $('prompt-input');
+      if (input) input.onkeydown = null;
+      resolve(val);
+    };
+    const input = $('prompt-input');
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(input.value); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(null); }
+    };
+    $('prompt-ok').onclick = () => finish(input.value);
+    $('prompt-cancel').onclick = () => finish(null);
+    $('prompt-close').onclick = () => finish(null);
+    $('prompt-mask').onclick = () => finish(null);
+    openModalAdmin('prompt-mask', 'prompt-modal');
+    input.focus();
+    input.select();
+  });
+}
+
 /* ---- 订单管理 ---- */
 async function loadOrdersPanel() {
   const body = $('orders-body');
@@ -1498,9 +1558,11 @@ function renderOrderModal(o) {
     <td>${it.image ? `<img src="${escapeHtml(it.image)}" style="width:36px;height:36px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:8px" onerror="this.style.display='none'" />` : ''}${escapeHtml(it.name)}</td>
     <td>${escapeHtml(it.spec || '-')}</td>
     <td>${it.qty}</td>
-    <td>¥${money(it.price)}</td>
+    <td class="num">¥${money(it.price)}${it.base_price ? `<div class="muted" style="font-size:.72rem">出厂 ¥${money(it.base_price)}</div>` : ''}</td>
     <td>¥${money(numOf(it.price) * numOf(it.qty))}</td>
   </tr>`).join('');
+  // 出厂成本 / 毛利：结算价已含加价，这里给出成本口径便于核对利润
+  const costTotal = (o.items || []).reduce((sum, it) => sum + (it.base_price ? numOf(it.base_price) * numOf(it.qty) : 0), 0);
   $('order-modal-body').innerHTML = `
     <div class="order-detail-grid">
       <div class="kv"><b>订单号</b><span>${escapeHtml(o.id)}</span></div>
@@ -1509,6 +1571,8 @@ function renderOrderModal(o) {
       <div class="kv"><b>手机号</b><span>${escapeHtml(o.customer_phone)}</span></div>
       <div class="kv"><b>下单时间</b><span>${fmtTimeAdmin(o.created_at)}</span></div>
       <div class="kv"><b>金额</b><span style="color:var(--accent);font-weight:700">¥${money(o.total_amount)}</span></div>
+      ${costTotal > 0 ? `<div class="kv"><b>出厂成本</b><span>¥${money(costTotal)}</span></div>
+      <div class="kv"><b>预计毛利</b><span style="font-weight:700">¥${money(numOf(o.total_amount) - costTotal)}</span></div>` : ''}
       ${o.remark ? `<div class="kv" style="grid-column:1/-1"><b>地址备注</b><span>${escapeHtml(o.remark)}</span></div>` : ''}
       ${o.tracking_no ? `<div class="kv" style="grid-column:1/-1"><b>物流单号</b><span>${escapeHtml(o.tracking_no)}</span></div>` : ''}
       ${o.note ? `<div class="kv" style="grid-column:1/-1"><b>后台备注</b><span>${escapeHtml(o.note)}</span></div>` : ''}
@@ -1535,14 +1599,14 @@ async function orderAct(action) {
   const o = CURRENT_ORDER;
   if (!o) return;
   if (action === 'cancel') {
-    if (!confirm('确认取消该订单？取消后订单将终止。')) return;
+    if (!await askConfirm('取消订单', '确认取消该订单？取消后订单将终止。', '取消订单')) return;
     await updateOrderStatus(o.id, 'cancelled');
     return;
   }
   if (action === 'ship') {
-    const track = prompt('请输入物流单号（可留空）：');
+    const track = await askText({ title: '发货', label: '物流单号（可留空）', placeholder: '如 SF1234567890', okText: '确认发货' });
     if (track === null) return;
-    await updateOrderStatus(o.id, 'shipped', track.trim());
+    await updateOrderStatus(o.id, 'shipped', String(track).trim());
     return;
   }
   const statusMap = { 'confirm-paid': 'paid', complete: 'done' };
@@ -1585,7 +1649,7 @@ function renderCustomersTable() {
     <td>${escapeHtml(c.phone)}</td>
     <td class="num">${c.order_count || 0}</td>
     <td class="num">${c.total_qty || 0}</td>
-    <td class="num">¥${money(c.total_amount)}</td>
+    <td class="num">${c.order_count ? '¥' + money(c.total_amount) : '<span class="muted">—</span>'}</td>
     <td>${fmtTimeAdmin(c.last_order_at)}</td>
     <td><button type="button" class="btn btn-outline btn-sm" data-customer-view="${escapeHtml(c.phone)}">查看</button></td>
   </tr>`).join('');
@@ -1611,7 +1675,7 @@ async function openCustomerModal(phone) {
         <div class="kv"><b>手机号</b><span>${escapeHtml(c.phone)}</span></div>
         <div class="kv"><b>订单数</b><span>${c.order_count || 0}</span></div>
         <div class="kv"><b>累计件数</b><span>${c.total_qty || 0}</span></div>
-        <div class="kv"><b>累计金额</b><span style="color:var(--accent);font-weight:700">¥${money(c.total_amount)}</span></div>
+        <div class="kv"><b>累计金额</b><span style="color:var(--accent);font-weight:700">${c.order_count ? '¥' + money(c.total_amount) : '—'}</span></div>
         <div class="kv"><b>最近下单</b><span>${fmtTimeAdmin(c.last_order_at)}</span></div>
       </div>
       <h4 style="margin:6px 0 2px">历史订单（${orders.length}）</h4>
@@ -1635,14 +1699,18 @@ async function loadBrandsPanel() {
 function renderBrandsTable() {
   const body = $('brands-body');
   if (!body) return;
+  const kw = ($('brands-search') ? $('brands-search').value : '').trim().toLowerCase();
+  const list = (BRANDS_CACHE || []).filter((b) => !kw
+    || [b.key, b.name, b.intro, b.services, b.contact].some((v) => String(v || '').toLowerCase().includes(kw)));
   if (!(BRANDS_CACHE || []).length) { body.innerHTML = '<tr class="empty-row"><td colspan="7" class="empty-cell">暂无品牌档案，点击右上角新增</td></tr>'; return; }
-  body.innerHTML = BRANDS_CACHE.map((b) => `<tr>
+  if (!list.length) { body.innerHTML = `<tr class="empty-row"><td colspan="7" class="empty-cell">没有匹配「${escapeHtml(kw)}」的品牌档案</td></tr>`; return; }
+  body.innerHTML = list.map((b) => `<tr>
     <td><b>${escapeHtml(b.key)}</b></td>
     <td>${escapeHtml(b.name || '-')}</td>
     <td>${b.product_count || 0}</td>
     <td class="num">${(b.certs || []).length}</td>
     <td>${escapeHtml((b.intro || '').slice(0, 30))}</td>
-    <td>${fmtTimeAdmin(b.updated_at)}</td>
+    <td>${fmtTimeAdmin(b.updated_at) || '<span class="muted">—</span>'}</td>
     <td>
       <button type="button" class="btn btn-outline btn-sm" data-brand-edit="${escapeHtml(b.key)}">编辑</button>
       <button type="button" class="btn btn-outline btn-sm" style="color:#c0392b" data-brand-del="${escapeHtml(b.key)}">删除</button>
@@ -1705,6 +1773,8 @@ function bindTradeEvents() {
   if (oref) oref.addEventListener('click', () => loadOrdersPanel());
   const cs = $('customers-search');
   if (cs) cs.addEventListener('input', () => renderCustomersTable());
+  const bs = $('brands-search');
+  if (bs) bs.addEventListener('input', () => renderBrandsTable());
   const ob = $('orders-body');
   if (ob) ob.addEventListener('click', (e) => {
     const view = e.target.closest('[data-order-view]');
@@ -1725,10 +1795,12 @@ function bindTradeEvents() {
     if (edit) { const b = (BRANDS_CACHE || []).find((x) => x.key === edit.dataset.brandEdit); if (b) openBrandModal(b); return; }
     const del = e.target.closest('[data-brand-del]');
     if (del) {
-      if (!confirm('确认删除该品牌档案？前台品牌页将不可用。')) return;
-      api('/api/admin/brands/profile/' + encodeURIComponent(del.dataset.brandDel), { method: 'DELETE', headers: authHeaders() })
-        .then(() => { toast('品牌档案已删除'); loadBrandsPanel(); })
-        .catch((err) => toast(err.message, true));
+      askConfirm('删除品牌档案', '确认删除该品牌档案？前台品牌页将不可用。', '删除').then((ok) => {
+        if (!ok) return;
+        api('/api/admin/brands/profile/' + encodeURIComponent(del.dataset.brandDel), { method: 'DELETE', headers: authHeaders() })
+          .then(() => { toast('品牌档案已删除'); loadBrandsPanel(); })
+          .catch((err) => toast(err.message, true));
+      });
     }
   });
   const fm = $('order-modal-foot');

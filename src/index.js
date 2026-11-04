@@ -322,6 +322,22 @@ async function savePrice(env, raw) {
   return p;
 }
 
+// 结算加价：下单价也必须按同一策略计算，保证「展示价 = 下单价」，利润不被让掉
+// 与前台 public/app.js 的 applyMargin 保持同一口径：含「元」只加成元前数字，纯数字串整体加价，其他文案原样
+function applyMarginStr(priceStr, cfg) {
+  if (!cfg || !cfg.enabled || !cfg.margin) return priceStr;
+  const s = String(priceStr === undefined || priceStr === null ? '' : priceStr);
+  if (!s) return s;
+  const rate = 1 + cfg.margin / 100;
+  const scale = (nums) => nums.replace(/\d+(?:\.\d+)?/g, (m) => String(parseFloat((parseFloat(m) * rate).toFixed(2))));
+  if (s.includes('元')) {
+    return s.replace(/(\d+(?:\.\d+)?(?:\s*[\/\-]\s*\d+(?:\.\d+)?)*)\s*元/g, (whole, nums) => whole.replace(nums, scale(nums)));
+  }
+  // 纯价格串（"12"、"12/11.5"）整体加价；含文字且无「元」的属议价说明，原样返回
+  if (/^\s*\d+(?:\.\d+)?(\s*[\/\-]\s*\d+(?:\.\d+)?)*\s*$/.test(s)) return scale(s);
+  return s;
+}
+
 // 二维码站点配置：url 用于首页动态生成「扫码直达商城」二维码，quoteImage 为报价单二维码图片（R2）
 // quoteTitle / shopTitle 为两张卡片标题，后台可配置，留空回退默认
 const DEFAULT_QR = {
@@ -583,6 +599,9 @@ function sanitizeBrandProfile(raw) {
   for (const f of ['intro', 'services', 'contact']) out[f] = String(raw[f] || '').trim().slice(0, 3000);
   const certs = Array.isArray(raw.certs) ? raw.certs : [];
   out.certs = certs.map((c) => String(c || '').trim().slice(0, 300)).filter((c) => c.startsWith('/img/') || c.startsWith('http'));
+  // 时间字段由服务端维护：created_at 沿用原值，updated_at 每次保存刷新
+  if (raw.created_at) out.created_at = String(raw.created_at).slice(0, 40);
+  if (raw.updated_at) out.updated_at = String(raw.updated_at).slice(0, 40);
   return out;
 }
 
@@ -624,11 +643,21 @@ async function getBrandProfiles(env) {
 }
 
 async function saveBrandProfile(env, profile) {
-  await env.KV.put(brandProfileKvKey(profile.key), JSON.stringify(profile));
-  const legacy = `${BRAND_PROFILE_PREFIX}${profile.key}`;
-  if (legacy !== brandProfileKvKey(profile.key) && (await env.KV.get(legacy))) {
+  // 时间字段服务端盖章：历史档案缺 updated_at 时用保存时间补齐，后台「更新时间」列不再为空
+  const now = new Date().toISOString();
+  const next = { ...profile };
+  if (!next.created_at) {
+    // created_at 首次写入后不可变：历史档案已归档过就沿用原值
+    const prev = await getBrandProfile(env, next.key);
+    next.created_at = (prev && prev.created_at) || now;
+  }
+  next.updated_at = now;
+  await env.KV.put(brandProfileKvKey(next.key), JSON.stringify(next));
+  const legacy = `${BRAND_PROFILE_PREFIX}${next.key}`;
+  if (legacy !== brandProfileKvKey(next.key) && (await env.KV.get(legacy))) {
     await env.KV.delete(legacy);
   }
+  return next;
 }
 
 async function deleteBrandProfile(env, key) {
@@ -1165,13 +1194,17 @@ async function handleApi(request, env, url) {
       if (unknown.length) {
         return json({ error: 'bad_request', message: `商品不存在或已下架：${unknown.map((x) => x.id).join(',')}` }, 400);
       }
+      // 结算价以商品库出厂价 ×（1+利润率）服务端重算：前端传入价格一概不采信，避免改价逃单
+      const priceCfg = await getPrice(env);
       order.items = order.items.map((it) => {
         const p = byId.get(it.id);
+        const basePrice = String(p.wholesale_price || '');
         return {
           id: it.id,
           name: it.name || p.name || '',
           spec: it.spec || p.spec || '',
-          price: it.price || p.wholesale_price || '',
+          price: basePrice ? applyMarginStr(basePrice, priceCfg) : (it.price || ''),
+          base_price: basePrice,
           moq: it.moq || p.moq || '',
           qty: it.qty,
           image: it.image || p.image || '',
@@ -1322,8 +1355,8 @@ async function handleApi(request, env, url) {
       }
       const body = await readJson(request);
       const profile = { ...sanitizeBrandProfile(body || {}), key };
-      await saveBrandProfile(env, profile);
-      return json({ ok: true, brand: profile });
+      const saved = await saveBrandProfile(env, profile);
+      return json({ ok: true, brand: saved });
     }
   }
 
