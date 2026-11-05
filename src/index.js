@@ -70,13 +70,15 @@ function buildCategories(products, configured = CATEGORY_ORDER) {
   return list.concat(extra.map((name) => ({ name, count: map.get(name) })));
 }
 
+// 站点前后端同源部署，公开接口不需要 CORS 通配。
+// 原 `Access-Control-Allow-Origin: *` 让任意第三方页面可读取用户查单结果与商品数据，
+// 统一收敛为不返回 ACAO 头（浏览器默认拒绝跨源读取）。
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-cache',
-      'Access-Control-Allow-Origin': '*',
     },
   });
 }
@@ -88,7 +90,6 @@ function jsonNoCache(data, status = 200) {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-cache',
-      'Access-Control-Allow-Origin': '*',
     },
   });
 }
@@ -103,6 +104,7 @@ function notFound() {
 /* ---- 管理后台：鉴权与写接口 ---- */
 
 const SESSION_TTL = 60 * 60 * 24 * 7; // 会话有效期 7 天
+const UPLOAD_MAX_BYTES = 5 * 1024 * 1024; // 单图上限 5MB
 
 // 可配置权限点（角色管理界面可勾选）
 const PERM_DEFS = {
@@ -150,14 +152,14 @@ function rolePermissions(role) {
 function unauthorized(msg = 'unauthorized') {
   return new Response(JSON.stringify({ error: msg }), {
     status: 401,
-    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' },
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 
 function forbidden() {
   return new Response(JSON.stringify({ error: 'forbidden', message: '无权限执行该操作' }), {
     status: 403,
-    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' },
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 
@@ -177,10 +179,119 @@ function randomToken() {
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// 单轮 SHA-256 加盐对抗 GPU 离线爆破防护不足，改为 PBKDF2-SHA256 迭代派生。
+// 迭代数取 30000：Workers 单请求 CPU 预算有限，兼顾强度与登录/改密响应耗时。
+const PBKDF2_ITER = 30000;
+
+function toHex(buf) {
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 async function hashPassword(password, salt) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode(String(password)), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: enc.encode(String(salt)), iterations: PBKDF2_ITER, hash: 'SHA-256' },
+    key,
+    256
+  );
+  return `pbkdf2$${PBKDF2_ITER}$${toHex(bits)}`;
+}
+
+// 存量口令为无前缀的「单轮 SHA-256(salt:password)」，仅在验证时沿用，登录成功后自动升级
+async function legacyHashPassword(password, salt) {
   const data = new TextEncoder().encode(`${salt}:${password}`);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return toHex(await crypto.subtle.digest('SHA-256', data));
+}
+
+function isLegacyHash(stored) {
+  const s = String(stored || '');
+  return !!s && !s.startsWith('pbkdf2$');
+}
+
+// 定长比较：先派生再逐字符异或，避免早退比较泄露前缀匹配长度
+function timingSafeEqual(a, b) {
+  const x = String(a || '');
+  const y = String(b || '');
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return diff === 0;
+}
+
+async function verifyPassword(password, user) {
+  const stored = String((user && user.passwordHash) || '');
+  if (!stored) return false;
+  const salt = String((user && user.salt) || '');
+  if (isLegacyHash(stored)) return timingSafeEqual(await legacyHashPassword(password, salt), stored);
+  return timingSafeEqual(await hashPassword(password, salt), stored);
+}
+
+// 口令强度：≥8 位，且至少包含「小写/大写/数字/符号」中的两类
+function passwordIssue(pwd) {
+  const s = String(pwd === undefined || pwd === null ? '' : pwd);
+  if (s.length < 8) return '密码至少 8 位';
+  if (s.length > 72) return '密码最长 72 位';
+  const kinds = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((re) => re.test(s)).length;
+  if (kinds < 2) return '密码需包含字母、数字、符号中至少两类';
+  if (/^(.)\1+$/.test(s)) return '密码不能是单一字符重复';
+  if (/^(?:12345678|password|admin123|qwertyui)$/i.test(s)) return '密码过于常见';
+  return '';
+}
+
+/* ---- 轻量限流 ----
+ * Worker 无进程内全局状态、KV 写入有配额成本，故窗口计数放 isolate 内存：
+ * 同一 colo 内可精确拦截脚本爆破/遍历；跨 isolate 为近似保护。
+ * 目标是把「手机号遍历查单」「口令爆破」「下单灌库」从零成本提升为有成本。
+ */
+const RATE_BUCKETS = new Map();
+
+function clientIp(request) {
+  const h = request.headers;
+  return String(h.get('cf-connecting-ip') || h.get('x-real-ip') || h.get('x-forwarded-for') || 'unknown')
+    .split(',')[0]
+    .trim()
+    .slice(0, 64) || 'unknown';
+}
+
+function rateLimit(scope, key, limit, windowSec) {
+  const now = Date.now();
+  const k = `${scope}:${key}`;
+  const cur = RATE_BUCKETS.get(k);
+  if (!cur || cur.reset <= now) {
+    // 防内存膨胀：清理过期桶，仍超限则整体重置（限流是近似保护，宁可短时放宽也不 OOM）
+    if (RATE_BUCKETS.size > 5000) {
+      for (const [kk, vv] of RATE_BUCKETS) if (vv.reset <= now) RATE_BUCKETS.delete(kk);
+      if (RATE_BUCKETS.size > 5000) RATE_BUCKETS.clear();
+    }
+    RATE_BUCKETS.set(k, { count: 1, reset: now + windowSec * 1000 });
+    return { ok: true, remaining: limit - 1, retryAfter: 0 };
+  }
+  cur.count += 1;
+  if (cur.count > limit) {
+    return { ok: false, remaining: 0, retryAfter: Math.max(1, Math.ceil((cur.reset - now) / 1000)) };
+  }
+  return { ok: true, remaining: limit - cur.count, retryAfter: 0 };
+}
+
+function tooManyRequests(retryAfter, message = '请求过于频繁，请稍后再试') {
+  return new Response(JSON.stringify({ error: 'rate_limited', message }), {
+    status: 429,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Retry-After': String(retryAfter || 60),
+      'Cache-Control': 'no-store',
+    },
+  });
+}
+
+// 畸形百分号编码（/%E0%A4%A）会让 decodeURIComponent 抛 URIError → 整个 Worker 500
+function safeDecode(s) {
+  try {
+    return decodeURIComponent(String(s === undefined || s === null ? '' : s));
+  } catch {
+    return null;
+  }
 }
 
 function publicUser(u) {
@@ -241,7 +352,10 @@ async function authUser(request, env) {
   if (!session || !session.userId) return null;
   const users = await getUsers(env);
   const user = users.find((u) => u.id === session.userId && u.status !== 'disabled');
-  return user || null;
+  if (!user) return null;
+  // 口令版本比对：改密/重置会自增 pwdVer，此前签发的所有会话即刻失效（KV 无法按用户枚举删 session）
+  if (Number(session.ver || 0) !== Number(user.pwdVer || 0)) return null;
+  return user;
 }
 
 // 权限键归一：存量 KV 自定义角色里可能存着历史带后缀的旧键（products:write / users:manage ...），
@@ -283,6 +397,12 @@ function safeImageUrl(u) {
   return '';
 }
 
+// 手机号脱敏：公开接口回显一律打码，避免查单结果被截图/转发时泄露完整号码
+function maskPhone(p) {
+  const s = String(p || '');
+  return /^\d{11}$/.test(s) ? `${s.slice(0, 3)}****${s.slice(7)}` : s;
+}
+
 // 对外订单投影：成本价（base_price）与内部字段仅后台可见，公开接口一律剔除。
 function publicOrder(order) {
   const o = order || {};
@@ -291,7 +411,7 @@ function publicOrder(order) {
     id: String(o.id || ''),
     status: String(o.status || ''),
     customer_name: String(o.customer_name || ''),
-    customer_phone: String(o.customer_phone || ''),
+    customer_phone: maskPhone(o.customer_phone),
     remark: String(o.remark || ''),
     tracking_no: String(o.tracking_no || ''),
     status_note: String(o.status_note || ''),
@@ -395,6 +515,33 @@ function applyMarginStr(priceStr, cfg) {
   // 纯价格串（"12"、"12/11.5"）整体加价；含文字且无「元」的属议价说明，原样返回
   if (/^\s*\d+(?:\.\d+)?(\s*[\/\-]\s*\d+(?:\.\d+)?)*\s*$/.test(s)) return scale(s);
   return s;
+}
+
+// 公开商品投影：成本价（wholesale_price）只服务后台与供应商，
+// 前台一律只下发「加价后的展示价」，价格策略（margin）也不再随公开接口暴露，
+// 否则任何人拿到出厂价 × 展示价即可反推成本结构。
+function publicProduct(p, priceCfg) {
+  const item = p || {};
+  return {
+    id: String(item.id || ''),
+    seq: item.seq || 0,
+    name: String(item.name || ''),
+    brand: String(item.brand || ''),
+    category: String(item.category || ''),
+    spec: String(item.spec || ''),
+    // price = 出厂价 ×（1+利润率），与下单结算口径完全一致
+    price: applyMarginStr(String(item.wholesale_price || ''), priceCfg),
+    retail_price: applyMarginStr(String(item.retail_price || ''), priceCfg),
+    price_note: String(item.price_note || ''),
+    moq: String(item.moq || ''),
+    highlights: String(item.highlights || ''),
+    storage: String(item.storage || ''),
+    shelf_life: String(item.shelf_life || ''),
+    cert: String(item.cert || ''),
+    badge: String(item.badge || ''),
+    image: safeImageUrl(String(item.image || '')),
+    status: String(item.status || ''),
+  };
 }
 
 // 二维码站点配置：url 用于首页动态生成「扫码直达商城」二维码，quoteImage 为报价单二维码图片（R2）
@@ -530,7 +677,7 @@ function sanitizeOrder(raw) {
         spec: String(it.spec || '').slice(0, 60),
         price: String(it.price || '').slice(0, 40),
         moq: String(it.moq || '').slice(0, 40),
-        qty: Math.min(Math.max(1, parseInt(it.qty, 10) || 1), 99999),
+        qty: Math.min(Math.max(1, parseInt(it.qty, 10) || 1), 9999),
         image: safeImageUrl(String(it.image || '').slice(0, 300)),
       }))
     : [];
@@ -737,20 +884,33 @@ async function handleApi(request, env, url) {
 
   // ---- 登录 / 会话 / 当前用户 ----
   if (path === '/api/auth/login' && method === 'POST') {
+    // 登录限流：同 IP 5 分钟 20 次、同 IP+账号 5 分钟 5 次，阻断在线口令爆破
+    const ip = clientIp(request);
+    const ipLimit = rateLimit('login-ip', ip, 20, 300);
+    if (!ipLimit.ok) return tooManyRequests(ipLimit.retryAfter, '登录尝试过于频繁，请稍后再试');
     const body = await readJson(request);
     if (!body || !String(body.username || '').trim() || !String(body.password || '')) {
       return json({ error: 'bad_request', message: '用户名和密码必填' }, 400);
     }
     const username = String(body.username).trim();
     const password = String(body.password);
+    const acctLimit = rateLimit('login-acct', `${ip}|${username.toLowerCase()}`, 5, 300);
+    if (!acctLimit.ok) return tooManyRequests(acctLimit.retryAfter, '该账号尝试过于频繁，请 5 分钟后再试');
     const users = await getUsers(env);
     const migrated = await ensureAdminUser(env, users, username, password);
     let user = migrated || users.find((u) => u.username === username && u.status !== 'disabled');
     if (!user) return unauthorized('用户名或密码错误');
-    const hash = await hashPassword(password, user.salt);
-    if (hash !== user.passwordHash) return unauthorized('用户名或密码错误');
+    if (!await verifyPassword(password, user)) return unauthorized('用户名或密码错误');
+    // 存量单轮 SHA-256 口令：验证通过后立即升级为 PBKDF2，旧哈希不再落库
+    if (isLegacyHash(user.passwordHash)) {
+      user.passwordHash = await hashPassword(password, user.salt);
+    }
     const token = randomToken();
-    await env.KV.put(`sessions:${token}`, JSON.stringify({ userId: user.id }), { expirationTtl: SESSION_TTL });
+    await env.KV.put(
+      `sessions:${token}`,
+      JSON.stringify({ userId: user.id, ver: Number(user.pwdVer || 0) }),
+      { expirationTtl: SESSION_TTL }
+    );
     user.lastLoginAt = new Date().toISOString();
     await saveUsers(env, users);
     return json({ ok: true, token, user: await publicUserWithPerms(env, user) });
@@ -772,20 +932,36 @@ async function handleApi(request, env, url) {
       const body = await readJson(request);
       if (!body) return json({ error: 'bad_request' }, 400);
       if (body.name !== undefined) user.name = String(body.name).trim().slice(0, 20);
+      let passwordChanged = false;
       if (body.newPassword) {
         if (!body.oldPassword) return json({ error: 'bad_request', message: '请输入当前密码' }, 400);
-        const oldHash = await hashPassword(String(body.oldPassword), user.salt);
-        if (oldHash !== user.passwordHash) return json({ error: 'bad_request', message: '当前密码不正确' }, 400);
+        if (!await verifyPassword(String(body.oldPassword), user)) {
+          return json({ error: 'bad_request', message: '当前密码不正确' }, 400);
+        }
         const pwd = String(body.newPassword);
-        if (pwd.length < 6) return json({ error: 'bad_request', message: '新密码至少 6 位' }, 400);
+        const issue = passwordIssue(pwd);
+        if (issue) return json({ error: 'bad_request', message: issue }, 400);
+        if (pwd === String(body.oldPassword)) {
+          return json({ error: 'bad_request', message: '新密码不能与当前密码相同' }, 400);
+        }
         user.salt = randomToken();
         user.passwordHash = await hashPassword(pwd, user.salt);
+        // 口令版本自增：该用户此前签发的全部会话（含当前这把）立即失效
+        user.pwdVer = Number(user.pwdVer || 0) + 1;
+        passwordChanged = true;
       }
       const uidx = (await getUsers(env)).findIndex((u) => u.id === user.id);
       if (uidx >= 0) {
         const users = await getUsers(env);
         users[uidx] = user;
         await saveUsers(env, users);
+      }
+      if (passwordChanged) {
+        return json({
+          ok: true,
+          relogin: true,
+          message: '密码已更新，其他设备上的登录状态已失效，请重新登录',
+        });
       }
       return json({ ok: true, user: await publicUserWithPerms(env, user) });
     }
@@ -810,10 +986,14 @@ async function handleApi(request, env, url) {
     const password = String(body?.password || '');
     const name = String(body?.name || '').trim();
     const roleMap = await getRoles(env);
-    const role = roleMap[String(body?.role || '')] ? String(body.role) : 'ops';
+    // 角色必须命中角色表：原先非法 role 静默回退 ops，等于给一个通用运营账号（含 cost 价与价格策略权限）
+    const roleKey = String(body?.role || '');
+    const role = roleKey ? (roleMap[roleKey] ? roleKey : '') : 'ops';
+    if (!role) return json({ error: 'bad_request', message: '角色不存在' }, 400);
     if (!username || !password) return json({ error: 'bad_request', message: '用户名和密码必填' }, 400);
     if (!/^[a-zA-Z0-9_]{2,20}$/.test(username)) return json({ error: 'bad_request', message: '用户名需 2-20 位字母/数字/下划线' }, 400);
-    if (password.length < 6) return json({ error: 'bad_request', message: '密码至少 6 位' }, 400);
+    const pwdIssue = passwordIssue(password);
+    if (pwdIssue) return json({ error: 'bad_request', message: pwdIssue }, 400);
     const users = await getUsers(env);
     if (users.some((u) => u.username === username)) return json({ error: 'duplicated', message: '用户名已存在' }, 400);
     const supplierBrand = role === 'supplier' ? String(body?.supplierBrand || '').trim() : '';
@@ -851,6 +1031,10 @@ async function handleApi(request, env, url) {
       if (!body) return json({ error: 'bad_request' }, 400);
       if (body.name !== undefined) target.name = String(body.name).trim().slice(0, 20);
       const roleMap = await getRoles(env);
+      if (body.role !== undefined && !roleMap[String(body.role)]) {
+        // 非法角色不再静默忽略：否则管理员以为降权成功、账号仍持原角色权限
+        return json({ error: 'bad_request', message: '角色不存在' }, 400);
+      }
       if (body.role !== undefined && roleMap[String(body.role)]) {
         target.role = body.role;
         if (body.role === 'supplier') {
@@ -866,9 +1050,12 @@ async function handleApi(request, env, url) {
         target.supplierBrand = sb;
       }
       if (body.password) {
-        if (String(body.password).length < 6) return json({ error: 'bad_request', message: '密码至少 6 位' }, 400);
+        const issue = passwordIssue(String(body.password));
+        if (issue) return json({ error: 'bad_request', message: issue }, 400);
         target.salt = randomToken();
         target.passwordHash = await hashPassword(String(body.password), target.salt);
+        // 管理员重置他人口令同样吊销该账号已签发的全部会话
+        target.pwdVer = Number(target.pwdVer || 0) + 1;
       }
       if (body.status !== undefined) {
         if (body.status === 'disabled') {
@@ -972,6 +1159,8 @@ async function handleApi(request, env, url) {
     if (user.role === 'supplier') {
       return json(products.filter((p) => p.brand === user.supplierBrand));
     }
+    // 成本价只对商品管理/价格权限开放：无权限的员工账号不该读到全量成本价
+    if (!await can(env, user, 'products') && !await can(env, user, 'price')) return forbidden();
     return json(products);
   }
 
@@ -1083,7 +1272,15 @@ async function handleApi(request, env, url) {
 
   // 价格策略：前台展示价 = 出厂价 × (1 + margin%)，GET 禁缓存，PUT 需鉴权
   if (path === '/api/site/price') {
-    if (method === 'GET') return jsonNoCache(await getPrice(env));
+    if (method === 'GET') {
+      // margin 属于内部经营参数：公开可读会被用来「展示价 ÷ (1+margin)」反推出厂成本。
+      // 故匿名只回 enabled（前台已不需要自行加价，价格由服务端投影直接给出），
+      // 带 price 权限的管理端才回完整策略。
+      const price = await getPrice(env);
+      const viewer = await authUser(request, env);
+      if (viewer && await can(env, viewer, 'price')) return jsonNoCache(price);
+      return jsonNoCache({ enabled: !!price.enabled });
+    }
     if (method === 'PUT') {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
@@ -1242,6 +1439,12 @@ async function handleApi(request, env, url) {
 
   /* ---- 下单（公开）---- */
   if (path === '/api/orders' && method === 'POST') {
+    // 下单限流：同 IP 1 分钟 10 单、1 小时 60 单，避免匿名接口被脚本灌库撑爆 KV 配额
+    const ip = clientIp(request);
+    const minLimit = rateLimit('order-ip-1m', ip, 10, 60);
+    if (!minLimit.ok) return tooManyRequests(minLimit.retryAfter, '下单过于频繁，请稍后再试');
+    const hourLimit = rateLimit('order-ip-1h', ip, 60, 3600);
+    if (!hourLimit.ok) return tooManyRequests(hourLimit.retryAfter, '下单过于频繁，请稍后再试');
     const body = await readJson(request);
     if (!body) return json({ error: 'bad_request', message: '请求体无效' }, 400);
     const order = sanitizeOrder(body);
@@ -1259,7 +1462,7 @@ async function handleApi(request, env, url) {
       }
       // 结算价以商品库出厂价 ×（1+利润率）服务端重算：前端传入价格一概不采信，避免改价逃单
       const priceCfg = await getPrice(env);
-      order.items = order.items.map((it) => {
+      const pricedItems = order.items.map((it) => {
         const p = byId.get(it.id);
         const basePrice = String(p.wholesale_price || '');
         return {
@@ -1276,8 +1479,21 @@ async function handleApi(request, env, url) {
           image: safeImageUrl(p.image),
         };
       });
+      // 商品未维护出厂价时无法重算结算价，若放行会以 0 元成交并污染客户累计/统计，直接拒绝
+      const noPrice = pricedItems.filter((x) => !x.price || !(Number(parseMoneyNum(x.price)) > 0));
+      if (noPrice.length) {
+        return json({ error: 'bad_request', message: `商品价格缺失，暂不可下单：${noPrice.map((x) => x.id).join(',')}` }, 400);
+      }
+      order.items = pricedItems;
     }
     Object.assign(order, orderTotals(order));
+    // 业务上限：普通批发单不会到百万级/数万件，超限视为异常请求直接拒绝，避免脏数据进库与后台统计失真
+    if (order.total_amount > 1000000) {
+      return json({ error: 'bad_request', message: '单笔金额超出上限，请分批下单或联系业务员' }, 400);
+    }
+    if (order.total_qty > 50000) {
+      return json({ error: 'bad_request', message: '单笔数量超出上限，请分批下单或联系业务员' }, 400);
+    }
     order.id = await genOrderId(env);
     order.status = 'pending';
     order.version = 1;
@@ -1291,9 +1507,15 @@ async function handleApi(request, env, url) {
 
   /* ---- 查单（公开，POST 避免边缘缓存）---- */
   if (path === '/api/orders/query' && method === 'POST') {
+    // 查单凭据只有手机号，必须限流，否则可被用于遍历手机号批量拖取订单信息
+    const ip = clientIp(request);
+    const ipLimit = rateLimit('query-ip', ip, 10, 300);
+    if (!ipLimit.ok) return tooManyRequests(ipLimit.retryAfter, '查询过于频繁，请稍后再试');
     const body = await readJson(request);
     const phone = String(body?.phone || '').trim();
     if (!/^1\d{10}$/.test(phone)) return json({ error: 'bad_request', message: '请填写正确的手机号' }, 400);
+    const phoneLimit = rateLimit('query-phone', phone, 20, 3600);
+    if (!phoneLimit.ok) return tooManyRequests(phoneLimit.retryAfter, '该手机号查询过于频繁，请稍后再试');
     const all = await getOrders(env);
     const mine = all.filter((o) => o.customer_phone === phone);
     const orderId = String(body?.order_id || '').trim();
@@ -1311,10 +1533,13 @@ async function handleApi(request, env, url) {
   {
     const bm = path.match(/^\/api\/brands\/profile\/([^/]+)$/);
     if (bm && method === 'GET') {
-      const key = decodeURIComponent(bm[1]);
+      const key = safeDecode(bm[1]);
+      if (key === null) return json({ error: 'bad_request', message: '请求路径编码无效' }, 400);
       const profile = await getBrandProfile(env, key);
       if (!profile) return notFound();
-      const products = onShelf.filter((x) => x.brand === key);
+      // 公开接口只回展示价投影，成本价（wholesale_price）不得随品牌页泄露
+      const priceCfg = await getPrice(env);
+      const products = onShelf.filter((x) => x.brand === key).map((x) => publicProduct(x, priceCfg));
       return jsonNoCache({ ok: true, brand: { ...profile, products } });
     }
   }
@@ -1388,7 +1613,8 @@ async function handleApi(request, env, url) {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
       if (!await can(env, user, 'customers')) return forbidden();
-      const phone = decodeURIComponent(cm[1]);
+      const phone = safeDecode(cm[1]);
+      if (phone === null) return json({ error: 'bad_request', message: '请求路径编码无效' }, 400);
       const aggregated = await recomputeCustomers(env);
       const customer = aggregated.find((c) => c.phone === phone) || (await env.KV.get(`customers:${phone}`, 'json'));
       if (!customer) return notFound();
@@ -1413,7 +1639,9 @@ async function handleApi(request, env, url) {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
       if (!await can(env, user, 'brands')) return forbidden();
-      const key = decodeURIComponent(bm[1]).slice(0, 40);
+      const decodedKey = safeDecode(bm[1]);
+      if (decodedKey === null) return json({ error: 'bad_request', message: '请求路径编码无效' }, 400);
+      const key = decodedKey.slice(0, 40);
       if (method === 'GET') {
         const profile = await getBrandProfile(env, key);
         if (!profile) return notFound();
@@ -1435,7 +1663,15 @@ async function handleApi(request, env, url) {
   if (m) {
     if (method === 'GET') {
       const p = products.find((x) => x.id === m[1]);
-      return p ? json(p) : notFound();
+      if (!p) return notFound();
+      // 下架商品对匿名访问一律视为不存在（原先按 id 可直读，等于绕过下架）
+      if (p.status === '下架') {
+        const viewer = await authUser(request, env);
+        if (!viewer || !await can(env, viewer, 'products')) return notFound();
+        return json(p);
+      }
+      const priceCfg = await getPrice(env);
+      return json(publicProduct(p, priceCfg));
     }
     if (method === 'PUT' || method === 'DELETE') {
       const user = await authUser(request, env);
@@ -1492,12 +1728,14 @@ async function handleApi(request, env, url) {
         );
       }
       // 分页：?limit=&offset=；显式传分页参数时返回 { items,total,offset,limit }，否则保持数组兼容
+      const priceCfg = await getPrice(env);
+      const shown = list.map((p) => publicProduct(p, priceCfg));
       if (url.searchParams.has('limit') || url.searchParams.has('offset')) {
         const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 50, 1), 200);
         const offset = Math.max(Number(url.searchParams.get('offset')) || 0, 0);
-        return json({ items: list.slice(offset, offset + limit), total: list.length, offset, limit });
+        return json({ items: shown.slice(offset, offset + limit), total: shown.length, offset, limit });
       }
-      return json(list);
+      return json(shown);
     }
     if (method === 'POST') {
       const user = await authUser(request, env);
@@ -1534,24 +1772,102 @@ async function handleApi(request, env, url) {
     }
     const filename = String(body.filename).replace(/[^\w.-]/g, '');
     if (!filename) return json({ error: 'bad_request', message: '文件名无效' }, 400);
+    // 后缀白名单：原先任意后缀都会落 R2 并被 /img/* 原样回吐（可当免费文件床，也可上传 svg/html 型内容）
+    if (!/\.(jpe?g|png|webp|gif)$/i.test(filename)) {
+      return json({ error: 'bad_request', message: '仅支持 jpg/jpeg/png/webp/gif 图片' }, 400);
+    }
+    // 体积上限：base64 长度先做一次廉价预检，避免把超大载荷先 atob 进内存
+    const rawB64 = String(body.base64).replace(/^data:[^,]+,/, '');
+    if (rawB64.length > UPLOAD_MAX_BYTES * 1.4) {
+      return json({ error: 'bad_request', message: `图片不能超过 ${UPLOAD_MAX_BYTES / 1024 / 1024}MB` }, 400);
+    }
     let bin;
     try {
-      const b64 = String(body.base64).replace(/^data:[^,]+,/, '');
-      bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      bin = Uint8Array.from(atob(rawB64), (c) => c.charCodeAt(0));
     } catch {
       return json({ error: 'bad_request', message: 'base64 无效' }, 400);
     }
-    const type = /\.png$/i.test(filename)
+    if (bin.length > UPLOAD_MAX_BYTES) {
+      return json({ error: 'bad_request', message: `图片不能超过 ${UPLOAD_MAX_BYTES / 1024 / 1024}MB` }, 400);
+    }
+    if (!bin.length) return json({ error: 'bad_request', message: '图片内容为空' }, 400);
+    // 魔数校验：扩展名随时可改，只认文件头，杜绝把非图片内容伪装成 .png 存进 R2
+    const magic = (bytes) => bytes.length >= 4 && bytes.every((b, i) => bin[i] === b);
+    const isJpeg = bin[0] === 0xff && bin[1] === 0xd8 && bin[2] === 0xff;
+    const isPng = magic([0x89, 0x50, 0x4e, 0x47]);
+    const isGif = magic([0x47, 0x49, 0x46, 0x38]);
+    const isWebp =
+      magic([0x52, 0x49, 0x46, 0x46]) &&
+      bin.length > 11 &&
+      String.fromCharCode(bin[8], bin[9], bin[10], bin[11]) === 'WEBP';
+    if (!isJpeg && !isPng && !isGif && !isWebp) {
+      return json({ error: 'bad_request', message: '文件内容不是有效图片' }, 400);
+    }
+    // Content-Type 由真实文件头决定，不采信客户端传入的后缀
+    const type = isPng
       ? 'image/png'
-      : /\.webp$/i.test(filename)
+      : isWebp
         ? 'image/webp'
-        : 'image/jpeg';
+        : isGif
+          ? 'image/gif'
+          : 'image/jpeg';
     await env.R2.put(filename, bin, { httpMetadata: { contentType: type } });
     return json({ ok: true, url: `/img/${filename}` });
   }
 
   return notFound();
 }
+
+// 统一安全响应头：给所有响应加 nosniff / 禁外链引用 / 禁被第三方站内嵌，
+// 页面类响应再加 CSP（限制脚本与样式来源，降低 XSS 后的可利用面）。
+// 注：script-src 暂保留 'unsafe-inline'（前端存在内联初始化片段），先阻断外域脚本加载。
+const CSP_POLICY = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "object-src 'none'",
+].join('; ');
+
+function withSecurityHeaders(resp) {
+  if (!resp || !resp.headers) return resp;
+  const out = new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: new Headers(resp.headers) });
+  out.headers.set('X-Content-Type-Options', 'nosniff');
+  out.headers.set('X-Frame-Options', 'DENY');
+  out.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  out.headers.set('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  const ctype = out.headers.get('Content-Type') || '';
+  if (ctype.includes('text/html')) out.headers.set('Content-Security-Policy', CSP_POLICY);
+  return out;
+}
+
+// 公开 API 边缘缓存的版本号：任何写操作成功后 +1，使旧缓存立即失效。
+// 只有 60s TTL 而没有失效机制时，商品下架/改价/删除后最长 60s 仍能被匿名读到
+// （缓存副本里还是下架前的 200），等于绕过下架与改价。
+async function getCacheEpoch(env) {
+  try {
+    return Number(await env.KV.get('cache:epoch')) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function bumpCacheEpoch(env) {
+  try {
+    const cur = await getCacheEpoch(env);
+    await env.KV.put('cache:epoch', String(cur + 1));
+  } catch {
+    // KV 单 key 有写入频率限制：失败时宁可让旧缓存自然过期，也不能让写操作报错
+  }
+}
+
+// 这些写接口不改变公开数据（登录态 / 订单 / 客户资料 / 图片上传），无需失效公开缓存
+const CACHE_BUMP_SKIP_PREFIXES = ['/api/auth/', '/api/orders', '/api/track', '/api/customers', '/api/upload'];
 
 async function handleImage(request, env, url) {
   const key = url.pathname.replace(/^\/img\//, '');
@@ -1609,10 +1925,14 @@ export default {
       !request.headers.has('x-admin-token')
     ) {
       const cache = caches.default;
-      const cacheKey = new Request(url.toString(), { method: 'GET' });
+      // 缓存 key 带数据版本号：写操作 bump 后 key 变化，旧副本不再命中
+      const epoch = await getCacheEpoch(env);
+      const cacheUrl = new URL(url.toString());
+      cacheUrl.searchParams.set('__epoch', String(epoch));
+      const cacheKey = new Request(cacheUrl.toString(), { method: 'GET' });
       const hit = await cache.match(cacheKey);
-      if (hit) return hit;
-      const resp = await handleApi(request, env, url);
+      if (hit) return withSecurityHeaders(hit);
+      const resp = withSecurityHeaders(await handleApi(request, env, url));
       if (resp && resp.status === 200 && (resp.headers.get('Content-Type') || '').includes('application/json')) {
         const cached = resp.clone();
         cached.headers.set('Cache-Control', 's-maxage=60');
@@ -1622,7 +1942,16 @@ export default {
       return resp;
     }
     if (url.pathname.startsWith('/api/')) {
-      return handleApi(request, env, url);
+      const resp = withSecurityHeaders(await handleApi(request, env, url));
+      // 写成功即失效公开 API 缓存，避免下架/改价/删除在 TTL 内仍被匿名读到旧数据
+      if (
+        request.method !== 'GET' &&
+        resp.status < 400 &&
+        !CACHE_BUMP_SKIP_PREFIXES.some((p) => url.pathname.startsWith(p))
+      ) {
+        await bumpCacheEpoch(env);
+      }
+      return resp;
     }
     if (url.pathname.startsWith('/img/')) {
       return handleImage(request, env, url);
@@ -1635,11 +1964,13 @@ export default {
       if (url.pathname === '/app.js' || url.pathname === '/qrcode.min.js') {
         const headers = new Headers(resp.headers);
         headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-        return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
+        return withSecurityHeaders(
+          new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers }),
+        );
       }
-      return resp;
+      return withSecurityHeaders(resp);
     }
 
-    return new Response('Lightning Shop', { status: 200 });
+    return withSecurityHeaders(new Response('Lightning Shop', { status: 200 }));
   },
 };
