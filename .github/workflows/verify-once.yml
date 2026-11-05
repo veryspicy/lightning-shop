@@ -1,0 +1,28 @@
+name: Verify prod once
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: public cache behaviour
+        run: |
+          echo "--- first request ---"
+          curl -sS -D /tmp/h1 -o /dev/null https://lightning-shop.gora.dpdns.org/api/products
+          grep -i -E "^(HTTP/|cache-control|age|cf-cache-status)" /tmp/h1 || true
+          sleep 3
+          echo "--- second request (same URL) ---"
+          curl -sS -D /tmp/h2 -o /dev/null https://lightning-shop.gora.dpdns.org/api/products
+          grep -i -E "^(HTTP/|cache-control|age|cf-cache-status)" /tmp/h2 || true
+          echo "--- home ---"
+          curl -sS -o /dev/null -w "home=%{http_code}\n" https://lightning-shop.gora.dpdns.org/
+      - name: login rate limit per account (limit 5 / 300s)
+        run: |
+          for i in $(seq 1 7); do
+            code=$(curl -sS -o /tmp/l -w "%{http_code}" -X POST https://lightning-shop.gora.dpdns.org/api/auth/login \
+              -H 'content-type: application/json' \
+              -d '{"username":"__ratelimit_probe__","password":"wrong-password"}')
+            echo "attempt $i -> HTTP $code :: $(head -c 160 /tmp/l)"
+            sleep 1
+          done
