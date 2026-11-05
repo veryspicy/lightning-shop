@@ -44,8 +44,13 @@ function formatNum(n) {
 
 function applyMargin(priceStr, cfg) {
   if (!cfg || !cfg.enabled || !cfg.margin || !priceStr) return priceStr;
-  if (!/元/.test(priceStr)) return priceStr; // 议价/报价说明等无价格数字的文案原样
   const rate = 1 + cfg.margin / 100;
+  // 无「元」的纯价格串（"990"）同样属于价格，需与后端结算口径一致；纯文案（"面议"）原样
+  if (!/元/.test(priceStr)) {
+    return /^\s*\d+(?:\.\d+)?(\s*[\/\-]\s*\d+(?:\.\d+)?)*\s*$/.test(priceStr)
+      ? priceStr.replace(/\d+(?:\.\d+)?/g, (m) => formatNum(parseFloat(m) * rate))
+      : priceStr;
+  }
   // 只加成"元"前的价格数字（含区间 9.9-13.9、多档 12/11.5/11、阶梯 100斤起12元），数量单位数字不动
   const tokenRe = /(\d+(?:\.\d+)?(?:\s*[\/\-]\s*\d+(?:\.\d+)?)*)\s*元/g;
   return priceStr.replace(tokenRe, (whole, nums) => {
@@ -66,7 +71,7 @@ function cardHtml(p) {
     : '';
 
   const media = p.image
-    ? `<img src="${p.image}" alt="${escapeHtml(p.name)}" loading="lazy" />`
+    ? `<img src="${p.image}" alt="${escapeHtml(p.name)}" loading="lazy" decoding="async" />`
     : `<div class="card-placeholder" aria-hidden="true">🍱</div>`;
 
   const retailText = p.retail_price && !p.retail_price.includes('报价') ? p.retail_price : '议价';
@@ -80,7 +85,7 @@ function cardHtml(p) {
     <article class="product-card">
       <div class="card-media">${media}${badge}${shareBtn}</div>
       <div class="card-body">
-        <h3 class="card-name">${escapeHtml(p.name)}</h3>
+        <h3 class="card-name"><a href="#/p/${encodeURIComponent(p.id)}" class="card-name-link">${escapeHtml(p.name)}</a></h3>
         <p class="card-spec">${escapeHtml(p.spec)} · ${escapeHtml(p.brand)}</p>
         <div class="hl-wrap">
           <p class="card-highlight">${escapeHtml(p.highlights)}</p>
@@ -100,12 +105,14 @@ function cardHtml(p) {
             <b>${escapeHtml(displayPrice(retailText))}</b>
           </div>
         </div>
+        <a class="card-detail-link" href="#/p/${encodeURIComponent(p.id)}">查看详情 →</a>
       </div>
     </article>`;
 }
 
 function render() {
   grid.innerHTML = products.map(cardHtml).join('');
+  grid.removeAttribute('aria-busy');
   emptyState.hidden = products.length > 0;
   updateResultMeta();
   updateLoadMore();
@@ -271,6 +278,15 @@ function applyHero(hero) {
       heroEl.style.backgroundImage = `linear-gradient(135deg, rgba(6,78,59,.82) 0%, rgba(5,110,80,.72) 60%, rgba(16,185,129,.66) 100%), url('${hero.bgImage}')`;
       heroEl.style.backgroundSize = 'cover';
       heroEl.style.backgroundPosition = 'center';
+      // 首屏 hero 大图预加载：CSS 背景图不走浏览器预加载，显式 fetchPriority 抢占
+      if (!document.querySelector(`link[rel="preload"][href="${hero.bgImage}"]`)) {
+        const link = document.createElement('link');
+        link.rel = 'preload';
+        link.as = 'image';
+        link.href = hero.bgImage;
+        link.fetchPriority = 'high';
+        document.head.appendChild(link);
+      }
     } else {
       heroEl.style.backgroundImage = '';
     }
@@ -943,3 +959,443 @@ grid.addEventListener('click', async (e) => {
     btn.disabled = false;
   }
 });
+
+/* ================================================================
+ * 购物车（localStorage）
+ * ================================================================ */
+const CART_KEY = 'ls_cart';
+function getCart() {
+  try { const c = JSON.parse(localStorage.getItem(CART_KEY) || '[]'); return Array.isArray(c) ? c : []; }
+  catch (e) { return []; }
+}
+function setCart(c) {
+  localStorage.setItem(CART_KEY, JSON.stringify(c));
+  updateCartBadge();
+}
+function updateCartBadge() {
+  const c = getCart();
+  const n = c.reduce((s, it) => s + (parseInt(it.qty, 10) || 0), 0);
+  const b = document.getElementById('cart-badge');
+  const fab = document.getElementById('fab-badge');
+  const fabBtn = document.getElementById('cart-fab');
+  const txt = n > 99 ? '99+' : String(n);
+  if (b) { b.hidden = !n; b.textContent = txt; }
+  if (fab) { fab.hidden = !n; fab.textContent = txt; }
+  if (fabBtn) fabBtn.hidden = !n;
+}
+function cartQty(id) {
+  const it = getCart().find((x) => x.id === id);
+  return it ? (parseInt(it.qty, 10) || 0) : 0;
+}
+function addToCart(p, qty) {
+  const cart = getCart();
+  const n = Math.max(1, parseInt(qty, 10) || 1);
+  const idx = cart.findIndex((it) => it.id === p.id);
+  if (idx >= 0) cart[idx].qty = (parseInt(cart[idx].qty, 10) || 0) + n;
+  else cart.push({ id: p.id, name: p.name, spec: p.spec, price: p.wholesale_price, base_price: p.wholesale_price, retail: p.retail_price, moq: p.moq, brand: p.brand, image: p.image, qty: n });
+  setCart(cart);
+  toastTip('已加入购物车');
+}
+function cartEstimate(cart) {
+  let total = 0, ok = true;
+  for (const it of cart) {
+    // 合计按下单价（含加价）估算，与 /api/orders 服务端结算口径保持一致
+    const m = String(displayPrice(it.price || '') || '').match(/\d+(?:\.\d+)?/);
+    if (!m) { ok = false; break; }
+    total += parseFloat(m[0]) * (parseInt(it.qty, 10) || 1);
+  }
+  return ok ? Math.round(total * 100) / 100 : null;
+}
+/* 轻量提示（无 toast 组件，用临时浮层） */
+let tipEl = null;
+function toastTip(msg, isErr) {
+  if (!tipEl) {
+    tipEl = document.createElement('div');
+    tipEl.className = 'tip-toast';
+    document.body.appendChild(tipEl);
+  }
+  tipEl.textContent = msg;
+  tipEl.classList.toggle('err', !!isErr);
+  tipEl.classList.add('show');
+  clearTimeout(tipEl._t);
+  tipEl._t = setTimeout(() => tipEl.classList.remove('show'), 2200);
+}
+
+/* ================================================================
+ * Hash 路由：#/p/:id 详情 | #/cart 购物车 | #/orders 查单 | #/b/:key 品牌
+ * ================================================================ */
+const views = {
+  products: document.getElementById('products'),
+  detail: document.getElementById('view-detail'),
+  cart: document.getElementById('view-cart'),
+  orders: document.getElementById('view-orders'),
+  brand: document.getElementById('view-brand'),
+};
+function showView(name) {
+  for (const [k, el] of Object.entries(views)) {
+    if (!el) continue;
+    if (k === 'products') el.hidden = name !== 'products';
+    else el.hidden = name !== k;
+  }
+  window.scrollTo(0, 0);
+}
+function parseHash() {
+  const h = (location.hash || '').replace(/^#\/?/, '');
+  const seg = h.split('/')[0];
+  const param = h.split('/')[1] || '';
+  if (seg === 'p' && param) { showView('detail'); loadDetail(decodeURIComponent(param)); return; }
+  if (seg === 'cart') { showView('cart'); renderCart(); return; }
+  if (seg === 'orders') { showView('orders'); renderOrders(); return; }
+  if (seg === 'b' && param) { showView('brand'); loadBrand(decodeURIComponent(param)); return; }
+  showView('products');
+}
+window.addEventListener('hashchange', parseHash);
+
+/* ================================================================
+ * 商品详情页
+ * ================================================================ */
+let currentDetail = null;
+function detailRow(label, val) {
+  if (val === undefined || val === null || String(val).trim() === '') return '';
+  return `<div class="param-row"><span class="param-label">${escapeHtml(label)}</span><span class="param-value">${escapeHtml(val)}</span></div>`;
+}
+function detailHtml(p) {
+  const badge = p.badge
+    ? `<span class="card-badges">${String(p.badge).split(/[,，|]/).map((s) => s.trim()).filter(Boolean)
+        .map((b) => `<span class="card-badge${b.includes('低GI') ? ' gi' : ''}">${escapeHtml(b)}</span>`).join('')}</span>` : '';
+  const retailText = p.retail_price && !p.retail_price.includes('报价') ? p.retail_price : '议价';
+  const brandCard = p.brand
+    ? `<div class="detail-brand">
+        <div class="brand-card">
+          <div class="brand-card-info">
+            <b class="brand-card-name">${escapeHtml(p.brand)}</b>
+            <span class="brand-card-sub">产地品牌 · 点击查看品牌主页与资质</span>
+          </div>
+          <a class="btn btn-outline btn-sm" href="#/b/${encodeURIComponent(p.brand)}">品牌主页</a>
+        </div>
+      </div>` : '';
+  return `
+    <div class="detail-top">
+      <a class="detail-back" href="#/">← 返回商品列表</a>
+    </div>
+    <div class="detail-wrap">
+      <div class="detail-media">
+        ${p.image ? `<img src="${p.image}" alt="${escapeHtml(p.name)}" onclick="openLightbox('${p.image.replace(/'/g, "\\'")}', '${escapeHtml(p.name).replace(/'/g, "\\'")}')" />` : '<div class="card-placeholder">🍱</div>'}
+        ${badge}
+      </div>
+      <div class="detail-info">
+        <h1 class="detail-name">${escapeHtml(p.name)}</h1>
+        <p class="detail-spec">${escapeHtml(p.spec || '')}${p.brand ? ' · ' + escapeHtml(p.brand) : ''}</p>
+        <div class="detail-price">
+          <div class="price-wholesale"><span>批发价</span><b>${escapeHtml(displayPrice(p.wholesale_price))}</b></div>
+          <div class="price-retail"><span>零售</span><b>${escapeHtml(displayPrice(retailText))}</b></div>
+        </div>
+        ${p.highlights ? `<p class="detail-highlight">${escapeHtml(p.highlights)}</p>` : ''}
+        <div class="detail-meta">
+          ${p.cert ? `<span class="card-tag">${escapeHtml(p.cert)}</span>` : ''}
+          ${p.moq ? `<span class="card-tag amber">起订 ${escapeHtml(p.moq)}</span>` : ''}
+        </div>
+        <div class="detail-buy">
+          <div class="qty-picker">
+            <button type="button" class="qty-btn" data-action="qty-minus" aria-label="减少数量">−</button>
+            <span class="qty-num" id="detail-qty">1</span>
+            <button type="button" class="qty-btn" data-action="qty-plus" aria-label="增加数量">+</button>
+          </div>
+          <button type="button" class="btn btn-primary" data-action="add-cart">加入购物车</button>
+          <button type="button" class="btn btn-outline" data-action="buy-now">立即下单</button>
+        </div>
+      </div>
+    </div>
+    ${brandCard}
+    <div class="detail-params panel-params">
+      <h2>产品参数</h2>
+      ${detailRow('品牌', p.brand)}
+      ${detailRow('分类', p.category)}
+      ${detailRow('规格', p.spec)}
+      ${detailRow('批发价', displayPrice(p.wholesale_price))}
+      ${detailRow('零售价', displayPrice(retailText))}
+      ${detailRow('起订量', p.moq)}
+      ${detailRow('储存方式', p.storage)}
+      ${detailRow('保质期', p.shelf_life)}
+      ${detailRow('认证/证书', p.cert)}
+      ${detailRow('价格说明', p.price_note)}
+    </div>
+    <div class="detail-tip">
+      <b>下单说明</b>
+      <p>1. 加入购物车后提交订单，凭订单号微信转账；2. 后台确认收款后安排发货；3. 可随时凭手机号+订单号查询进度。</p>
+    </div>`;
+}
+async function loadDetail(id) {
+  const el = views.detail;
+  el.innerHTML = '<div class="view-loading">加载中…</div>';
+  try {
+    const res = await fetch(`/api/products/${encodeURIComponent(id)}`);
+    if (!res.ok) { el.innerHTML = '<div class="view-empty">商品不存在或已下架</div>'; return; }
+    const p = await res.json();
+    currentDetail = p;
+    el.innerHTML = detailHtml(p);
+    document.getElementById('detail-qty').textContent = String(Math.max(1, cartQty(p.id) || 1));
+  } catch (err) {
+    el.innerHTML = '<div class="view-empty">加载失败，请稍后重试</div>';
+  }
+}
+
+/* ================================================================
+ * 购物车视图
+ * ================================================================ */
+function renderCart() {
+  const el = views.cart;
+  const cart = getCart();
+  if (!cart.length) {
+    el.innerHTML = `<div class="view-head"><h1>购物车</h1></div>
+      <div class="view-empty">购物车还是空的，去挑选心仪的商品吧</div>
+      <div class="cart-actions"><a class="btn btn-primary" href="#/">去逛逛</a></div>`;
+    return;
+  }
+  const estimate = cartEstimate(cart);
+  el.innerHTML = `
+    <div class="view-head"><h1>购物车 <span class="muted small">${cart.reduce((s, it) => s + it.qty, 0)} 件</span></h1></div>
+    <div class="cart-list">
+      ${cart.map((it) => `
+        <div class="cart-item" data-id="${escapeHtml(it.id)}">
+          ${it.image ? `<img class="cart-item-img" src="${it.image}" alt="" loading="lazy" />` : '<div class="cart-item-img placeholder">🍱</div>'}
+          <div class="cart-item-info">
+            <b class="cart-item-name">${escapeHtml(it.name)}</b>
+            <span class="cart-item-spec">${escapeHtml(it.spec || '')}${it.brand ? ' · ' + escapeHtml(it.brand) : ''}</span>
+            <span class="cart-item-price">批发 ${escapeHtml(displayPrice(it.price) || '议价')}</span>
+          </div>
+          <div class="cart-item-side">
+            <div class="qty-picker small">
+              <button type="button" class="qty-btn" data-action="cart-minus" data-id="${escapeHtml(it.id)}">−</button>
+              <span class="qty-num">${it.qty}</span>
+              <button type="button" class="qty-btn" data-action="cart-plus" data-id="${escapeHtml(it.id)}">+</button>
+            </div>
+            <button type="button" class="cart-remove" data-action="cart-remove" data-id="${escapeHtml(it.id)}">删除</button>
+          </div>
+        </div>`).join('')}
+    </div>
+    <div class="cart-summary">
+      <div class="cart-total">合计（下单金额）<b>${estimate !== null ? '¥' + estimate : '人工核算'}</b><span class="cart-total-tip">按当前价目计算，多档批发价可在备注中说明</span></div>
+    </div>
+    <div class="checkout-form panel-params">
+      <h2>提交订单</h2>
+      <label class="form-field"><span>公司/个人名称 *</span><input type="text" id="co-name" maxlength="40" placeholder="如：上海 XX 贸易有限公司 / 王小明" autocomplete="off" /></label>
+      <label class="form-field"><span>手机号 *</span><input type="tel" id="co-phone" maxlength="11" placeholder="11 位手机号，用于查单" autocomplete="off" /></label>
+      <label class="form-field"><span>地址备注</span><textarea id="co-remark" rows="2" maxlength="200" placeholder="收货地址、物流要求等（选填）"></textarea></label>
+      <div class="checkout-actions">
+        <button type="button" class="btn btn-primary" id="co-submit" data-action="submit-order">提交订单</button>
+      </div>
+      <p class="checkout-tip">下单不收款：提交后请按订单金额微信转账，后台确认后发货。</p>
+    </div>`;
+}
+async function submitOrder() {
+  const name = document.getElementById('co-name').value.trim();
+  const phone = document.getElementById('co-phone').value.trim();
+  const remark = document.getElementById('co-remark').value.trim();
+  if (!name) return toastTip('请填写公司/个人名称', true);
+  if (!/^1\d{10}$/.test(phone)) return toastTip('请填写正确的手机号', true);
+  const cart = getCart();
+  if (!cart.length) return toastTip('购物车为空', true);
+  const btn = document.getElementById('co-submit');
+  btn.disabled = true;
+  btn.textContent = '提交中…';
+  try {
+    const res = await fetch('/api/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customer_name: name, customer_phone: phone, remark, items: cart }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      toastTip((data && data.message) || '下单失败', true);
+      btn.disabled = false;
+      btn.textContent = '提交订单';
+      return;
+    }
+    setCart([]);
+    localStorage.setItem('ls_query_phone', phone);
+    toastTip(`下单成功：${data.order.id}`);
+    setTimeout(() => { location.hash = '#/orders'; }, 600);
+  } catch (err) {
+    toastTip('网络异常，请重试', true);
+    btn.disabled = false;
+    btn.textContent = '提交订单';
+  }
+}
+
+/* ================================================================
+ * 查单视图
+ * ================================================================ */
+const ORDER_STATUS_LABEL = { pending: '待确认支付', paid: '已支付待发货', shipped: '已发货', done: '已完成', cancelled: '已取消' };
+const ORDER_STATUS_CLS = { pending: 'st-pending', paid: 'st-paid', shipped: 'st-shipped', done: 'st-done', cancelled: 'st-cancelled' };
+function statusBadge(s) {
+  return `<span class="order-status ${ORDER_STATUS_CLS[s] || 'st-cancelled'}">${ORDER_STATUS_LABEL[s] || escapeHtml(s || '未知')}</span>`;
+}
+function fmtTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const p = (n, l = 2) => String(n).padStart(l, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function orderItemHtml(it) {
+  return `<div class="order-line">
+    ${it.image ? `<img src="${it.image}" alt="" loading="lazy" />` : '<span class="order-line-ph">🍱</span>'}
+    <div class="order-line-info"><b>${escapeHtml(it.name)}</b><span>${escapeHtml(it.spec || '')} × ${it.qty}</span></div>
+    <span class="order-line-price">${escapeHtml(it.price || '议价')}</span>
+  </div>`;
+}
+function orderCardHtml(o) {
+  const totalQty = o.items.reduce((s, it) => s + (it.qty || 1), 0);
+  return `<div class="order-card" data-id="${escapeHtml(o.id)}">
+    <div class="order-card-head">
+      <div class="order-card-left">
+        <b class="order-no">${escapeHtml(o.id)}</b>
+        <span class="order-time">${fmtTime(o.created_at)}</span>
+      </div>
+      ${statusBadge(o.status)}
+    </div>
+    <div class="order-card-summary">${escapeHtml(o.customer_name)} · ${escapeHtml(o.customer_phone)} · ${totalQty} 件商品</div>
+    <div class="order-card-body" hidden>
+      <div class="order-lines">${(o.items || []).map(orderItemHtml).join('')}</div>
+      ${o.remark ? `<p class="order-remark">备注：${escapeHtml(o.remark)}</p>` : ''}
+      ${o.tracking_no ? `<p class="order-tracking">物流单号：${escapeHtml(o.tracking_no)}</p>` : ''}
+      ${o.status_note ? `<p class="order-note">${escapeHtml(o.status_note)}</p>` : ''}
+      ${o.status === 'pending' ? `<p class="order-tip">请微信转账后等待确认，或联系客服咨询</p>` : ''}
+    </div>
+    <div class="order-card-foot">
+      <button type="button" class="btn btn-outline btn-sm" data-action="order-toggle">查看明细</button>
+    </div>
+  </div>`;
+}
+function renderOrders() {
+  const el = views.orders;
+  const savedPhone = localStorage.getItem('ls_query_phone') || '';
+  el.innerHTML = `
+    <div class="view-head"><h1>查单</h1></div>
+    <div class="order-query panel-params">
+      <div class="order-query-row">
+        <label class="form-field"><span>手机号 *</span><input type="tel" id="q-phone" maxlength="11" placeholder="下单时填写的手机号" autocomplete="off" value="${escapeHtml(savedPhone)}" /></label>
+        <label class="form-field"><span>订单号（选填）</span><input type="text" id="q-order" maxlength="20" placeholder="留空则显示该手机号全部订单" autocomplete="off" /></label>
+      </div>
+      <div class="checkout-actions"><button type="button" class="btn btn-primary" data-action="query-orders">查询</button></div>
+    </div>
+    <div id="order-results"></div>`;
+  if (savedPhone) document.getElementById('q-phone').select();
+}
+async function queryOrdersNow() {
+  const phone = document.getElementById('q-phone').value.trim();
+  const orderId = document.getElementById('q-order').value.trim();
+  if (!/^1\d{10}$/.test(phone)) return toastTip('请填写正确的手机号', true);
+  const box = document.getElementById('order-results');
+  box.innerHTML = '<div class="view-loading">查询中…</div>';
+  try {
+    const res = await fetch('/api/orders/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone, order_id: orderId || '' }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) { box.innerHTML = '<div class="view-empty">查询失败，请稍后重试</div>'; return; }
+    if (!data.orders.length) {
+      box.innerHTML = `<div class="view-empty">${orderId ? '未找到该订单，请核对订单号与手机号' : '该手机号暂无订单，下单后即可查询'}</div>`;
+      return;
+    }
+    box.innerHTML = `<div class="order-list">${data.orders.map(orderCardHtml).join('')}</div>`;
+  } catch (err) {
+    box.innerHTML = '<div class="view-empty">网络异常，请重试</div>';
+  }
+}
+
+/* ================================================================
+ * 品牌页
+ * ================================================================ */
+async function loadBrand(key) {
+  const el = views.brand;
+  el.innerHTML = '<div class="view-loading">加载中…</div>';
+  let brand = null;
+  let products = [];
+  try {
+    const res = await fetch(`/api/brands/profile/${encodeURIComponent(key)}`);
+    if (res.ok) {
+      const data = await res.json();
+      brand = data.brand || null;
+      products = (brand && brand.products) || [];
+    }
+  } catch (e) { /* 档案缺失时降级 */ }
+  if (!brand && !products.length) {
+    try {
+      const res = await fetch(`/api/products?brand=${encodeURIComponent(key)}`);
+      if (res.ok) { const data = await res.json(); products = Array.isArray(data) ? data : (data.products || []); }
+    } catch (e) { /* ignore */ }
+  }
+  const certs = (brand && Array.isArray(brand.certs)) ? brand.certs : [];
+  el.innerHTML = `
+    <div class="view-head brand-page-head">
+      <h1>${escapeHtml(key)}</h1>
+      <p>${products.length} 个在售产品${brand ? ' · 产地品牌档案' : ''}</p>
+    </div>
+    ${(!brand || !brand.intro) ? '<div class="brand-intro"><h2>品牌介绍</h2><p class="brand-empty">该品牌暂未维护公司介绍与资质档案，可联系客服获取详情</p></div>' : ''}
+    ${brand && brand.intro ? `<div class="brand-intro"><h2>品牌介绍</h2><p>${escapeHtml(brand.intro).replace(/\n/g, '<br />')}</p></div>` : ''}
+    ${certs.length ? `<div class="brand-certs"><h2>资质证书</h2><div class="cert-grid">${certs.map((c) => `<img src="${c}" alt="资质证书" loading="lazy" onclick="openLightbox('${c.replace(/'/g, "\\'")}', '资质证书')" />`).join('')}</div></div>` : ''}
+    ${brand && brand.services ? `<div class="brand-services"><h2>合作方式</h2><p>${escapeHtml(brand.services).replace(/\n/g, '<br />')}</p></div>` : ''}
+    ${brand && brand.contact ? `<div class="brand-contact"><h2>联系方式</h2><p>${escapeHtml(brand.contact).replace(/\n/g, '<br />')}</p></div>` : ''}
+    <h2 class="brand-products-title">该品牌在售产品</h2>
+    ${products.length ? `<div class="product-grid">${products.map(cardHtml).join('')}</div>` : '<div class="view-empty">该品牌暂无在售产品</div>'}
+    <div class="cart-actions"><a class="btn btn-outline" href="#/">返回全部商品</a></div>`;
+}
+
+/* ================================================================
+ * 全局事件分发（data-action）
+ * ================================================================ */
+function detailQty() { return Math.max(1, parseInt((document.getElementById('detail-qty') || { textContent: '1' }).textContent, 10) || 1); }
+function changeQty(delta) {
+  const el = document.getElementById('detail-qty');
+  if (!el) return;
+  el.textContent = String(Math.max(1, (parseInt(el.textContent, 10) || 1) + delta));
+}
+function cartItemQty(id, delta) {
+  const cart = getCart();
+  const it = cart.find((x) => x.id === id);
+  if (!it) return;
+  it.qty = Math.max(1, (parseInt(it.qty, 10) || 1) + delta);
+  setCart(cart);
+  renderCart();
+}
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  if (action === 'qty-minus') changeQty(-1);
+  else if (action === 'qty-plus') changeQty(1);
+  else if (action === 'add-cart') {
+    if (currentDetail) addToCart(currentDetail, detailQty());
+  } else if (action === 'buy-now') {
+    if (currentDetail) addToCart(currentDetail, detailQty());
+    location.hash = '#/cart';
+  } else if (action === 'cart-minus') cartItemQty(btn.dataset.id, -1);
+  else if (action === 'cart-plus') cartItemQty(btn.dataset.id, 1);
+  else if (action === 'cart-remove') {
+    const cart = getCart().filter((x) => x.id !== btn.dataset.id);
+    setCart(cart);
+    renderCart();
+  } else if (action === 'submit-order') {
+    submitOrder();
+  } else if (action === 'query-orders') {
+    queryOrdersNow();
+  } else if (action === 'order-toggle') {
+    const card = btn.closest('.order-card');
+    if (!card) return;
+    const body = card.querySelector('.order-card-body');
+    const hidden = body.hidden;
+    body.hidden = !hidden;
+    btn.textContent = hidden ? '收起明细' : '查看明细';
+  }
+});
+
+const cartOpenBtn = document.getElementById('cart-open');
+if (cartOpenBtn) cartOpenBtn.addEventListener('click', () => { location.hash = '#/cart'; });
+const ordersOpenBtn = document.getElementById('orders-open');
+if (ordersOpenBtn) ordersOpenBtn.addEventListener('click', () => { location.hash = '#/orders'; });
+
+updateCartBadge();
+parseHash();

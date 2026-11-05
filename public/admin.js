@@ -95,6 +95,12 @@ function renderUserMenu(user) {
   if (menuUsers) menuUsers.hidden = !hasPerm(u, 'users');
   const menuRoles = $('menu-roles');
   if (menuRoles) menuRoles.hidden = !hasPerm(u, 'roles');
+  const menuOrders = $('menu-orders');
+  if (menuOrders) menuOrders.hidden = !hasPerm(u, 'orders');
+  const menuCustomers = $('menu-customers');
+  if (menuCustomers) menuCustomers.hidden = !hasPerm(u, 'customers');
+  const menuBrands = $('menu-brands');
+  if (menuBrands) menuBrands.hidden = !hasPerm(u, 'brands');
 }
 
 function toggleUserDropdown(force) {
@@ -236,7 +242,7 @@ async function deleteCategory() {
   const hint = isExtra
     ? `该分类为产品自动发现分类，删除后 ${chip.querySelector('.chip-count').textContent} 个产品的分类将置为「未分类」。`
     : '仅从分类配置移除，产品数据不受影响。';
-  if (!confirm(`确定删除分类「${name}」？\n${hint}`)) return;
+  if (!await askConfirm('删除分类', `确定删除分类「${name}」？\n${hint}`, '删除')) return;
   try {
     await api('/api/admin/categories', {
       method: 'DELETE',
@@ -440,8 +446,8 @@ function collectForm() {
 /* 图片压缩/缩放/裁切：统一转 JPEG。
  * opts.maxSize  最长边（或正方形边长）上限，默认 1200
  * opts.square   是否中心裁切为正方形（产品卡片 1:1），默认 false
- * opts.quality  JPEG 质量 0-1，默认 0.85 */
-function fileToJpgBase64(file, opts = {}) {
+ * opts.quality  质量 0-1（WebP 优先，不支持时回退 JPEG），默认 0.85 */
+function fileToImageBase64(file, opts = {}) {
   const MAX = opts.maxSize || 1200;
   const QUALITY = typeof opts.quality === 'number' ? opts.quality : 0.85;
   const SQUARE = !!opts.square;
@@ -474,7 +480,11 @@ function fileToJpgBase64(file, opts = {}) {
         ctx.fillRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
       }
-      resolve(canvas.toDataURL('image/jpeg', QUALITY));
+      // WebP 优先（编码 Safari 17+ / Chromium 均支持），不支持时回退 JPEG
+      const webp = canvas.toDataURL('image/webp', QUALITY);
+      resolve(webp.startsWith('data:image/webp')
+        ? { dataUrl: webp, ext: 'webp' }
+        : { dataUrl: canvas.toDataURL('image/jpeg', QUALITY), ext: 'jpg' });
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片读取失败')); };
     img.src = url;
@@ -487,8 +497,8 @@ async function handleUpload() {
   if (!/\.(jpe?g|png|webp)$/i.test(file.name)) return toast('仅支持 JPG / PNG / WebP', true);
   setImgUploading(true);
   try {
-    const dataUrl = await fileToJpgBase64(file, { square: $('f-img-crop')?.checked, maxSize: 1000, quality: 0.82 });
-    const filename = `${file.name.replace(/\.[^.]+$/, '')}-${Date.now().toString(36)}.jpg`;
+    const { dataUrl, ext } = await fileToImageBase64(file, { square: $('f-img-crop')?.checked, maxSize: 1000, quality: 0.82 });
+    const filename = `${file.name.replace(/\.[^.]+$/, '')}-${Date.now().toString(36)}.${ext}`;
     const r = await api('/api/upload', {
       method: 'POST',
       headers: authHeaders(),
@@ -535,8 +545,8 @@ async function handleHeroUpload() {
   const file = $('f-hero-img-file').files[0];
   if (!file) return toast('请选择背景图', true);
   if (!/\.(jpe?g|png|webp)$/i.test(file.name)) return toast('仅支持 JPG / PNG / WebP', true);
-  const dataUrl = await fileToJpgBase64(file, { maxSize: 1600, quality: 0.8 });
-  const filename = `hero-${Date.now()}.jpg`;
+  const { dataUrl, ext } = await fileToImageBase64(file, { maxSize: 1600, quality: 0.8 });
+  const filename = `hero-${Date.now()}.${ext}`;
   const r = await api('/api/upload', {
     method: 'POST',
     headers: authHeaders(),
@@ -641,8 +651,8 @@ async function handleQrUpload() {
   const file = $('f-qr-img-file').files[0];
   if (!file) return toast('请选择报价单二维码图片', true);
   if (!/\.(jpe?g|png|webp)$/i.test(file.name)) return toast('仅支持 JPG / PNG / WebP', true);
-  const dataUrl = await fileToJpgBase64(file, { maxSize: 800, quality: 0.85 });
-  const filename = `quote-qr-${Date.now()}.jpg`;
+  const { dataUrl, ext } = await fileToImageBase64(file, { maxSize: 800, quality: 0.85 });
+  const filename = `quote-qr-${Date.now()}.${ext}`;
   const r = await api('/api/upload', {
     method: 'POST',
     headers: authHeaders(),
@@ -722,7 +732,7 @@ async function onTableClick(e) {
       await reload();
     } catch (err) { toast(err.message, true); }
   } else if (btn.dataset.action === 'delete') {
-    if (!confirm(`确认删除「${p.name}」？关联图片也会一并删除。`)) return;
+    if (!await askConfirm('删除产品', `确认删除「${p.name}」？关联图片也会一并删除。`, '删除')) return;
     try {
       await api(`/api/products/${id}`, { method: 'DELETE', headers: authHeaders() });
       toast('已删除');
@@ -826,7 +836,7 @@ async function updateUser(id, payload) {
 }
 
 async function deleteUser(id) {
-  if (!confirm('确认删除该账号？此操作不可恢复。')) return;
+  if (!await askConfirm('删除账号', '确认删除该账号？此操作不可恢复。', '删除')) return;
   try {
     await api(`/api/admin/users/${id}`, { method: 'DELETE', headers: authHeaders() });
     toast('账号已删除');
@@ -842,19 +852,20 @@ async function onUsersAction(e) {
   const id = btn.dataset.userId;
   const act = btn.dataset.userAct;
   if (act === 'password') {
-    const pwd = prompt('输入新密码（至少 6 位）');
+    const pwd = await askText({ title: '设置新密码', label: '新密码（至少 6 位）', placeholder: '请输入新密码', okText: '保存' });
     if (!pwd) return;
     if (pwd.length < 6) return toast('密码至少 6 位', true);
     await updateUser(id, { password: pwd });
   } else if (act === 'edit') {
     if (!ROLE_OPTIONS.length) return toast('角色列表未加载，请先打开角色管理', true);
     const hint = ROLE_OPTIONS.map((r) => `${r.key}:${r.name}`).join(' / ');
-    const role = prompt(`设置角色（输入标识，可选：${hint}）`);
+    const cur = (USERS_CACHE || []).find((u) => String(u.id) === String(id)) || {};
+    const role = await askText({ title: '设置角色', label: `角色标识（可选：${hint}）`, value: cur.role || '', okText: '下一步' });
     if (!role) return;
     if (!ROLE_OPTIONS.some((r) => r.key === role)) return toast('无效的角色标识', true);
     const payload = { role };
     if (role === 'supplier') {
-      const brand = prompt('供应商绑定品牌');
+      const brand = await askText({ title: '绑定供应商品牌', label: '品牌名称（与产品品牌一致）', okText: '保存' });
       if (!brand) return toast('供应商需绑定品牌', true);
       payload.supplierBrand = brand;
     }
@@ -1018,7 +1029,7 @@ async function saveRole() {
 }
 
 async function deleteRole(key) {
-  if (!confirm('确认删除该角色？删除后不可恢复。')) return;
+  if (!await askConfirm('删除角色', '确认删除该角色？删除后不可恢复。', '删除')) return;
   try {
     await api(`/api/admin/roles/${encodeURIComponent(key)}`, { method: 'DELETE', headers: authHeaders() });
     toast('角色已删除');
@@ -1166,12 +1177,16 @@ function openLightbox(src) {
   if (!mask || !img || !src) return;
   img.src = src;
   mask.hidden = false;
+  const box = mask.querySelector('.lightbox');
+  if (box) box.classList.add('open');
   document.body.style.overflow = 'hidden';
 }
 function closeLightbox() {
   const mask = $('lightbox-mask');
   if (!mask || mask.hidden) return;
   mask.hidden = true;
+  const box = mask.querySelector('.lightbox');
+  if (box) box.classList.remove('open');
   $('lightbox-img').removeAttribute('src');
   document.body.style.overflow = '';
 }
@@ -1247,7 +1262,7 @@ $('batch-apply').addEventListener('click', async () => {
   const field = $('batch-field').value;
   const value = field === 'status' ? $('batch-status-value').value : $('batch-value').value;
   const fieldLabel = $('batch-field').selectedOptions[0]?.textContent || field;
-  if (!confirm(`确认将「${fieldLabel}」批量修改为「${value || '(清空)'}」？将影响 ${ids.length} 个产品。`)) return;
+  if (!await askConfirm('批量修改', `确认将「${fieldLabel}」批量修改为「${value || '(清空)'}」？将影响 ${ids.length} 个产品。`, '确认修改')) return;
   try {
     const r = await api('/api/products/batch', {
       method: 'PATCH',
@@ -1262,7 +1277,7 @@ $('batch-apply').addEventListener('click', async () => {
 });
 
 /* ---- Tab 切换（菜单 → 标签栏联动） ---- */
-const MENU_TITLES = { dashboard: '看板', hero: '首页配置', qr: '二维码配置', categories: '分类管理', price: '价格策略', products: '产品管理', users: '账号管理', roles: '角色管理' };
+const MENU_TITLES = { dashboard: '看板', hero: '首页配置', qr: '二维码配置', categories: '分类管理', price: '价格策略', products: '产品管理', users: '账号管理', roles: '角色管理', orders: '订单管理', customers: '客户档案', brands: '品牌档案' };
 const openTabs = new Set();
 
 function activateNavTag(tab) {
@@ -1313,6 +1328,9 @@ function openTab(tab) {
   if (cur) cur.textContent = MENU_TITLES[tab];
   ensureTab(tab);
   activateNavTag(tab);
+  if (tab === 'orders') loadOrdersPanel();
+  else if (tab === 'customers') loadCustomersPanel();
+  else if (tab === 'brands') loadBrandsPanel();
 }
 
 $('admin-tabs').addEventListener('click', (e) => {
@@ -1389,3 +1407,458 @@ function renderDashboard() {
 if (sessionStorage.getItem(TOKEN_KEY)) {
   load().catch((err) => toast(err.message, true));
 }
+
+/* ================= 交易：订单管理 / 客户档案 / 品牌档案 ================= */
+let ORDERS_CACHE = null;
+let CUSTOMERS_CACHE = null;
+let BRANDS_CACHE = null;
+let CURRENT_ORDER = null;
+let BRAND_EDITING = null;
+let CERT_UPLOADING = false;
+
+function fmtTimeAdmin(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d)) return String(ts).slice(0, 16).replace('T', ' ');
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+// 价格可能是 "50元/箱" 这类带单位字符串，统一安全解析，避免 toFixed 崩溃
+function numOf(v) {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  const m = String(v === undefined || v === null ? '' : v).match(/-?\d+(?:\.\d+)?/);
+  return m ? parseFloat(m[0]) : 0;
+}
+function money(v) { return numOf(v).toFixed(2); }
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function orderStatusBadge(s) {
+  const map = { pending: ['待确认支付', 'st-pending'], paid: ['已支付待发货', 'st-paid'], shipped: ['已发货', 'st-shipped'], done: ['已完成', 'st-done'], cancelled: ['已取消', 'st-cancelled'] };
+  const [label, cls] = map[s] || [s || '未知', 'st-cancelled'];
+  return `<span class="order-status ${cls}">${label}</span>`;
+}
+function openModalAdmin(maskId, modalId) {
+  const m = $(maskId);
+  if (m) m.hidden = false;
+  const d = $(modalId);
+  if (d) d.hidden = false;
+}
+function closeModalAdmin(maskId, modalId) {
+  const m = $(maskId);
+  if (m) m.hidden = true;
+  const d = $(modalId);
+  if (d) d.hidden = true;
+}
+
+/* ---- 站内弹窗：替代原生 prompt / confirm，统一视觉与键盘行为 ---- */
+function askConfirm(title, message, okText = '确定') {
+  return new Promise((resolve) => {
+    $('confirm-modal-title').textContent = title;
+    $('confirm-modal-body').innerHTML = `<p style="margin:0;line-height:1.7">${escapeHtml(message).replace(/\n/g, '<br>')}</p>`;
+    $('confirm-ok').textContent = okText;
+    const finish = (val) => {
+      closeModalAdmin('confirm-mask', 'confirm-modal');
+      $('confirm-ok').onclick = null;
+      $('confirm-cancel').onclick = null;
+      $('confirm-close').onclick = null;
+      $('confirm-mask').onclick = null;
+      resolve(val);
+    };
+    $('confirm-ok').onclick = () => finish(true);
+    $('confirm-cancel').onclick = () => finish(false);
+    $('confirm-close').onclick = () => finish(false);
+    $('confirm-mask').onclick = () => finish(false);
+    openModalAdmin('confirm-mask', 'confirm-modal');
+    $('confirm-ok').focus();
+  });
+}
+
+function askText(opts) {
+  const o = opts || {};
+  const title = o.title || '请输入';
+  const label = o.label || '内容';
+  const okText = o.okText || '确定';
+  return new Promise((resolve) => {
+    $('prompt-modal-title').textContent = title;
+    $('prompt-modal-body').innerHTML = `<div class="field"><label>${escapeHtml(label)}</label>`
+      + `<input id="prompt-input" type="text" autocomplete="off" placeholder="${escapeHtml(o.placeholder || '')}" value="${escapeHtml(o.value || '')}" /></div>`
+      + (o.tip ? `<p class="muted" style="margin:8px 0 0;font-size:.78rem">${escapeHtml(o.tip)}</p>` : '');
+    $('prompt-ok').textContent = okText;
+    const finish = (val) => {
+      closeModalAdmin('prompt-mask', 'prompt-modal');
+      $('prompt-ok').onclick = null;
+      $('prompt-cancel').onclick = null;
+      $('prompt-close').onclick = null;
+      $('prompt-mask').onclick = null;
+      const input = $('prompt-input');
+      if (input) input.onkeydown = null;
+      resolve(val);
+    };
+    const input = $('prompt-input');
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(input.value); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(null); }
+    };
+    $('prompt-ok').onclick = () => finish(input.value);
+    $('prompt-cancel').onclick = () => finish(null);
+    $('prompt-close').onclick = () => finish(null);
+    $('prompt-mask').onclick = () => finish(null);
+    openModalAdmin('prompt-mask', 'prompt-modal');
+    input.focus();
+    input.select();
+  });
+}
+
+/* ---- 订单管理 ---- */
+async function loadOrdersPanel() {
+  const body = $('orders-body');
+  if (body) body.innerHTML = '<tr class="empty-row"><td colspan="8" class="empty-cell">加载中…</td></tr>';
+  try {
+    const f = $('orders-filter') ? $('orders-filter').value : '';
+    const qs = f ? '?status=' + encodeURIComponent(f) : '';
+    const data = await api('/api/admin/orders' + qs, { headers: authHeaders() });
+    ORDERS_CACHE = data.orders || [];
+    renderOrdersTable();
+  } catch (e) {
+    if (body) body.innerHTML = `<tr class="empty-row"><td colspan="8" class="empty-cell">加载失败：${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+function renderOrdersTable() {
+  const body = $('orders-body');
+  if (!body) return;
+  const kw = ($('orders-search') ? $('orders-search').value : '').trim().toLowerCase();
+  const list = (ORDERS_CACHE || []).filter((o) => !kw || (o.id + (o.customer_name || '') + (o.customer_phone || '')).toLowerCase().includes(kw));
+  if (!list.length) { body.innerHTML = '<tr class="empty-row"><td colspan="8" class="empty-cell">暂无订单</td></tr>'; return; }
+  body.innerHTML = list.map((o) => {
+    const qty = (o.items || []).reduce((s, it) => s + (it.qty || 0), 0);
+    return `<tr class="clickable-row" data-order-id="${escapeHtml(o.id)}">
+      <td><b>${escapeHtml(o.id)}</b></td>
+      <td>${escapeHtml(o.customer_name)}</td>
+      <td>${escapeHtml(o.customer_phone)}</td>
+      <td>${(o.items || []).length} 种 / ${qty} 件</td>
+      <td>¥${money(o.total_amount)}</td>
+      <td>${orderStatusBadge(o.status)}</td>
+      <td>${fmtTimeAdmin(o.created_at)}</td>
+      <td><button type="button" class="btn btn-outline btn-sm" data-order-view="${escapeHtml(o.id)}">详情</button></td>
+    </tr>`;
+  }).join('');
+}
+async function openOrderModal(id) {
+  try {
+    const o = await api('/api/admin/orders/' + encodeURIComponent(id), { headers: authHeaders() });
+    CURRENT_ORDER = o.order || o;
+    renderOrderModal(CURRENT_ORDER);
+    openModalAdmin('order-mask', 'order-modal');
+  } catch (e) { toast(e.message, true); }
+}
+function renderOrderModal(o) {
+  const rows = (o.items || []).map((it) => `<tr>
+    <td>${it.image ? `<img src="${escapeHtml(it.image)}" style="width:36px;height:36px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:8px" onerror="this.style.display='none'" />` : ''}${escapeHtml(it.name)}</td>
+    <td>${escapeHtml(it.spec || '-')}</td>
+    <td>${it.qty}</td>
+    <td class="num">¥${money(it.price)}${it.base_price ? `<div class="muted" style="font-size:.72rem">出厂 ¥${money(it.base_price)}</div>` : ''}</td>
+    <td>¥${money(numOf(it.price) * numOf(it.qty))}</td>
+  </tr>`).join('');
+  // 出厂成本 / 毛利：结算价已含加价，这里给出成本口径便于核对利润
+  const costTotal = (o.items || []).reduce((sum, it) => sum + (it.base_price ? numOf(it.base_price) * numOf(it.qty) : 0), 0);
+  $('order-modal-body').innerHTML = `
+    <div class="order-detail-grid">
+      <div class="kv"><b>订单号</b><span>${escapeHtml(o.id)}</span></div>
+      <div class="kv"><b>状态</b><span>${orderStatusBadge(o.status)}</span></div>
+      <div class="kv"><b>客户</b><span>${escapeHtml(o.customer_name)}</span></div>
+      <div class="kv"><b>手机号</b><span>${escapeHtml(o.customer_phone)}</span></div>
+      <div class="kv"><b>下单时间</b><span>${fmtTimeAdmin(o.created_at)}</span></div>
+      <div class="kv"><b>金额</b><span style="color:var(--accent);font-weight:700">¥${money(o.total_amount)}</span></div>
+      ${costTotal > 0 ? `<div class="kv"><b>出厂成本</b><span>¥${money(costTotal)}</span></div>
+      <div class="kv"><b>预计毛利</b><span style="font-weight:700">¥${money(numOf(o.total_amount) - costTotal)}</span></div>` : ''}
+      ${o.remark ? `<div class="kv" style="grid-column:1/-1"><b>地址备注</b><span>${escapeHtml(o.remark)}</span></div>` : ''}
+      ${o.tracking_no ? `<div class="kv" style="grid-column:1/-1"><b>物流单号</b><span>${escapeHtml(o.tracking_no)}</span></div>` : ''}
+      ${o.note ? `<div class="kv" style="grid-column:1/-1"><b>后台备注</b><span>${escapeHtml(o.note)}</span></div>` : ''}
+    </div>
+    <h4 style="margin:6px 0 2px">商品明细</h4>
+    <table class="ord-items-table">
+      <thead><tr><th>商品</th><th>规格</th><th class="num">数量</th><th class="num">单价</th><th class="num">小计</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5">—</td></tr>'}</tbody>
+    </table>`;
+  const foot = $('order-modal-foot');
+  const act = [];
+  if (o.status === 'pending') {
+    act.push('<button type="button" class="btn btn-primary" data-order-act="confirm-paid">确认收款</button>');
+    act.push('<button type="button" class="btn btn-outline" style="color:#c0392b" data-order-act="cancel">取消订单</button>');
+  } else if (o.status === 'paid') {
+    act.push('<button type="button" class="btn btn-primary" data-order-act="ship">发货（填物流单号）</button>');
+    act.push('<button type="button" class="btn btn-outline" style="color:#c0392b" data-order-act="cancel">取消订单</button>');
+  } else if (o.status === 'shipped') {
+    act.push('<button type="button" class="btn btn-primary" data-order-act="complete">确认完成</button>');
+  }
+  foot.innerHTML = act.join('') || '';
+}
+async function orderAct(action) {
+  const o = CURRENT_ORDER;
+  if (!o) return;
+  if (action === 'cancel') {
+    if (!await askConfirm('取消订单', '确认取消该订单？取消后订单将终止。', '取消订单')) return;
+    await updateOrderStatus(o.id, 'cancelled');
+    return;
+  }
+  if (action === 'ship') {
+    const track = await askText({ title: '发货', label: '物流单号（可留空）', placeholder: '如 SF1234567890', okText: '确认发货' });
+    if (track === null) return;
+    await updateOrderStatus(o.id, 'shipped', String(track).trim());
+    return;
+  }
+  const statusMap = { 'confirm-paid': 'paid', complete: 'done' };
+  await updateOrderStatus(o.id, statusMap[action]);
+}
+async function updateOrderStatus(id, status, trackingNo) {
+  try {
+    const r = await api('/api/admin/orders/' + encodeURIComponent(id) + '/status', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ status, tracking_no: trackingNo || undefined, version: CURRENT_ORDER ? CURRENT_ORDER.version : undefined }),
+    });
+    toast('订单状态已更新');
+    CURRENT_ORDER = r.order || CURRENT_ORDER;
+    renderOrderModal(CURRENT_ORDER);
+    loadOrdersPanel();
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---- 客户档案 ---- */
+async function loadCustomersPanel() {
+  const body = $('customers-body');
+  if (body) body.innerHTML = '<tr class="empty-row"><td colspan="7" class="empty-cell">加载中…</td></tr>';
+  try {
+    const data = await api('/api/admin/customers', { headers: authHeaders() });
+    CUSTOMERS_CACHE = data.customers || [];
+    renderCustomersTable();
+  } catch (e) {
+    if (body) body.innerHTML = `<tr class="empty-row"><td colspan="7" class="empty-cell">加载失败：${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+function renderCustomersTable() {
+  const body = $('customers-body');
+  if (!body) return;
+  const kw = ($('customers-search') ? $('customers-search').value : '').trim().toLowerCase();
+  const list = (CUSTOMERS_CACHE || []).filter((c) => !kw || ((c.name || '') + (c.phone || '')).toLowerCase().includes(kw));
+  if (!list.length) { body.innerHTML = '<tr class="empty-row"><td colspan="7" class="empty-cell">暂无客户</td></tr>'; return; }
+  body.innerHTML = list.map((c) => `<tr class="clickable-row" data-customer-phone="${escapeHtml(c.phone)}">
+    <td><b>${escapeHtml(c.name || '-')}</b></td>
+    <td>${escapeHtml(c.phone)}</td>
+    <td class="num">${c.order_count || 0}</td>
+    <td class="num">${c.total_qty || 0}</td>
+    <td class="num">${c.order_count ? '¥' + money(c.total_amount) : '<span class="muted">—</span>'}</td>
+    <td>${fmtTimeAdmin(c.last_order_at)}</td>
+    <td><button type="button" class="btn btn-outline btn-sm" data-customer-view="${escapeHtml(c.phone)}">查看</button></td>
+  </tr>`).join('');
+}
+async function openCustomerModal(phone) {
+  try {
+    const data = await api('/api/admin/customers/' + encodeURIComponent(phone), { headers: authHeaders() });
+    const c = data.customer || {};
+    const orders = data.orders || [];
+    const orderHtml = orders.map((o) => `
+      <div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+          <div style="flex:1;min-width:0">
+            <b>${escapeHtml(o.id)}</b> ${orderStatusBadge(o.status)}
+            <div class="muted" style="font-size:.76rem;margin-top:2px">${fmtTimeAdmin(o.created_at)} · ${(o.items || []).length} 种 / ${(o.items || []).reduce((s, it) => s + (it.qty || 0), 0)} 件 · ¥${money(o.total_amount)}</div>
+          </div>
+          <button type="button" class="btn btn-outline btn-sm" data-order-view="${escapeHtml(o.id)}">详情</button>
+        </div>
+      </div>`).join('') || '<div class="muted" style="margin-top:8px">暂无订单</div>';
+    $('customer-modal-body').innerHTML = `
+      <div class="order-detail-grid">
+        <div class="kv"><b>客户名称</b><span>${escapeHtml(c.name || '-')}</span></div>
+        <div class="kv"><b>手机号</b><span>${escapeHtml(c.phone)}</span></div>
+        <div class="kv"><b>订单数</b><span>${c.order_count || 0}</span></div>
+        <div class="kv"><b>累计件数</b><span>${c.total_qty || 0}</span></div>
+        <div class="kv"><b>累计金额</b><span style="color:var(--accent);font-weight:700">${c.order_count ? '¥' + money(c.total_amount) : '—'}</span></div>
+        <div class="kv"><b>最近下单</b><span>${fmtTimeAdmin(c.last_order_at)}</span></div>
+      </div>
+      <h4 style="margin:6px 0 2px">历史订单（${orders.length}）</h4>
+      ${orderHtml}`;
+    openModalAdmin('customer-mask', 'customer-modal');
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---- 品牌档案 ---- */
+async function loadBrandsPanel() {
+  const body = $('brands-body');
+  if (body) body.innerHTML = '<tr class="empty-row"><td colspan="7" class="empty-cell">加载中…</td></tr>';
+  try {
+    const data = await api('/api/admin/brands/profile', { headers: authHeaders() });
+    BRANDS_CACHE = data.brands || [];
+    renderBrandsTable();
+  } catch (e) {
+    if (body) body.innerHTML = `<tr class="empty-row"><td colspan="7" class="empty-cell">加载失败：${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+function renderBrandsTable() {
+  const body = $('brands-body');
+  if (!body) return;
+  const kw = ($('brands-search') ? $('brands-search').value : '').trim().toLowerCase();
+  const list = (BRANDS_CACHE || []).filter((b) => !kw
+    || [b.key, b.name, b.intro, b.services, b.contact].some((v) => String(v || '').toLowerCase().includes(kw)));
+  if (!(BRANDS_CACHE || []).length) { body.innerHTML = '<tr class="empty-row"><td colspan="7" class="empty-cell">暂无品牌档案，点击右上角新增</td></tr>'; return; }
+  if (!list.length) { body.innerHTML = `<tr class="empty-row"><td colspan="7" class="empty-cell">没有匹配「${escapeHtml(kw)}」的品牌档案</td></tr>`; return; }
+  body.innerHTML = list.map((b) => `<tr>
+    <td><b>${escapeHtml(b.key)}</b></td>
+    <td>${escapeHtml(b.name || '-')}</td>
+    <td>${b.product_count || 0}</td>
+    <td class="num">${(b.certs || []).length}</td>
+    <td>${escapeHtml((b.intro || '').slice(0, 30))}</td>
+    <td>${fmtTimeAdmin(b.updated_at) || '<span class="muted">—</span>'}</td>
+    <td>
+      <button type="button" class="btn btn-outline btn-sm" data-brand-edit="${escapeHtml(b.key)}">编辑</button>
+      <button type="button" class="btn btn-outline btn-sm" style="color:#c0392b" data-brand-del="${escapeHtml(b.key)}">删除</button>
+    </td>
+  </tr>`).join('');
+}
+function openBrandModal(b) {
+  BRAND_EDITING = b ? Object.assign({}, b) : { key: '', name: '', intro: '', services: '', contact: '', certs: [] };
+  $('brand-modal-title').textContent = b ? `编辑品牌档案：${b.name || b.key}` : '新增品牌档案';
+  const certs = (BRAND_EDITING.certs || []).map((c) => `
+    <div class="cert-list-item">
+      <img class="cert-thumb" src="${escapeHtml(c)}" onerror="this.style.display='none'" />
+      <span style="flex:1;font-size:.78rem;word-break:break-all">${escapeHtml(c)}</span>
+      <button type="button" class="btn btn-outline btn-sm" data-cert-del="${escapeHtml(c)}">移除</button>
+    </div>`).join('') || '<div class="muted" style="font-size:.78rem">暂无资质证书图</div>';
+  $('brand-modal-body').innerHTML = `
+    <div class="form-grid brand-form">
+      <div class="field"><label>品牌 Key *（唯一标识，创建后不可改）</label><input id="b-key" value="${escapeHtml(BRAND_EDITING.key || '')}" ${b ? 'readonly' : ''} placeholder="如 main / supplier-a" /></div>
+      <div class="field"><label>品牌名称 *</label><input id="b-name" value="${escapeHtml(BRAND_EDITING.name || '')}" placeholder="如 领柿食品" /></div>
+      <div class="field" style="grid-column:1/-1"><label>公司介绍（换行保留）</label><textarea id="b-intro" placeholder="公司简介、主营产品、优势…">${escapeHtml(BRAND_EDITING.intro || '')}</textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>服务说明（可含下单流程/物流/售后，换行保留）</label><textarea id="b-services">${escapeHtml(BRAND_EDITING.services || '')}</textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>联系方式（可含地址/电话/微信，换行保留）</label><textarea id="b-contact">${escapeHtml(BRAND_EDITING.contact || '')}</textarea></div>
+    </div>
+    <div class="field" style="margin-top:12px">
+      <label>资质证书图（${(BRAND_EDITING.certs || []).length}）</label>
+      <div id="b-certs-list">${certs}</div>
+      <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">
+        <input type="text" id="b-cert-url" placeholder="粘贴图片 URL（/img/... 或 http...）" style="flex:1;min-width:200px" />
+        <button type="button" class="btn btn-outline btn-sm" id="b-cert-add">添加 URL</button>
+        <span class="muted" style="font-size:.74rem">或</span>
+        <input type="file" id="b-cert-file" accept="image/*" style="display:none" />
+        <button type="button" class="btn btn-outline btn-sm" id="b-cert-upload">上传图片</button>
+      </div>
+    </div>`;
+  openModalAdmin('brand-mask', 'brand-modal');
+}
+async function handleCertUpload() {
+  const file = $('b-cert-file').files[0];
+  if (!file) return toast('请选择图片', true);
+  if (!/\.(jpe?g|png|webp)$/i.test(file.name)) return toast('仅支持 JPG/PNG/WebP', true);
+  if (CERT_UPLOADING) return;
+  CERT_UPLOADING = true;
+  try {
+    const { dataUrl, ext } = await fileToImageBase64(file, { maxSize: 1200, quality: 0.85 });
+    const filename = `brand-cert-${Date.now().toString(36)}.${ext}`;
+    const r = await api('/api/upload', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ filename, base64: dataUrl }) });
+    (BRAND_EDITING.certs = BRAND_EDITING.certs || []).push(r.url);
+    openBrandModal(BRAND_EDITING);
+    toast('资质图片已上传');
+  } catch (e) { toast(e.message, true); } finally { CERT_UPLOADING = false; }
+}
+
+/* ---- 交易面板事件绑定 ---- */
+function bindTradeEvents() {
+  const of = $('orders-filter');
+  if (of) of.addEventListener('change', () => { loadOrdersPanel(); });
+  const os = $('orders-search');
+  if (os) os.addEventListener('input', () => renderOrdersTable());
+  const oref = $('orders-refresh-btn');
+  if (oref) oref.addEventListener('click', () => loadOrdersPanel());
+  const cs = $('customers-search');
+  if (cs) cs.addEventListener('input', () => renderCustomersTable());
+  const bs = $('brands-search');
+  if (bs) bs.addEventListener('input', () => renderBrandsTable());
+  const ob = $('orders-body');
+  if (ob) ob.addEventListener('click', (e) => {
+    const view = e.target.closest('[data-order-view]');
+    if (view) { e.stopPropagation(); openOrderModal(view.dataset.orderView); return; }
+    const row = e.target.closest('tr[data-order-id]');
+    if (row) openOrderModal(row.dataset.orderId);
+  });
+  const cb = $('customers-body');
+  if (cb) cb.addEventListener('click', (e) => {
+    const view = e.target.closest('[data-customer-view]');
+    if (view) { e.stopPropagation(); openCustomerModal(view.dataset.customerView); return; }
+    const row = e.target.closest('tr[data-customer-phone]');
+    if (row) openCustomerModal(row.dataset.customerPhone);
+  });
+  const bb = $('brands-body');
+  if (bb) bb.addEventListener('click', (e) => {
+    const edit = e.target.closest('[data-brand-edit]');
+    if (edit) { const b = (BRANDS_CACHE || []).find((x) => x.key === edit.dataset.brandEdit); if (b) openBrandModal(b); return; }
+    const del = e.target.closest('[data-brand-del]');
+    if (del) {
+      askConfirm('删除品牌档案', '确认删除该品牌档案？前台品牌页将不可用。', '删除').then((ok) => {
+        if (!ok) return;
+        api('/api/admin/brands/profile/' + encodeURIComponent(del.dataset.brandDel), { method: 'DELETE', headers: authHeaders() })
+          .then(() => { toast('品牌档案已删除'); loadBrandsPanel(); })
+          .catch((err) => toast(err.message, true));
+      });
+    }
+  });
+  const fm = $('order-modal-foot');
+  if (fm) fm.addEventListener('click', (e) => {
+    const act = e.target.closest('[data-order-act]');
+    if (act) orderAct(act.dataset.orderAct);
+  });
+  const cmb = $('customer-modal-body');
+  if (cmb) cmb.addEventListener('click', (e) => {
+    const view = e.target.closest('[data-order-view]');
+    if (view) { closeModalAdmin('customer-mask', 'customer-modal'); openOrderModal(view.dataset.orderView); }
+  });
+  const bm = $('brand-modal-body');
+  if (bm) bm.addEventListener('click', (e) => {
+    const del = e.target.closest('[data-cert-del]');
+    if (del) { BRAND_EDITING.certs = (BRAND_EDITING.certs || []).filter((c) => c !== del.dataset.certDel); openBrandModal(BRAND_EDITING); return; }
+    const add = e.target.closest('#b-cert-add');
+    if (add) {
+      const v = ($('b-cert-url') ? $('b-cert-url').value : '').trim();
+      if (!v) return toast('请输入图片 URL', true);
+      (BRAND_EDITING.certs = BRAND_EDITING.certs || []).push(v);
+      openBrandModal(BRAND_EDITING);
+      return;
+    }
+    const up = e.target.closest('#b-cert-upload');
+    if (up) { const f = $('b-cert-file'); if (f) f.click(); }
+  });
+  const bf = $('b-cert-file');
+  if (bf) bf.addEventListener('change', () => handleCertUpload().catch((err) => toast(err.message, true)));
+  const addBtn = $('brand-add-btn');
+  if (addBtn) addBtn.addEventListener('click', () => openBrandModal(null));
+  const saveBtn = $('brand-save-btn');
+  if (saveBtn) saveBtn.addEventListener('click', async () => {
+    const key = ($('b-key') ? $('b-key').value : '').trim();
+    const name = ($('b-name') ? $('b-name').value : '').trim();
+    if (!key) return toast('请填写品牌 Key', true);
+    if (!name) return toast('请填写品牌名称', true);
+    const payload = {
+      key,
+      name,
+      intro: $('b-intro') ? $('b-intro').value : '',
+      services: $('b-services') ? $('b-services').value : '',
+      contact: $('b-contact') ? $('b-contact').value : '',
+      certs: BRAND_EDITING.certs || [],
+    };
+    try {
+      await api('/api/admin/brands/profile/' + encodeURIComponent(key), { method: 'PUT', headers: authHeaders(), body: JSON.stringify(payload) });
+      toast('品牌档案已保存');
+      closeModalAdmin('brand-mask', 'brand-modal');
+      loadBrandsPanel();
+    } catch (e) { toast(e.message, true); }
+  });
+  const closers = [['order-mask', 'order-modal', 'order-close'], ['customer-mask', 'customer-modal', 'customer-close'], ['brand-mask', 'brand-modal', 'brand-close']];
+  closers.forEach(([maskId, modalId, closeId]) => {
+    const m = $(maskId), d = $(modalId), c = $(closeId);
+    if (m) m.addEventListener('click', () => closeModalAdmin(maskId, modalId));
+    if (c) c.addEventListener('click', () => closeModalAdmin(maskId, modalId));
+    if (d) d.addEventListener('click', (e) => { if (e.target === d) closeModalAdmin(maskId, modalId); });
+  });
+}
+bindTradeEvents();

@@ -19,3 +19,7 @@ dev-out*.log
 
 # 临时产物
 temp/
+
+# wrangler build output
+.wrangler-dist/
+

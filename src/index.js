@@ -5,6 +5,17 @@
  *   GET  /api/products/:id        -> 单个产品
  *   GET  /api/categories          -> 分类列表（配置分类 + 产品聚合，含数量）
  *   GET  /api/brands              -> 品牌列表（产品聚合，含数量）
+ *   POST /api/orders              -> 下单（公开，手机号+公司/个人标识）
+ *   POST /api/orders/query        -> 查单（公开，手机号[+订单号]）
+ *   GET  /api/brands/profile      -> 品牌档案列表（公开）
+ *   GET  /api/brands/profile/:key -> 品牌档案详情+该品牌产品（公开）
+ *   GET  /api/admin/orders        -> 订单列表（?status= 过滤，需 x-admin-token）
+ *   GET  /api/admin/orders/:id    -> 订单详情（需 x-admin-token）
+ *   POST /api/admin/orders/:id/status -> 订单状态流转（收款/发货/完成/取消，需 x-admin-token）
+ *   GET  /api/admin/customers     -> 客户列表（手机号聚合，需 x-admin-token）
+ *   GET  /api/admin/customers/:phone -> 客户详情+订单（需 x-admin-token）
+ *   GET  /api/admin/brands/profile    -> 品牌档案列表（需 x-admin-token）
+ *   GET/PUT/DELETE /api/admin/brands/profile/:key -> 品牌档案详情/维护/删除（需 x-admin-token）
  *   GET  /api/admin/categories    -> 分类配置管理（配置分类 + 产品自动发现分类，需 x-admin-token）
  *   POST /api/admin/categories    -> 新增配置分类（需 x-admin-token）
  *   PUT  /api/admin/categories    -> 重命名配置分类（同步产品分类，需 x-admin-token）
@@ -103,12 +114,15 @@ const PERM_DEFS = {
   qr: { label: '二维码配置', desc: '二维码与卡片文案' },
   users: { label: '账号管理', desc: '管理登录账号' },
   roles: { label: '角色管理', desc: '管理角色与权限' },
+  orders: { label: '订单管理', desc: '查看订单并处理收款/发货' },
+  customers: { label: '客户档案', desc: '按手机号查看客户与订单' },
+  brands: { label: '品牌档案', desc: '维护品牌介绍与资质' },
 };
 
 // 内置角色（不可删除；权限可在角色管理中调整）
 const BUILTIN_ROLES = {
   admin: { key: 'admin', name: '管理员', builtin: true, permissions: ['*'] },
-  ops: { key: 'ops', name: '运营', builtin: true, permissions: ['dashboard', 'products', 'categories', 'price', 'hero', 'qr'] },
+  ops: { key: 'ops', name: '运营', builtin: true, permissions: ['dashboard', 'products', 'categories', 'price', 'hero', 'qr', 'orders', 'customers', 'brands'] },
   supplier: { key: 'supplier', name: '供应商', builtin: true, permissions: ['dashboard', 'products'] },
 };
 
@@ -246,10 +260,17 @@ async function readJson(request) {
   }
 }
 
+// KV 无 CAS：同毫秒并发新增会算出同一个 seq，「先查后写」挡不住互相覆盖。
+// 故 id 追加 4 位随机后缀——seq 前缀保留可读性，排序仍以 seq 字段为准。
+function makeProductId(seq) {
+  const rnd = [...crypto.getRandomValues(new Uint8Array(2))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `p${String(seq).padStart(2, '0')}-${rnd}`;
+}
+
 function nextId(products) {
   const maxSeq = products.reduce((m, p) => Math.max(m, p.seq || 0), 0);
   const seq = maxSeq + 1;
-  return { id: `p${String(seq).padStart(2, '0')}`, seq };
+  return { id: makeProductId(seq), seq };
 }
 
 const PRODUCT_FIELDS = [
@@ -299,6 +320,22 @@ async function savePrice(env, raw) {
   const p = { enabled: raw.enabled !== false, margin };
   await env.KV.put('site:price', JSON.stringify(p));
   return p;
+}
+
+// 结算加价：下单价也必须按同一策略计算，保证「展示价 = 下单价」，利润不被让掉
+// 与前台 public/app.js 的 applyMargin 保持同一口径：含「元」只加成元前数字，纯数字串整体加价，其他文案原样
+function applyMarginStr(priceStr, cfg) {
+  if (!cfg || !cfg.enabled || !cfg.margin) return priceStr;
+  const s = String(priceStr === undefined || priceStr === null ? '' : priceStr);
+  if (!s) return s;
+  const rate = 1 + cfg.margin / 100;
+  const scale = (nums) => nums.replace(/\d+(?:\.\d+)?/g, (m) => String(parseFloat((parseFloat(m) * rate).toFixed(2))));
+  if (s.includes('元')) {
+    return s.replace(/(\d+(?:\.\d+)?(?:\s*[\/\-]\s*\d+(?:\.\d+)?)*)\s*元/g, (whole, nums) => whole.replace(nums, scale(nums)));
+  }
+  // 纯价格串（"12"、"12/11.5"）整体加价；含文字且无「元」的属议价说明，原样返回
+  if (/^\s*\d+(?:\.\d+)?(\s*[\/\-]\s*\d+(?:\.\d+)?)*\s*$/.test(s)) return scale(s);
+  return s;
 }
 
 // 二维码站点配置：url 用于首页动态生成「扫码直达商城」二维码，quoteImage 为报价单二维码图片（R2）
@@ -359,9 +396,278 @@ function sanitizeProduct(raw) {
   return p;
 }
 
-async function saveProduct(env, products, item) {
-  await env.KV.put('products', JSON.stringify(products));
+// 布局约定：products:{id} 为权威数据源，products 仅为读取加速用的索引数组。
+// KV 无事务、无 CAS：若写索引时直接用请求开头读到的旧数组覆盖，会静默吞掉并发写入
+// （两人同改不同商品，后写者把先写者的改动抹掉）。故所有写路径统一：
+//   先落单条 products:{id} → 再从单条重建索引。索引永远是单条的真实投影。
+async function rebuildProductsIndex(env) {
+  const raw = await env.KV.get('products', 'json');
+  const fromIndex = Array.isArray(raw) ? raw : [];
+  const byId = new Map();
+  const list = await env.KV.list({ prefix: 'products:' });
+  for (const k of list.keys) {
+    const id = k.name.slice('products:'.length);
+    const p = await env.KV.get(k.name, 'json');
+    if (p && typeof p === 'object') byId.set(p.id || id, { ...p, id: p.id || id });
+  }
+  // 兼容历史数据：索引里有、单条缺失的商品先补写单条，避免重建时把商品弄丢
+  for (const p of fromIndex) {
+    if (p && p.id && !byId.has(p.id)) {
+      byId.set(p.id, p);
+      await env.KV.put(`products:${p.id}`, JSON.stringify(p));
+    }
+  }
+  const merged = Array.from(byId.values()).sort(
+    (a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0) || String(a.id).localeCompare(String(b.id))
+  );
+  await env.KV.put('products', JSON.stringify(merged));
+  return merged;
+}
+
+// 单条写入：只碰自己的 key，不碰索引（并发安全）
+async function saveProduct(env, item) {
   await env.KV.put(`products:${item.id}`, JSON.stringify(item));
+}
+
+/* ================= 订单 / 客户 / 品牌档案 ================= */
+
+const ORDER_STATUS = {
+  pending: { label: '待确认支付', next: ['paid', 'cancelled'] },
+  paid: { label: '已支付待发货', next: ['shipped', 'cancelled'] },
+  shipped: { label: '已发货', next: ['done'] },
+  done: { label: '已完成', next: [] },
+  cancelled: { label: '已取消', next: [] },
+};
+
+function genOrderIdTs(d) {
+  const pad = (n, l = 2) => String(n).padStart(l, '0');
+  return `${pad(d.getFullYear() % 100)}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+
+// 订单号必须唯一：KV 无事务无 CAS，重复 id 会直接覆盖已有订单（静默丢单）。
+// 并发场景下「先查后写」并不能真正防撞（两个请求可能同时查到空），故随机空间必须足够大：
+// 4 字节 = 2^32 空间，同分钟 50 单的碰撞概率约 3e-7；查重只作为兜底。
+async function genOrderId(env) {
+  const ts = genOrderIdTs(new Date());
+  for (let i = 0; i < 3; i += 1) {
+    const bytes = new Uint8Array(4);
+    crypto.getRandomValues(bytes);
+    const rnd = [...bytes].map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join('');
+    const id = `D${ts}${rnd}`;
+    if (!(await env.KV.get(`orders:${id}`))) return id;
+  }
+  const rnd = [...crypto.getRandomValues(new Uint8Array(4))].map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join('');
+  return `D${ts}${rnd}`;
+}
+
+function sanitizeOrder(raw) {
+  const name = String(raw.customer_name || '').trim().slice(0, 40);
+  const phone = String(raw.customer_phone || '').trim().slice(0, 20);
+  const remark = String(raw.remark || '').trim().slice(0, 200);
+  const items = Array.isArray(raw.items)
+    ? raw.items.slice(0, 30).map((it) => ({
+        id: String(it.id || '').slice(0, 40),
+        name: String(it.name || '').slice(0, 80),
+        spec: String(it.spec || '').slice(0, 60),
+        price: String(it.price || '').slice(0, 40),
+        moq: String(it.moq || '').slice(0, 40),
+        qty: Math.max(1, parseInt(it.qty, 10) || 1),
+        image: String(it.image || '').slice(0, 300),
+      }))
+    : [];
+  return { customer_name: name, customer_phone: phone, remark, items };
+}
+
+// ---- 金额：价格可能是 "50元/箱" 这类带单位字符串，统一解析为数值 ----
+function parseMoneyNum(v) {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  const m = String(v === undefined || v === null ? '' : v).match(/-?\d+(?:\.\d+)?/);
+  return m ? parseFloat(m[0]) : 0;
+}
+function orderTotals(order) {
+  const items = Array.isArray(order.items) ? order.items : [];
+  const total_qty = items.reduce((s, it) => s + (parseInt(it && it.qty, 10) || 0), 0);
+  const total_amount = Math.round(items.reduce((s, it) => s + parseMoneyNum(it && it.price) * (parseInt(it && it.qty, 10) || 0), 0) * 100) / 100;
+  return { total_qty, total_amount };
+}
+function withOrderTotals(order) {
+  return { ...order, ...orderTotals(order) };
+}
+
+async function getOrders(env) {
+  const list = await env.KV.list({ prefix: 'orders:' });
+  const out = [];
+  for (const k of list.keys) {
+    const o = await env.KV.get(k.name, 'json');
+    if (o) out.push(withOrderTotals(o));
+  }
+  return out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+}
+
+async function saveOrder(env, order) {
+  await env.KV.put(`orders:${order.id}`, JSON.stringify(order));
+}
+
+// 客户档案：按手机号聚合（无独立写接口，下单/后台变更时 upsert）
+// 幂等重算：以已落库订单独占为准重新聚合，天然幂等。旧实现用 += 增量累加，
+// 并发下单必然丢更新，且错误会永久沉淀在 customers 记录里。
+async function aggregateCustomer(env, phone, keys) {
+  let agg = null;
+  for (const name of keys) {
+    const o = await env.KV.get(name, 'json');
+    if (!o || String(o.customer_phone || '').trim() !== phone) continue;
+    const t = orderTotals(o);
+    if (!agg) {
+      agg = { phone, name: o.customer_name || '', order_count: 0, total_items: 0, total_qty: 0, total_amount: 0, last_order_at: '', last_order_id: '' };
+    }
+    // 已取消订单不计入消费统计，但保留客户档案（列表可见、金额显示占位）
+    if (String(o.status || '') === 'cancelled') continue;
+    agg.order_count += 1;
+    agg.total_items += (o.items || []).length;
+    agg.total_qty += t.total_qty;
+    agg.total_amount = Math.round((agg.total_amount + t.total_amount) * 100) / 100;
+    const at = String(o.created_at || '');
+    if (at >= String(agg.last_order_at || '')) {
+      agg.last_order_at = at;
+      agg.last_order_id = o.id;
+      agg.name = o.customer_name || agg.name;
+    }
+  }
+  return agg;
+}
+
+async function recomputeOneCustomer(env, phone) {
+  const p = String(phone || '').trim();
+  if (!p) return null;
+  let agg = null;
+  // 纯重算仍是「读—算—写」，并发下单时会互相写回较旧的聚合结果。
+  // 因此写完再核一次订单集合，若期间有新订单就再算一轮，让记录尽快收敛到真实值。
+  for (let round = 0; round < 2; round += 1) {
+    const before = (await env.KV.list({ prefix: 'orders:' })).keys.map((k) => k.name).sort();
+    agg = await aggregateCustomer(env, p, before);
+    if (!agg) return null;
+    await env.KV.put(`customers:${p}`, JSON.stringify(agg));
+    const after = (await env.KV.list({ prefix: 'orders:' })).keys.map((k) => k.name).sort();
+    if (after.join(',') === before.join(',')) return agg;
+  }
+  return agg;
+}
+
+async function upsertCustomer(env, order) {
+  return await recomputeOneCustomer(env, order.customer_phone);
+}
+
+// 以订单为准重算客户聚合：保证件数/金额准确，且不依赖历史字段
+async function recomputeCustomers(env) {
+  const base = await getCustomers(env);
+  const orders = await getOrders(env);
+  const agg = new Map();
+  for (const o of orders) {
+    const phone = String(o.customer_phone || '').trim();
+    if (!phone) continue;
+    const cur = agg.get(phone) || { phone, name: '', order_count: 0, total_items: 0, total_qty: 0, total_amount: 0, last_order_at: '', last_order_id: '' };
+    if (!cur.name) cur.name = o.customer_name || '';
+    if (String(o.status || '') === 'cancelled') { agg.set(phone, cur); continue; }
+    cur.order_count += 1;
+    cur.total_items += (o.items || []).length;
+    cur.total_qty += o.total_qty || 0;
+    cur.total_amount = Math.round((cur.total_amount + (o.total_amount || 0)) * 100) / 100;
+    if (!cur.name) cur.name = o.customer_name || '';
+    const at = String(o.created_at || '');
+    if (at >= String(cur.last_order_at || '')) { cur.last_order_at = at; cur.last_order_id = o.id; cur.name = o.customer_name || cur.name; }
+    agg.set(phone, cur);
+  }
+  // 合并仅存在于 customers: 记录（尚无订单）的客户
+  for (const c of base) {
+    if (!c || !c.phone || agg.has(c.phone)) continue;
+    agg.set(c.phone, { ...c, total_qty: c.total_qty || c.total_items || 0, total_amount: c.total_amount || 0 });
+  }
+  return Array.from(agg.values()).sort((a, b) => String(b.last_order_at || '').localeCompare(String(a.last_order_at || '')));
+}
+
+async function getCustomers(env) {
+  const list = await env.KV.list({ prefix: 'customers:' });
+  const out = [];
+  for (const k of list.keys) {
+    const c = await env.KV.get(k.name, 'json');
+    if (c) out.push(c);
+  }
+  return out.sort((a, b) => String(b.last_order_at || '').localeCompare(String(a.last_order_at || '')));
+}
+
+// 品牌档案：brand:profile:{key}（key=品牌名）
+const BRAND_PROFILE_FIELDS = ['intro', 'services', 'certs', 'contact'];
+function sanitizeBrandProfile(raw) {
+  const out = { certs: [] };
+  out.name = String(raw.name || '').trim().slice(0, 60);
+  for (const f of ['intro', 'services', 'contact']) out[f] = String(raw[f] || '').trim().slice(0, 3000);
+  const certs = Array.isArray(raw.certs) ? raw.certs : [];
+  out.certs = certs.map((c) => String(c || '').trim().slice(0, 300)).filter((c) => c.startsWith('/img/') || c.startsWith('http'));
+  // 时间字段由服务端维护：created_at 沿用原值，updated_at 每次保存刷新
+  if (raw.created_at) out.created_at = String(raw.created_at).slice(0, 40);
+  if (raw.updated_at) out.updated_at = String(raw.updated_at).slice(0, 40);
+  return out;
+}
+
+// 品牌名可能含中文：KV key 统一用 encodeURIComponent 存 ASCII，避免本地/边缘对非 ASCII key 的 list/get 不一致
+const BRAND_PROFILE_PREFIX = 'brand:profile:';
+function brandProfileKvKey(key) {
+  return `${BRAND_PROFILE_PREFIX}${encodeURIComponent(String(key || ''))}`;
+}
+function brandProfileKeyFromListName(name) {
+  const raw = String(name || '').slice(BRAND_PROFILE_PREFIX.length);
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+async function getBrandProfile(env, key) {
+  if (!key) return null;
+  const hit = await env.KV.get(brandProfileKvKey(key), 'json');
+  if (hit) return hit;
+  // 兼容历史写入的原始（非编码）key
+  return await env.KV.get(`${BRAND_PROFILE_PREFIX}${key}`, 'json');
+}
+
+async function getBrandProfiles(env) {
+  const list = await env.KV.list({ prefix: BRAND_PROFILE_PREFIX });
+  const seen = new Set();
+  const out = [];
+  for (const k of list.keys) {
+    const key = brandProfileKeyFromListName(k.name);
+    if (!key || seen.has(key)) continue;
+    const p = (await getBrandProfile(env, key)) || (await env.KV.get(k.name, 'json'));
+    if (!p) continue;
+    seen.add(key);
+    out.push({ ...p, key: p.key || key });
+  }
+  return out.sort((a, b) => String(a.key || '').localeCompare(String(b.key || ''), 'zh'));
+}
+
+async function saveBrandProfile(env, profile) {
+  // 时间字段服务端盖章：历史档案缺 updated_at 时用保存时间补齐，后台「更新时间」列不再为空
+  const now = new Date().toISOString();
+  const next = { ...profile };
+  if (!next.created_at) {
+    // created_at 首次写入后不可变：历史档案已归档过就沿用原值
+    const prev = await getBrandProfile(env, next.key);
+    next.created_at = (prev && prev.created_at) || now;
+  }
+  next.updated_at = now;
+  await env.KV.put(brandProfileKvKey(next.key), JSON.stringify(next));
+  const legacy = `${BRAND_PROFILE_PREFIX}${next.key}`;
+  if (legacy !== brandProfileKvKey(next.key) && (await env.KV.get(legacy))) {
+    await env.KV.delete(legacy);
+  }
+  return next;
+}
+
+async function deleteBrandProfile(env, key) {
+  await env.KV.delete(brandProfileKvKey(key));
+  const legacy = `${BRAND_PROFILE_PREFIX}${key}`;
+  if (legacy !== brandProfileKvKey(key)) await env.KV.delete(legacy);
 }
 
 async function handleApi(request, env, url) {
@@ -654,8 +960,8 @@ async function handleApi(request, env, url) {
       let renamed = 0;
       if (changed.length) {
         for (const p of changed) p.category = name;
-        await env.KV.put('products', JSON.stringify(products));
         for (const p of changed) await env.KV.put(`products:${p.id}`, JSON.stringify(p));
+        await rebuildProductsIndex(env);
         renamed = changed.length;
       }
       return jsonNoCache({ ok: true, categories: next, renamed });
@@ -675,8 +981,8 @@ async function handleApi(request, env, url) {
       }
       // 自动发现分类（extra）：同步清理产品分类，避免删除后重新聚合出现
       for (const p of used) p.category = '未分类';
-      await env.KV.put('products', JSON.stringify(products));
       for (const p of used) await env.KV.put(`products:${p.id}`, JSON.stringify(p));
+      await rebuildProductsIndex(env);
       return jsonNoCache({ ok: true, categories: configured, removed: used.length });
     }
     return notFound();
@@ -786,12 +1092,21 @@ async function handleApi(request, env, url) {
       updated++;
     }
     if (updated > 0) {
-      await env.KV.put('products', JSON.stringify(products));
       for (const item of changed) {
         await env.KV.put(`products:${item.id}`, JSON.stringify(item));
       }
+      await rebuildProductsIndex(env);
     }
     return json({ ok: true, updated });
+  }
+
+  // 维护：POST /api/admin/products/rebuild-index —— 从单条 products:{id} 重建索引（自愈手段）
+  if (path === '/api/admin/products/rebuild-index' && method === 'POST') {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!await can(env, user, 'products:write')) return forbidden();
+    const list = await rebuildProductsIndex(env);
+    return json({ ok: true, total: list.length });
   }
 
   // 批量导入：POST /api/admin/products/import
@@ -805,11 +1120,13 @@ async function handleApi(request, env, url) {
     if (!raw || !Array.isArray(raw.products)) {
       return json({ error: 'bad_request', message: 'products 数组必填' }, 400);
     }
+    // 以单条权威数据重建后的最新索引为基准做 upsert，避免拿陈旧快照判重
+    const latestProducts = await rebuildProductsIndex(env);
     const IMPORT_FIELDS = [...PRODUCT_FIELDS, 'image'];
     const imported = [];
     const updated = [];
     const errors = [];
-    const upsert = new Map(products.map((p, idx) => [`${p.name}\u0000${p.brand || ''}`, { item: p, idx }]));
+    const upsert = new Map(latestProducts.map((p, idx) => [`${p.name}\u0000${p.brand || ''}`, { item: p, idx }]));
     let seqCursor = null;
     for (let i = 0; i < raw.products.length; i++) {
       const row = raw.products[i];
@@ -838,10 +1155,15 @@ async function handleApi(request, env, url) {
         if (!merged.category) merged.category = '未分类';
         updated.push({ merged, idx: hit.idx });
       } else {
-        if (seqCursor === null) seqCursor = nextId(products);
+        if (seqCursor === null) seqCursor = nextId(latestProducts);
         else {
           seqCursor.seq += 1;
-          seqCursor.id = `p${String(seqCursor.seq).padStart(2, '0')}`;
+          seqCursor.id = makeProductId(seqCursor.seq);
+        }
+        // 占用检查：并发导入/新增撞到同一 id 时顺延，避免覆盖已有商品单条
+        for (let guard = 0; guard < 20 && await env.KV.get(`products:${seqCursor.id}`); guard++) {
+          seqCursor.seq += 1;
+          seqCursor.id = makeProductId(seqCursor.seq);
         }
         const item = { id: seqCursor.id, seq: seqCursor.seq, ...sanitizeProduct(row) };
         imported.push(item);
@@ -849,16 +1171,199 @@ async function handleApi(request, env, url) {
       }
     }
     if (imported.length) {
-      products.push(...imported);
-      await env.KV.put('products', JSON.stringify(products));
       for (const item of imported) await env.KV.put(`products:${item.id}`, JSON.stringify(item));
     }
     if (updated.length) {
-      for (const u of updated) products[u.idx] = u.merged;
-      await env.KV.put('products', JSON.stringify(products));
       for (const u of updated) await env.KV.put(`products:${u.merged.id}`, JSON.stringify(u.merged));
     }
-    return json({ ok: true, imported: imported.length, updated: updated.length, errors, total: products.length });
+    // 单条写完后统一重建索引：导入与后台编辑并发时不会相互覆盖
+    const latest = (imported.length || updated.length) ? await rebuildProductsIndex(env) : products;
+    return json({ ok: true, imported: imported.length, updated: updated.length, errors, total: latest.length });
+  }
+
+  /* ---- 下单（公开）---- */
+  if (path === '/api/orders' && method === 'POST') {
+    const body = await readJson(request);
+    if (!body) return json({ error: 'bad_request', message: '请求体无效' }, 400);
+    const order = sanitizeOrder(body);
+    if (!order.customer_phone || !/^1\d{10}$/.test(order.customer_phone)) {
+      return json({ error: 'bad_request', message: '请填写正确的手机号' }, 400);
+    }
+    if (!order.customer_name) return json({ error: 'bad_request', message: '请填写公司/个人名称' }, 400);
+    if (!order.items.length) return json({ error: 'bad_request', message: '购物车为空，无法下单' }, 400);
+    {
+      // 明细快照以商品库为准：前端只传 id+qty 时也能落全量信息，未知商品直接拒绝
+      const byId = new Map(products.map((p) => [p.id, p]));
+      const unknown = order.items.filter((it) => !byId.has(it.id));
+      if (unknown.length) {
+        return json({ error: 'bad_request', message: `商品不存在或已下架：${unknown.map((x) => x.id).join(',')}` }, 400);
+      }
+      // 结算价以商品库出厂价 ×（1+利润率）服务端重算：前端传入价格一概不采信，避免改价逃单
+      const priceCfg = await getPrice(env);
+      order.items = order.items.map((it) => {
+        const p = byId.get(it.id);
+        const basePrice = String(p.wholesale_price || '');
+        return {
+          id: it.id,
+          name: it.name || p.name || '',
+          spec: it.spec || p.spec || '',
+          price: basePrice ? applyMarginStr(basePrice, priceCfg) : (it.price || ''),
+          base_price: basePrice,
+          moq: it.moq || p.moq || '',
+          qty: it.qty,
+          image: it.image || p.image || '',
+        };
+      });
+    }
+    Object.assign(order, orderTotals(order));
+    order.id = await genOrderId(env);
+    order.status = 'pending';
+    order.version = 1;
+    order.created_at = new Date().toISOString();
+    order.updated_at = order.created_at;
+    await saveOrder(env, order);
+    await upsertCustomer(env, order);
+    return json({ ok: true, order }, 201);
+  }
+
+  /* ---- 查单（公开，POST 避免边缘缓存）---- */
+  if (path === '/api/orders/query' && method === 'POST') {
+    const body = await readJson(request);
+    const phone = String(body?.phone || '').trim();
+    if (!/^1\d{10}$/.test(phone)) return json({ error: 'bad_request', message: '请填写正确的手机号' }, 400);
+    const all = await getOrders(env);
+    const mine = all.filter((o) => o.customer_phone === phone);
+    const orderId = String(body?.order_id || '').trim();
+    const list = orderId ? mine.filter((o) => o.id === orderId) : mine;
+    return json({ ok: true, orders: list.slice(0, 50), total: list.length });
+  }
+
+  /* ---- 品牌档案（公开）---- */
+  if (path === '/api/brands/profile' && method === 'GET') {
+    const list = await getBrandProfiles(env);
+    const withCount = list.map((p) => ({ ...p, product_count: onShelf.filter((x) => x.brand === p.key).length }));
+    return jsonNoCache({ ok: true, brands: withCount });
+  }
+  {
+    const bm = path.match(/^\/api\/brands\/profile\/([^/]+)$/);
+    if (bm && method === 'GET') {
+      const key = decodeURIComponent(bm[1]);
+      const profile = await getBrandProfile(env, key);
+      if (!profile) return notFound();
+      const products = onShelf.filter((x) => x.brand === key);
+      return jsonNoCache({ ok: true, brand: { ...profile, products } });
+    }
+  }
+
+  /* ---- 后台：订单 ---- */
+  if (path === '/api/admin/orders' && method === 'GET') {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!await can(env, user, 'orders')) return forbidden();
+    const status = String(url.searchParams.get('status') || '').trim();
+    const all = await getOrders(env);
+    const list = status ? all.filter((o) => o.status === status) : all;
+    return jsonNoCache({ ok: true, orders: list, total: list.length });
+  }
+  {
+    const om = path.match(/^\/api\/admin\/orders\/([^/]+)\/status$/);
+    if (om && method === 'POST') {
+      const user = await authUser(request, env);
+      if (!user) return unauthorized();
+      if (!await can(env, user, 'orders')) return forbidden();
+      const order = await env.KV.get(`orders:${om[1]}`, 'json');
+      if (!order) return notFound();
+      const body = await readJson(request);
+      const next = String(body?.status || '').trim();
+      // 乐观并发：前端带上读取时的 version，不一致说明期间有人改过，直接拒绝而不是覆盖
+      if (body?.version !== undefined && Number(body.version) !== Number(order.version || 1)) {
+        return json({ error: 'conflict', message: '订单已被他人修改，请刷新后重试', order: withOrderTotals(order) }, 409);
+      }
+      if (!ORDER_STATUS[next] || !ORDER_STATUS[order.status].next.includes(next)) {
+        return json({ error: 'bad_request', message: `状态不允许从「${ORDER_STATUS[order.status].label}」流转到该状态` }, 400);
+      }
+      // KV 无 CAS：写前重读一次，缩小读改写窗口，避免把他人已提交的流转覆盖掉
+      const fresh = await env.KV.get(`orders:${om[1]}`, 'json');
+      if (!fresh) return notFound();
+      if (String(fresh.status) !== String(order.status) || Number(fresh.version || 1) !== Number(order.version || 1)) {
+        return json({ error: 'conflict', message: '订单状态刚被他人更新，请刷新后重试' }, 409);
+      }
+      order.status = next;
+      order.version = Number(order.version || 1) + 1;
+      if (body?.tracking_no !== undefined) order.tracking_no = String(body.tracking_no).trim().slice(0, 100);
+      if (body?.status_note !== undefined) order.status_note = String(body.status_note).trim().slice(0, 200);
+      order.updated_at = new Date().toISOString();
+      await saveOrder(env, order);
+      // 状态流转会改变订单是否计入客户消费（尤其取消），必须同步重算客户聚合
+      await upsertCustomer(env, order);
+      return json({ ok: true, order: withOrderTotals(order) });
+    }
+  }
+  {
+    const om = path.match(/^\/api\/admin\/orders\/([^/]+)$/);
+    if (om && method === 'GET') {
+      const user = await authUser(request, env);
+      if (!user) return unauthorized();
+      if (!await can(env, user, 'orders')) return forbidden();
+      const order = await env.KV.get(`orders:${om[1]}`, 'json');
+      return order ? jsonNoCache({ ok: true, order: withOrderTotals(order) }) : notFound();
+    }
+  }
+
+  /* ---- 后台：客户档案 ---- */
+  if (path === '/api/admin/customers' && method === 'GET') {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!await can(env, user, 'customers')) return forbidden();
+    const list = await recomputeCustomers(env);
+    return jsonNoCache({ ok: true, customers: list, total: list.length });
+  }
+  {
+    const cm = path.match(/^\/api\/admin\/customers\/([^/]+)$/);
+    if (cm && method === 'GET') {
+      const user = await authUser(request, env);
+      if (!user) return unauthorized();
+      if (!await can(env, user, 'customers')) return forbidden();
+      const phone = decodeURIComponent(cm[1]);
+      const aggregated = await recomputeCustomers(env);
+      const customer = aggregated.find((c) => c.phone === phone) || (await env.KV.get(`customers:${phone}`, 'json'));
+      if (!customer) return notFound();
+      const all = await getOrders(env);
+      const orders = all.filter((o) => o.customer_phone === phone);
+      return jsonNoCache({ ok: true, customer, orders });
+    }
+  }
+
+  /* ---- 后台：品牌档案 ---- */
+  if (path === '/api/admin/brands/profile' && method === 'GET') {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!await can(env, user, 'brands')) return forbidden();
+    const list = await getBrandProfiles(env);
+    const withCount = list.map((p) => ({ ...p, product_count: products.filter((x) => x.brand === p.key).length }));
+    return jsonNoCache({ ok: true, brands: withCount });
+  }
+  {
+    const bm = path.match(/^\/api\/admin\/brands\/profile\/([^/]+)$/);
+    if (bm && (method === 'PUT' || method === 'GET' || method === 'DELETE')) {
+      const user = await authUser(request, env);
+      if (!user) return unauthorized();
+      if (!await can(env, user, 'brands')) return forbidden();
+      const key = decodeURIComponent(bm[1]).slice(0, 40);
+      if (method === 'GET') {
+        const profile = await getBrandProfile(env, key);
+        if (!profile) return notFound();
+        return jsonNoCache({ ok: true, brand: profile });
+      }
+      if (method === 'DELETE') {
+        await deleteBrandProfile(env, key);
+        return json({ ok: true });
+      }
+      const body = await readJson(request);
+      const profile = { ...sanitizeBrandProfile(body || {}), key };
+      const saved = await saveBrandProfile(env, profile);
+      return json({ ok: true, brand: saved });
+    }
   }
 
   // /api/products/:id
@@ -872,25 +1377,26 @@ async function handleApi(request, env, url) {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
       if (!await can(env, user, 'products:write')) return forbidden();
-      const idx = products.findIndex((x) => x.id === m[1]);
+      // 写前从单条重建索引，保证不是拿请求开头的陈旧快照去覆盖
+      const latest = await rebuildProductsIndex(env);
+      const idx = latest.findIndex((x) => x.id === m[1]);
       if (idx === -1) return notFound();
-      if (user.role === 'supplier' && products[idx].brand !== user.supplierBrand) return forbidden();
+      if (user.role === 'supplier' && latest[idx].brand !== user.supplierBrand) return forbidden();
 
       if (method === 'PUT') {
         const raw = await readJson(request);
         if (!raw) return json({ error: 'bad_request' }, 400);
         if (user.role === 'supplier') raw.brand = user.supplierBrand;
-        const merged = { ...products[idx], ...sanitizeProduct(raw) };
-        products[idx] = merged;
-        await saveProduct(env, products, merged);
+        const merged = { ...latest[idx], ...sanitizeProduct(raw) };
+        await saveProduct(env, merged);
+        await rebuildProductsIndex(env);
         return json({ ok: true, product: merged });
       }
 
       // DELETE：同步删除详情 KV 与关联 R2 图片
-      const removed = products[idx];
-      products.splice(idx, 1);
-      await env.KV.put('products', JSON.stringify(products));
+      const removed = latest[idx];
       await env.KV.delete(`products:${removed.id}`);
+      await rebuildProductsIndex(env);
       if (removed.image) {
         const key = removed.image.replace(/^\/img\//, '');
         try {
@@ -938,10 +1444,15 @@ async function handleApi(request, env, url) {
         return json({ error: 'bad_request', message: '品名必填' }, 400);
       }
       if (user.role === 'supplier') raw.brand = user.supplierBrand;
-      const { id, seq } = nextId(products);
+      const latest = await rebuildProductsIndex(env);
+      // 并发新增时 seq 可能撞车：占用检查后顺延，避免覆盖他人刚建的商品
+      let { id, seq } = nextId(latest);
+      for (let guard = 0; guard < 20 && await env.KV.get(`products:${id}`); guard++) {
+        ({ id, seq } = nextId([...latest, { id, seq }]));
+      }
       const item = { id, seq, ...sanitizeProduct(raw) };
-      products.push(item);
-      await saveProduct(env, products, item);
+      await saveProduct(env, item);
+      await rebuildProductsIndex(env);
       return json({ ok: true, product: item }, 201);
     }
     return notFound();
@@ -980,13 +1491,30 @@ async function handleApi(request, env, url) {
 
 async function handleImage(request, env, url) {
   const key = url.pathname.replace(/^\/img\//, '');
+  // 指纹化 key：URL 唯一、内容不可变 -> 边缘缓存（Cache API）+ 1 年 immutable 强缓存
+  // 固定名 key：理论存在覆盖可能 -> 不缓存，直接回源走协商缓存，避免旧图
+  const fingerprinted = /[-_][0-9a-z]{6,}\.(jpe?g|png|webp)$/i.test(key);
+
+  if (fingerprinted) {
+    const cache = caches.default;
+    const cached = await cache.match(new Request(url));
+    if (cached) return cached;
+    const obj = await env.R2.get(key);
+    if (!obj) return new Response('Not Found', { status: 404 });
+    const headers = new Headers();
+    obj.writeHttpMetadata(headers);
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    const resp = new Response(obj.body, { headers });
+    await cache.put(new Request(url), resp.clone());
+    return resp;
+  }
+
   const obj = await env.R2.get(key);
   if (!obj) return new Response('Not Found', { status: 404 });
-
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
-  // 图片使用协商缓存：no-cache + ETag/Last-Modified（writeHttpMetadata 已带），
-  // 每次回源 304 校验，避免 R2 对象更新后浏览器仍展示旧图
+  // 固定名 key 保留协商缓存：no-cache + ETag/Last-Modified（writeHttpMetadata 已带），
+  // 每次回源 304 校验，避免 R2 对象更新后浏览器仍展示旧图（历史踩坑）
   headers.set('Cache-Control', 'no-cache');
   return new Response(obj.body, { headers });
 }
@@ -995,6 +1523,40 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // 自定义域名主站化：页面级 GET 请求命中 workers.dev 时 301 到主站域名，
+    // 避免双入口与微信内 workers.dev 访问不稳；API/图片路由不受影响
+    const CANONICAL_HOST = 'lightning-shop.gora.dpdns.org';
+    if (
+      request.method === 'GET' &&
+      url.hostname !== CANONICAL_HOST &&
+      url.hostname.endsWith('.workers.dev') &&
+      !url.pathname.startsWith('/api/') &&
+      !url.pathname.startsWith('/img/')
+    ) {
+      return Response.redirect(`https://${CANONICAL_HOST}${url.pathname}${url.search}`, 301);
+    }
+
+    // 只读公开 API 边缘缓存（Cache API 60s）：GET /api/* 非后台接口，无管理 token
+    // 缓存副本仅 s-maxage=60：命中时浏览器不缓存（无 max-age），边缘共享缓存 60s 直读
+    if (
+      url.pathname.startsWith('/api/') &&
+      request.method === 'GET' &&
+      !url.pathname.startsWith('/api/admin/') &&
+      !request.headers.has('x-admin-token')
+    ) {
+      const cache = caches.default;
+      const cacheKey = new Request(url.toString(), { method: 'GET' });
+      const hit = await cache.match(cacheKey);
+      if (hit) return hit;
+      const resp = await handleApi(request, env, url);
+      if (resp && resp.status === 200 && (resp.headers.get('Content-Type') || '').includes('application/json')) {
+        const cached = resp.clone();
+        cached.headers.set('Cache-Control', 's-maxage=60');
+        cached.headers.delete('Set-Cookie');
+        await cache.put(cacheKey, cached);
+      }
+      return resp;
+    }
     if (url.pathname.startsWith('/api/')) {
       return handleApi(request, env, url);
     }
@@ -1004,7 +1566,14 @@ export default {
 
     // 静态资源：public/ 目录
     if (env.ASSETS) {
-      return env.ASSETS.fetch(request);
+      const resp = await env.ASSETS.fetch(request);
+      // 指纹化脚本（index.html 引用带 ?v= 版本号）走一年强缓存，发版时改版本号即可破缓存
+      if (url.pathname === '/app.js' || url.pathname === '/qrcode.min.js') {
+        const headers = new Headers(resp.headers);
+        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+        return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
+      }
+      return resp;
     }
 
     return new Response('Lightning Shop', { status: 200 });
