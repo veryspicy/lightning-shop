@@ -274,6 +274,26 @@ function rateLimit(scope, key, limit, windowSec) {
   return { ok: true, remaining: limit - cur.count, retryAfter: 0 };
 }
 
+/* 限流统一入口：内存桶 + Cloudflare 原生 Rate Limiting binding 双闸。
+ * 内存桶零延迟、同 isolate 内精确，负责挡单点突发；binding 按 PoP 计数、跨 isolate 生效，
+ * 补内存桶「实例重启即清零、多 isolate 各记各的」的盲区。两闸取严，先撞者生效。
+ * binding 未配置（本地降级/账号未开）或调用异常时自动退回纯内存桶，不影响业务。
+ */
+async function rateLimitGuard(env, scope, key, limit, windowSec, bindingName) {
+  const local = rateLimit(scope, key, limit, windowSec);
+  if (!local.ok) return local;
+  const limiter = bindingName ? env[bindingName] : null;
+  if (limiter && typeof limiter.limit === 'function') {
+    try {
+      const { success } = await limiter.limit({ key: `${scope}:${key}` });
+      if (!success) return { ok: false, remaining: 0, retryAfter: 60 };
+    } catch {
+      // binding 异常不阻断主流程：内存桶已生效，宁可少一层也不误伤正常请求
+    }
+  }
+  return local;
+}
+
 function tooManyRequests(retryAfter, message = '请求过于频繁，请稍后再试') {
   return new Response(JSON.stringify({ error: 'rate_limited', message }), {
     status: 429,
@@ -606,9 +626,24 @@ function sanitizeProduct(raw) {
 // KV 无事务、无 CAS：若写索引时直接用请求开头读到的旧数组覆盖，会静默吞掉并发写入
 // （两人同改不同商品，后写者把先写者的改动抹掉）。故所有写路径统一：
 //   先落单条 products:{id} → 再从单条重建索引。索引永远是单条的真实投影。
+// 删除墓碑：重建索引的「兼容历史数据」补写会把「索引里有、单条已删」的商品复活，
+// 导致删除接口返回成功但商品仍在（删除被静默回滚）。墓碑记录已删 id，补写阶段一律跳过。
+async function getDeletedProductIds(env) {
+  const raw = await env.KV.get('meta:deletedProducts', 'json');
+  return new Set(Array.isArray(raw) ? raw.map(String) : []);
+}
+
+async function markProductDeleted(env, id) {
+  const set = await getDeletedProductIds(env);
+  set.add(String(id));
+  // 保留最近 500 条即可覆盖重建窗口，避免墓碑无限增长
+  await env.KV.put('meta:deletedProducts', JSON.stringify(Array.from(set).slice(-500)));
+}
+
 async function rebuildProductsIndex(env) {
   const raw = await env.KV.get('products', 'json');
   const fromIndex = Array.isArray(raw) ? raw : [];
+  const deleted = await getDeletedProductIds(env);
   const byId = new Map();
   const list = await env.KV.list({ prefix: 'products:' });
   for (const k of list.keys) {
@@ -617,8 +652,9 @@ async function rebuildProductsIndex(env) {
     if (p && typeof p === 'object') byId.set(p.id || id, { ...p, id: p.id || id });
   }
   // 兼容历史数据：索引里有、单条缺失的商品先补写单条，避免重建时把商品弄丢
+  // （已删除的 id 有墓碑，不补写，否则删除会被这一步回滚）
   for (const p of fromIndex) {
-    if (p && p.id && !byId.has(p.id)) {
+    if (p && p.id && !byId.has(p.id) && !deleted.has(String(p.id))) {
       byId.set(p.id, p);
       await env.KV.put(`products:${p.id}`, JSON.stringify(p));
     }
@@ -886,7 +922,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/auth/login' && method === 'POST') {
     // 登录限流：同 IP 5 分钟 20 次、同 IP+账号 5 分钟 5 次，阻断在线口令爆破
     const ip = clientIp(request);
-    const ipLimit = rateLimit('login-ip', ip, 20, 300);
+    const ipLimit = await rateLimitGuard(env, 'login-ip', ip, 20, 300, 'RL_LOGIN');
     if (!ipLimit.ok) return tooManyRequests(ipLimit.retryAfter, '登录尝试过于频繁，请稍后再试');
     const body = await readJson(request);
     if (!body || !String(body.username || '').trim() || !String(body.password || '')) {
@@ -1441,7 +1477,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/orders' && method === 'POST') {
     // 下单限流：同 IP 1 分钟 10 单、1 小时 60 单，避免匿名接口被脚本灌库撑爆 KV 配额
     const ip = clientIp(request);
-    const minLimit = rateLimit('order-ip-1m', ip, 10, 60);
+    const minLimit = await rateLimitGuard(env, 'order-ip-1m', ip, 10, 60, 'RL_ORDER');
     if (!minLimit.ok) return tooManyRequests(minLimit.retryAfter, '下单过于频繁，请稍后再试');
     const hourLimit = rateLimit('order-ip-1h', ip, 60, 3600);
     if (!hourLimit.ok) return tooManyRequests(hourLimit.retryAfter, '下单过于频繁，请稍后再试');
@@ -1509,7 +1545,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/orders/query' && method === 'POST') {
     // 查单凭据只有手机号，必须限流，否则可被用于遍历手机号批量拖取订单信息
     const ip = clientIp(request);
-    const ipLimit = rateLimit('query-ip', ip, 10, 300);
+    const ipLimit = await rateLimitGuard(env, 'query-ip', ip, 10, 300, 'RL_QUERY');
     if (!ipLimit.ok) return tooManyRequests(ipLimit.retryAfter, '查询过于频繁，请稍后再试');
     const body = await readJson(request);
     const phone = String(body?.phone || '').trim();
@@ -1696,6 +1732,7 @@ async function handleApi(request, env, url) {
       // DELETE：同步删除详情 KV 与关联 R2 图片
       const removed = latest[idx];
       await env.KV.delete(`products:${removed.id}`);
+      await markProductDeleted(env, removed.id);
       await rebuildProductsIndex(env);
       if (removed.image) {
         const key = removed.image.replace(/^\/img\//, '');
@@ -1846,6 +1883,10 @@ function withSecurityHeaders(resp) {
   return out;
 }
 
+// 公开 API 边缘缓存时长：原 60s，收到 30s 以压低改价/文案变更的可见延迟。
+// 下架/删除走 force bump 即时失效，不依赖此 TTL 兜底。
+const CACHE_TTL_SEC = 30;
+
 // 公开 API 边缘缓存的版本号：任何写操作成功后 +1，使旧缓存立即失效。
 // 只有 60s TTL 而没有失效机制时，商品下架/改价/删除后最长 60s 仍能被匿名读到
 // （缓存副本里还是下架前的 200），等于绕过下架与改价。
@@ -1857,12 +1898,23 @@ async function getCacheEpoch(env) {
   }
 }
 
-async function bumpCacheEpoch(env) {
+// 普通写操作的 bump 节流窗口：KV 同 key 写入上限是 1 次/秒，批量/脚本循环写会撞限制。
+// 窗口取 <= 缓存 TTL，即便本轮被节流跳过，旧副本也会在 TTL 内自然过期，不会放大延迟。
+const CACHE_BUMP_THROTTLE_MS = CACHE_TTL_SEC * 1000;
+let lastCacheBumpAt = 0;
+
+// force=true 用于下架/删除这类安全敏感写：必须立即失效，不参与节流
+async function bumpCacheEpoch(env, force = false) {
+  const now = Date.now();
+  if (!force && now - lastCacheBumpAt < CACHE_BUMP_THROTTLE_MS) return false;
+  lastCacheBumpAt = now;
   try {
     const cur = await getCacheEpoch(env);
     await env.KV.put('cache:epoch', String(cur + 1));
+    return true;
   } catch {
     // KV 单 key 有写入频率限制：失败时宁可让旧缓存自然过期，也不能让写操作报错
+    return false;
   }
 }
 
@@ -1916,8 +1968,8 @@ export default {
       return Response.redirect(`https://${CANONICAL_HOST}${url.pathname}${url.search}`, 301);
     }
 
-    // 只读公开 API 边缘缓存（Cache API 60s）：GET /api/* 非后台接口，无管理 token
-    // 缓存副本仅 s-maxage=60：命中时浏览器不缓存（无 max-age），边缘共享缓存 60s 直读
+    // 只读公开 API 边缘缓存（Cache API，TTL=CACHE_TTL_SEC）：GET /api/* 非后台接口，无管理 token
+    // 缓存副本仅 s-maxage：命中时浏览器不缓存（无 max-age），边缘共享缓存 CACHE_TTL_SEC 直读
     if (
       url.pathname.startsWith('/api/') &&
       request.method === 'GET' &&
@@ -1935,7 +1987,7 @@ export default {
       const resp = withSecurityHeaders(await handleApi(request, env, url));
       if (resp && resp.status === 200 && (resp.headers.get('Content-Type') || '').includes('application/json')) {
         const cached = resp.clone();
-        cached.headers.set('Cache-Control', 's-maxage=60');
+        cached.headers.set('Cache-Control', `s-maxage=${CACHE_TTL_SEC}`);
         cached.headers.delete('Set-Cookie');
         await cache.put(cacheKey, cached);
       }
@@ -1949,7 +2001,15 @@ export default {
         resp.status < 400 &&
         !CACHE_BUMP_SKIP_PREFIXES.some((p) => url.pathname.startsWith(p))
       ) {
-        await bumpCacheEpoch(env);
+        // 安全敏感写必须即时生效：单商品改价/下架与 DELETE 不参与节流。
+        // 新增与批量导入同样是「一次请求只 bump 一次」，若不 force 会被上一条写操作的节流窗口吞掉，
+        // 导致新商品最长 TTL 内外网不可见（实测约 30s）；逐个 PUT 的高频场景仍走节流限制 KV 写频。
+        const isCreate =
+          request.method === 'POST' &&
+          (url.pathname === '/api/products' || url.pathname === '/api/admin/products/import');
+        const force =
+          request.method === 'DELETE' || isCreate || /^\/api\/products\/(?!batch$)[^/]+$/.test(url.pathname);
+        await bumpCacheEpoch(env, force);
       }
       return resp;
     }

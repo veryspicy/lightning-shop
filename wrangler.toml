@@ -43,3 +43,30 @@ persist = true
 
 [observability.issues]
 enabled = true
+
+# 限流 binding（Cloudflare 原生 Rate Limiting API）
+# 按 Cloudflare 机房（PoP）计数、跨 isolate 生效，与 Worker 内内存桶取严。
+# namespace_id 是账户内唯一整数标识，limit/period 中 period 只支持 10 或 60 秒。
+[[ratelimits]]
+name = "RL_LOGIN"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+[[ratelimits]]
+name = "RL_ORDER"
+namespace_id = "1002"
+
+  [ratelimits.simple]
+  limit = 20
+  period = 60
+
+[[ratelimits]]
+name = "RL_QUERY"
+namespace_id = "1003"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
