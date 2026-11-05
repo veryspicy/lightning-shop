@@ -26,7 +26,7 @@ if (files.length === 0) {
 
 for (const f of files) {
   const key = f;
-  const cmd = `npx wrangler r2 object put lightning-shop-images/${key} --file="${join(imgDir, f)}"`;
+  const cmd = `npx wrangler r2 object put lightning-shop-images/${key} --file="${join(imgDir, f)}" --remote`;
   console.log(`上传 ${f} ...`);
   execSync(cmd, { stdio: 'inherit' });
 }
