@@ -37,6 +37,17 @@ function escapeHtml(s) {
   }[c]));
 }
 
+/* 图片地址白名单：站内 /img/{安全文件名} 或 http(s) 绝对地址，其余一律丢弃。
+   订单明细/商品图来自外部输入（匿名下单、供应商上传），直接拼进 src 会形成存储型 XSS。 */
+function safeImgUrl(u) {
+  const s = String(u ?? '').trim();
+  if (!s || s.length > 300) return '';
+  if (/[\u0000-\u001f"'<>\\]/.test(s)) return '';
+  if (/^\/img\/[A-Za-z0-9._-]+$/.test(s) && !s.includes('..')) return s;
+  if (/^https?:\/\/[^\s]+$/i.test(s)) return s;
+  return '';
+}
+
 /* 价格策略：前台展示价 = 出厂价 × (1 + 利润率%)，后台数据不变 */
 function formatNum(n) {
   return String(parseFloat(n.toFixed(2)));
@@ -71,7 +82,7 @@ function cardHtml(p) {
     : '';
 
   const media = p.image
-    ? `<img src="${p.image}" alt="${escapeHtml(p.name)}" loading="lazy" decoding="async" />`
+    ? `<img src="${escapeHtml(safeImgUrl(p.image))}" alt="${escapeHtml(p.name)}" loading="lazy" decoding="async" />`
     : `<div class="card-placeholder" aria-hidden="true">🍱</div>`;
 
   const retailText = p.retail_price && !p.retail_price.includes('报价') ? p.retail_price : '议价';
@@ -1080,7 +1091,7 @@ function detailHtml(p) {
     </div>
     <div class="detail-wrap">
       <div class="detail-media">
-        ${p.image ? `<img src="${p.image}" alt="${escapeHtml(p.name)}" onclick="openLightbox('${p.image.replace(/'/g, "\\'")}', '${escapeHtml(p.name).replace(/'/g, "\\'")}')" />` : '<div class="card-placeholder">🍱</div>'}
+        ${p.image ? `<img src="${escapeHtml(safeImgUrl(p.image))}" alt="${escapeHtml(p.name)}" onclick="openLightbox('${safeImgUrl(p.image)}', '${escapeHtml(p.name).replace(/'/g, "\\'")}')" />` : '<div class="card-placeholder">🍱</div>'}
         ${badge}
       </div>
       <div class="detail-info">
@@ -1158,7 +1169,7 @@ function renderCart() {
     <div class="cart-list">
       ${cart.map((it) => `
         <div class="cart-item" data-id="${escapeHtml(it.id)}">
-          ${it.image ? `<img class="cart-item-img" src="${it.image}" alt="" loading="lazy" />` : '<div class="cart-item-img placeholder">🍱</div>'}
+          ${it.image ? `<img class="cart-item-img" src="${escapeHtml(safeImgUrl(it.image))}" alt="" loading="lazy" />` : '<div class="cart-item-img placeholder">🍱</div>'}
           <div class="cart-item-info">
             <b class="cart-item-name">${escapeHtml(it.name)}</b>
             <span class="cart-item-spec">${escapeHtml(it.spec || '')}${it.brand ? ' · ' + escapeHtml(it.brand) : ''}</span>
@@ -1239,7 +1250,7 @@ function fmtTime(iso) {
 }
 function orderItemHtml(it) {
   return `<div class="order-line">
-    ${it.image ? `<img src="${it.image}" alt="" loading="lazy" />` : '<span class="order-line-ph">🍱</span>'}
+    ${it.image ? `<img src="${escapeHtml(safeImgUrl(it.image))}" alt="" loading="lazy" />` : '<span class="order-line-ph">🍱</span>'}
     <div class="order-line-info"><b>${escapeHtml(it.name)}</b><span>${escapeHtml(it.spec || '')} × ${it.qty}</span></div>
     <span class="order-line-price">${escapeHtml(it.price || '议价')}</span>
   </div>`;
@@ -1336,7 +1347,7 @@ async function loadBrand(key) {
     </div>
     ${(!brand || !brand.intro) ? '<div class="brand-intro"><h2>品牌介绍</h2><p class="brand-empty">该品牌暂未维护公司介绍与资质档案，可联系客服获取详情</p></div>' : ''}
     ${brand && brand.intro ? `<div class="brand-intro"><h2>品牌介绍</h2><p>${escapeHtml(brand.intro).replace(/\n/g, '<br />')}</p></div>` : ''}
-    ${certs.length ? `<div class="brand-certs"><h2>资质证书</h2><div class="cert-grid">${certs.map((c) => `<img src="${c}" alt="资质证书" loading="lazy" onclick="openLightbox('${c.replace(/'/g, "\\'")}', '资质证书')" />`).join('')}</div></div>` : ''}
+    ${certs.length ? `<div class="brand-certs"><h2>资质证书</h2><div class="cert-grid">${certs.map((c) => `<img src="${escapeHtml(safeImgUrl(c))}" alt="资质证书" loading="lazy" onclick="openLightbox('${safeImgUrl(c)}', '资质证书')" />`).join('')}</div></div>` : ''}
     ${brand && brand.services ? `<div class="brand-services"><h2>合作方式</h2><p>${escapeHtml(brand.services).replace(/\n/g, '<br />')}</p></div>` : ''}
     ${brand && brand.contact ? `<div class="brand-contact"><h2>联系方式</h2><p>${escapeHtml(brand.contact).replace(/\n/g, '<br />')}</p></div>` : ''}
     <h2 class="brand-products-title">该品牌在售产品</h2>

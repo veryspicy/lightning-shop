@@ -244,12 +244,71 @@ async function authUser(request, env) {
   return user || null;
 }
 
+// 权限键归一：存量 KV 自定义角色里可能存着历史带后缀的旧键（products:write / users:manage ...），
+// 与 PERM_DEFS 键不一致会导致「后台菜单可见但接口一律 403」。统一映射到 PERM_DEFS 键后再比对。
+const PERM_ALIASES = {
+  'users:manage': 'users',
+  'roles:manage': 'roles',
+  'categories:write': 'categories',
+  'products:write': 'products',
+  upload: 'products',
+};
+function normPerm(p) {
+  const k = String(p === undefined || p === null ? '' : p).trim();
+  return PERM_ALIASES[k] || k;
+}
+// 旧版 site:write 为聚合键，同时管首页/价格/二维码；拆分为 hero/price/qr 后需兼容存量角色
+const SITE_PERMS = ['hero', 'price', 'qr'];
+
 async function can(env, user, perm) {
   if (!user) return false;
   const map = await getRoles(env);
   const role = map[user.role];
-  const perms = rolePermissions(role);
-  return perms.includes('*') || perms.includes(perm);
+  const perms = rolePermissions(role).map(normPerm);
+  if (perms.includes('*')) return true;
+  const want = normPerm(perm);
+  if (perms.includes(want)) return true;
+  if (SITE_PERMS.includes(want) && perms.includes('site:write')) return true;
+  return false;
+}
+
+// 图片地址白名单：只放行站内 /img/{安全文件名} 与 http(s) 绝对地址。
+// 前端订单明细、后台缩略图都直接把它塞进 <img src>，宽度限制之外的任意串（含 "><script>）一律剥离。
+function safeImageUrl(u) {
+  const s = String(u === undefined || u === null ? '' : u).trim();
+  if (!s || s.length > 300) return '';
+  if (/[\u0000-\u001f\u007f"'<>\\]/.test(s)) return '';
+  if (/^\/img\/[A-Za-z0-9._-]+$/.test(s) && !s.includes('..')) return s;
+  if (/^https?:\/\/[^\s]+$/i.test(s)) return s;
+  return '';
+}
+
+// 对外订单投影：成本价（base_price）与内部字段仅后台可见，公开接口一律剔除。
+function publicOrder(order) {
+  const o = order || {};
+  const items = Array.isArray(o.items) ? o.items : [];
+  return {
+    id: String(o.id || ''),
+    status: String(o.status || ''),
+    customer_name: String(o.customer_name || ''),
+    customer_phone: String(o.customer_phone || ''),
+    remark: String(o.remark || ''),
+    tracking_no: String(o.tracking_no || ''),
+    status_note: String(o.status_note || ''),
+    created_at: o.created_at || '',
+    updated_at: o.updated_at || '',
+    total_qty: o.total_qty || 0,
+    total_amount: o.total_amount || 0,
+    items: items.map((it) => ({
+      id: String(it.id || ''),
+      name: String(it.name || ''),
+      spec: String(it.spec || ''),
+      price: String(it.price || ''),
+      moq: String(it.moq || ''),
+      qty: it.qty || 1,
+      image: safeImageUrl(it.image),
+    })),
+  };
 }
 
 async function readJson(request) {
@@ -390,7 +449,7 @@ function normalizeCategory(raw, brand) {
 function sanitizeProduct(raw) {
   const p = {};
   for (const f of PRODUCT_FIELDS) p[f] = String(raw[f] ?? '').trim();
-  p.image = (raw.image || '').trim();
+  p.image = safeImageUrl(String(raw.image || '').trim());
   p.status = raw.status === '下架' ? '下架' : '上架';
   p.category = normalizeCategory(p.category, p.brand);
   return p;
@@ -471,8 +530,8 @@ function sanitizeOrder(raw) {
         spec: String(it.spec || '').slice(0, 60),
         price: String(it.price || '').slice(0, 40),
         moq: String(it.moq || '').slice(0, 40),
-        qty: Math.max(1, parseInt(it.qty, 10) || 1),
-        image: String(it.image || '').slice(0, 300),
+        qty: Math.min(Math.max(1, parseInt(it.qty, 10) || 1), 99999),
+        image: safeImageUrl(String(it.image || '').slice(0, 300)),
       }))
     : [];
   return { customer_name: name, customer_phone: phone, remark, items };
@@ -737,7 +796,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/admin/users' && method === 'GET') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!await can(env, user, 'users:manage')) return forbidden();
+    if (!await can(env, user, 'users')) return forbidden();
     const list = await Promise.all((await getUsers(env)).map((u) => publicUserWithPerms(env, u)));
     return jsonNoCache(list);
   }
@@ -745,7 +804,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/admin/users' && method === 'POST') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!await can(env, user, 'users:manage')) return forbidden();
+    if (!await can(env, user, 'users')) return forbidden();
     const body = await readJson(request);
     const username = String(body?.username || '').trim();
     const password = String(body?.password || '');
@@ -782,7 +841,7 @@ async function handleApi(request, env, url) {
   if (um) {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!await can(env, user, 'users:manage')) return forbidden();
+    if (!await can(env, user, 'users')) return forbidden();
     const users = await getUsers(env);
     const idx = users.findIndex((u) => u.id === um[1]);
     if (idx === -1) return notFound();
@@ -838,7 +897,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/admin/roles') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!await can(env, user, 'roles:manage')) return forbidden();
+    if (!await can(env, user, 'roles')) return forbidden();
     const map = await getRoles(env);
     const users = await getUsers(env);
     if (method === 'GET') {
@@ -867,7 +926,7 @@ async function handleApi(request, env, url) {
   if (rm) {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!await can(env, user, 'roles:manage')) return forbidden();
+    if (!await can(env, user, 'roles')) return forbidden();
     const map = await getRoles(env);
     const key = rm[1];
     const role = map[key];
@@ -920,7 +979,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/admin/categories') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!await can(env, user, 'categories:write')) return forbidden();
+    if (!await can(env, user, 'categories')) return forbidden();
     const configured = await getConfigCategories(env);
     if (method === 'GET') {
       const merged = buildCategories(onShelf, configured);
@@ -1013,7 +1072,7 @@ async function handleApi(request, env, url) {
     if (method === 'PUT') {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
-      if (!await can(env, user, 'site:write')) return forbidden();
+      if (!await can(env, user, 'hero')) return forbidden();
       const raw = await readJson(request);
       if (!raw) return json({ error: 'bad_request' }, 400);
       const hero = await saveHero(env, raw);
@@ -1028,7 +1087,7 @@ async function handleApi(request, env, url) {
     if (method === 'PUT') {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
-      if (!await can(env, user, 'site:write')) return forbidden();
+      if (!await can(env, user, 'price')) return forbidden();
       const raw = await readJson(request);
       if (!raw) return json({ error: 'bad_request' }, 400);
       const price = await savePrice(env, raw);
@@ -1043,7 +1102,7 @@ async function handleApi(request, env, url) {
     if (method === 'PUT') {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
-      if (!await can(env, user, 'site:write')) return forbidden();
+      if (!await can(env, user, 'qr')) return forbidden();
       const raw = await readJson(request);
       if (!raw) return json({ error: 'bad_request' }, 400);
       const qr = await saveQr(env, raw);
@@ -1058,7 +1117,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/products/batch' && (method === 'PATCH' || method === 'PUT')) {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!await can(env, user, 'products:write')) return forbidden();
+    if (!await can(env, user, 'products')) return forbidden();
     const raw = await readJson(request);
     if (!raw || !Array.isArray(raw.ids) || raw.ids.length === 0 || !raw.patch || typeof raw.patch !== 'object') {
       return json({ error: 'bad_request', message: 'ids 数组与 patch 对象必填' }, 400);
@@ -1104,7 +1163,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/admin/products/rebuild-index' && method === 'POST') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!await can(env, user, 'products:write')) return forbidden();
+    if (!await can(env, user, 'products')) return forbidden();
     const list = await rebuildProductsIndex(env);
     return json({ ok: true, total: list.length });
   }
@@ -1115,7 +1174,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/admin/products/import' && method === 'POST') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!await can(env, user, 'products:write')) return forbidden();
+    if (!await can(env, user, 'products')) return forbidden();
     const raw = await readJson(request);
     if (!raw || !Array.isArray(raw.products)) {
       return json({ error: 'bad_request', message: 'products 数组必填' }, 400);
@@ -1205,13 +1264,16 @@ async function handleApi(request, env, url) {
         const basePrice = String(p.wholesale_price || '');
         return {
           id: it.id,
-          name: it.name || p.name || '',
-          spec: it.spec || p.spec || '',
+          // 名称/规格/起订量一律取商品库快照：这几个字段会在前台与后台订单页渲染，
+          // 匿名请求体可控会让攻击者伪造商品名/规格去误导其他客户与运营
+          name: p.name || '',
+          spec: p.spec || '',
           price: basePrice ? applyMarginStr(basePrice, priceCfg) : (it.price || ''),
           base_price: basePrice,
-          moq: it.moq || p.moq || '',
+          moq: p.moq || '',
           qty: it.qty,
-          image: it.image || p.image || '',
+          // 图片只认商品库并过白名单：匿名下单请求体里的 image 属于外部输入，直接渲染会成存储型 XSS
+          image: safeImageUrl(p.image),
         };
       });
     }
@@ -1223,7 +1285,8 @@ async function handleApi(request, env, url) {
     order.updated_at = order.created_at;
     await saveOrder(env, order);
     await upsertCustomer(env, order);
-    return json({ ok: true, order }, 201);
+    // 响应走公开投影：下单接口匿名可写，绝不能把 base_price（成本价）回吐给调用方
+    return json({ ok: true, order: publicOrder(withOrderTotals(order)) }, 201);
   }
 
   /* ---- 查单（公开，POST 避免边缘缓存）---- */
@@ -1235,7 +1298,8 @@ async function handleApi(request, env, url) {
     const mine = all.filter((o) => o.customer_phone === phone);
     const orderId = String(body?.order_id || '').trim();
     const list = orderId ? mine.filter((o) => o.id === orderId) : mine;
-    return json({ ok: true, orders: list.slice(0, 50), total: list.length });
+    // 查单仅凭手机号即可调用，返回体必须是公开投影，否则任何人可批量拖走成本价
+    return json({ ok: true, orders: list.slice(0, 50).map(publicOrder), total: list.length });
   }
 
   /* ---- 品牌档案（公开）---- */
@@ -1376,7 +1440,7 @@ async function handleApi(request, env, url) {
     if (method === 'PUT' || method === 'DELETE') {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
-      if (!await can(env, user, 'products:write')) return forbidden();
+      if (!await can(env, user, 'products')) return forbidden();
       // 写前从单条重建索引，保证不是拿请求开头的陈旧快照去覆盖
       const latest = await rebuildProductsIndex(env);
       const idx = latest.findIndex((x) => x.id === m[1]);
@@ -1438,7 +1502,7 @@ async function handleApi(request, env, url) {
     if (method === 'POST') {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
-      if (!await can(env, user, 'products:write')) return forbidden();
+      if (!await can(env, user, 'products')) return forbidden();
       const raw = await readJson(request);
       if (!raw || !String(raw.name || '').trim()) {
         return json({ error: 'bad_request', message: '品名必填' }, 400);
@@ -1463,7 +1527,7 @@ async function handleApi(request, env, url) {
     if (method !== 'POST') return notFound();
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (!await can(env, user, 'upload')) return forbidden();
+    if (!await can(env, user, 'products')) return forbidden();
     const body = await readJson(request);
     if (!body || !body.filename || !body.base64) {
       return json({ error: 'bad_request', message: 'filename 与 base64 必填' }, 400);
