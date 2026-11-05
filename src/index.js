@@ -520,6 +520,8 @@ async function aggregateCustomer(env, phone, keys) {
     if (!agg) {
       agg = { phone, name: o.customer_name || '', order_count: 0, total_items: 0, total_qty: 0, total_amount: 0, last_order_at: '', last_order_id: '' };
     }
+    // 已取消订单不计入消费统计，但保留客户档案（列表可见、金额显示占位）
+    if (String(o.status || '') === 'cancelled') continue;
     agg.order_count += 1;
     agg.total_items += (o.items || []).length;
     agg.total_qty += t.total_qty;
@@ -564,6 +566,8 @@ async function recomputeCustomers(env) {
     const phone = String(o.customer_phone || '').trim();
     if (!phone) continue;
     const cur = agg.get(phone) || { phone, name: '', order_count: 0, total_items: 0, total_qty: 0, total_amount: 0, last_order_at: '', last_order_id: '' };
+    if (!cur.name) cur.name = o.customer_name || '';
+    if (String(o.status || '') === 'cancelled') { agg.set(phone, cur); continue; }
     cur.order_count += 1;
     cur.total_items += (o.items || []).length;
     cur.total_qty += o.total_qty || 0;
@@ -1290,6 +1294,8 @@ async function handleApi(request, env, url) {
       if (body?.status_note !== undefined) order.status_note = String(body.status_note).trim().slice(0, 200);
       order.updated_at = new Date().toISOString();
       await saveOrder(env, order);
+      // 状态流转会改变订单是否计入客户消费（尤其取消），必须同步重算客户聚合
+      await upsertCustomer(env, order);
       return json({ ok: true, order: withOrderTotals(order) });
     }
   }
