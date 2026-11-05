@@ -2001,9 +2001,14 @@ export default {
         resp.status < 400 &&
         !CACHE_BUMP_SKIP_PREFIXES.some((p) => url.pathname.startsWith(p))
       ) {
-        // 下架/删除必须即时生效：单商品写与 DELETE 不参与节流；批量导入等走节流
+        // 安全敏感写必须即时生效：单商品改价/下架与 DELETE 不参与节流。
+        // 新增与批量导入同样是「一次请求只 bump 一次」，若不 force 会被上一条写操作的节流窗口吞掉，
+        // 导致新商品最长 TTL 内外网不可见（实测约 30s）；逐个 PUT 的高频场景仍走节流限制 KV 写频。
+        const isCreate =
+          request.method === 'POST' &&
+          (url.pathname === '/api/products' || url.pathname === '/api/admin/products/import');
         const force =
-          request.method === 'DELETE' || /^\/api\/products\/(?!batch$)[^/]+$/.test(url.pathname);
+          request.method === 'DELETE' || isCreate || /^\/api\/products\/(?!batch$)[^/]+$/.test(url.pathname);
         await bumpCacheEpoch(env, force);
       }
       return resp;
