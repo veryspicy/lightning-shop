@@ -281,6 +281,17 @@ function esc(s) {
   }[c]));
 }
 
+/* 图片地址白名单：站内 /img/{安全文件名} 或 http(s) 绝对地址。
+   商品图/订单图来源于供应商与匿名下单，直接拼进 src 会让后台成为提权跳板。 */
+function imgUrl(u) {
+  const s = String(u ?? '').trim();
+  if (!s || s.length > 300) return '';
+  if (/[\u0000-\u001f"'<>\\]/.test(s)) return '';
+  if (/^\/img\/[A-Za-z0-9._-]+$/.test(s) && !s.includes('..')) return s;
+  if (/^https?:\/\/[^\s]+$/i.test(s)) return s;
+  return '';
+}
+
 /* 多标签渲染：badge 字符串按逗号/顿号/竖线拆分，逐个输出小标签 */
 function badgeChips(raw) {
   const list = String(raw || '').split(/[,，|]/).map((s) => s.trim()).filter(Boolean);
@@ -343,7 +354,7 @@ function renderList() {
     .map(
       (p) => `<tr>
         <td><input type="checkbox" class="row-check" data-id="${esc(p.id)}" ${selected.has(p.id) ? 'checked' : ''} /></td>
-        <td>${p.image ? `<span class="thumb-wrap"><img src="${p.image}" alt="" data-lightbox="${esc(p.id)}" /><i class="thumb-zoom" title="点击查看大图"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="10" height="10"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></i></span>` : '<div class="ph">无图</div>'}</td>
+        <td>${p.image ? `<span class="thumb-wrap"><img src="${esc(imgUrl(p.image))}" alt="" data-lightbox="${esc(p.id)}" /><i class="thumb-zoom" title="点击查看大图"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="10" height="10"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></i></span>` : '<div class="ph">无图</div>'}</td>
         <td>${esc(p.id)}</td>
         <td>${esc(p.name)}</td>
         <td>${esc(p.brand || '—')}</td>
@@ -1555,7 +1566,7 @@ async function openOrderModal(id) {
 }
 function renderOrderModal(o) {
   const rows = (o.items || []).map((it) => `<tr>
-    <td>${it.image ? `<img src="${escapeHtml(it.image)}" style="width:36px;height:36px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:8px" onerror="this.style.display='none'" />` : ''}${escapeHtml(it.name)}</td>
+    <td>${it.image ? `<img src="${escapeHtml(imgUrl(it.image))}" style="width:36px;height:36px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:8px" onerror="this.style.display='none'" />` : ''}${escapeHtml(it.name)}</td>
     <td>${escapeHtml(it.spec || '-')}</td>
     <td>${it.qty}</td>
     <td class="num">¥${money(it.price)}${it.base_price ? `<div class="muted" style="font-size:.72rem">出厂 ¥${money(it.base_price)}</div>` : ''}</td>
@@ -1722,7 +1733,7 @@ function openBrandModal(b) {
   $('brand-modal-title').textContent = b ? `编辑品牌档案：${b.name || b.key}` : '新增品牌档案';
   const certs = (BRAND_EDITING.certs || []).map((c) => `
     <div class="cert-list-item">
-      <img class="cert-thumb" src="${escapeHtml(c)}" onerror="this.style.display='none'" />
+      <img class="cert-thumb" src="${escapeHtml(imgUrl(c))}" onerror="this.style.display='none'" />
       <span style="flex:1;font-size:.78rem;word-break:break-all">${escapeHtml(c)}</span>
       <button type="button" class="btn btn-outline btn-sm" data-cert-del="${escapeHtml(c)}">移除</button>
     </div>`).join('') || '<div class="muted" style="font-size:.78rem">暂无资质证书图</div>';

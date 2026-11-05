@@ -11,7 +11,6 @@ let products = [];
 let total = 0;
 let activeCategory = '';
 let activeBrand = '';
-let priceConfig = null;
 let loading = false;
 const PAGE_SIZE = 24;
 let currentPage = 0; // 当前页码（0-based），PC 分页器使用
@@ -37,30 +36,21 @@ function escapeHtml(s) {
   }[c]));
 }
 
-/* 价格策略：前台展示价 = 出厂价 × (1 + 利润率%)，后台数据不变 */
-function formatNum(n) {
-  return String(parseFloat(n.toFixed(2)));
+/* 图片地址白名单：站内 /img/{安全文件名} 或 http(s) 绝对地址，其余一律丢弃。
+   订单明细/商品图来自外部输入（匿名下单、供应商上传），直接拼进 src 会形成存储型 XSS。 */
+function safeImgUrl(u) {
+  const s = String(u ?? '').trim();
+  if (!s || s.length > 300) return '';
+  if (/[\u0000-\u001f"'<>\\]/.test(s)) return '';
+  if (/^\/img\/[A-Za-z0-9._-]+$/.test(s) && !s.includes('..')) return s;
+  if (/^https?:\/\/[^\s]+$/i.test(s)) return s;
+  return '';
 }
 
-function applyMargin(priceStr, cfg) {
-  if (!cfg || !cfg.enabled || !cfg.margin || !priceStr) return priceStr;
-  const rate = 1 + cfg.margin / 100;
-  // 无「元」的纯价格串（"990"）同样属于价格，需与后端结算口径一致；纯文案（"面议"）原样
-  if (!/元/.test(priceStr)) {
-    return /^\s*\d+(?:\.\d+)?(\s*[\/\-]\s*\d+(?:\.\d+)?)*\s*$/.test(priceStr)
-      ? priceStr.replace(/\d+(?:\.\d+)?/g, (m) => formatNum(parseFloat(m) * rate))
-      : priceStr;
-  }
-  // 只加成"元"前的价格数字（含区间 9.9-13.9、多档 12/11.5/11、阶梯 100斤起12元），数量单位数字不动
-  const tokenRe = /(\d+(?:\.\d+)?(?:\s*[\/\-]\s*\d+(?:\.\d+)?)*)\s*元/g;
-  return priceStr.replace(tokenRe, (whole, nums) => {
-    const scaled = nums.replace(/\d+(?:\.\d+)?/g, (m) => formatNum(parseFloat(m) * rate));
-    return whole.replace(nums, scaled);
-  });
-}
-
+/* 价格：展示价一律由服务端投影下发（已按后台策略加价），前端不再二次加价，
+ * 也不再拉取 /api/site/price（利润率属于内部经营参数，不对匿名下发） */
 function displayPrice(str) {
-  return applyMargin(str, priceConfig);
+  return String(str === undefined || str === null ? '' : str);
 }
 
 function cardHtml(p) {
@@ -71,7 +61,7 @@ function cardHtml(p) {
     : '';
 
   const media = p.image
-    ? `<img src="${p.image}" alt="${escapeHtml(p.name)}" loading="lazy" decoding="async" />`
+    ? `<img src="${escapeHtml(safeImgUrl(p.image))}" alt="${escapeHtml(p.name)}" loading="lazy" decoding="async" />`
     : `<div class="card-placeholder" aria-hidden="true">🍱</div>`;
 
   const retailText = p.retail_price && !p.retail_price.includes('报价') ? p.retail_price : '议价';
@@ -98,7 +88,7 @@ function cardHtml(p) {
         <div class="card-price">
           <div class="price-wholesale">
             <span>批发价</span>
-            <b>${escapeHtml(displayPrice(p.wholesale_price))}</b>
+            <b>${escapeHtml(displayPrice(p.price))}</b>
           </div>
           <div class="price-retail">
             <span>零售</span>
@@ -441,12 +431,11 @@ async function goToPage(page) {
 
 async function load() {
   try {
-    const [data, cRes, bRes, heroRes, priceRes, qrRes] = await Promise.all([
+    const [data, cRes, bRes, heroRes, qrRes] = await Promise.all([
       fetchPage(0),
       fetch('/api/categories'),
       fetch('/api/brands'),
       fetch('/api/site/hero'),
-      fetch('/api/site/price'),
       fetch('/api/site/qr'),
     ]);
     products = data.items || [];
@@ -454,7 +443,6 @@ async function load() {
     const categories = await cRes.json();
     const brands = await bRes.json();
     const hero = await heroRes.json().catch(() => null);
-    priceConfig = await priceRes.json().catch(() => null);
     const qrConfig = await qrRes.json().catch(() => null);
     renderTabs(categories);
     renderBrandTabs(brands);
@@ -782,7 +770,7 @@ async function buildSharePoster(p) {
   ctx.font = `13px ${FONT_BODY}`;
   ctx.fillText(wLabel, padX + 18, y + 24);
   ctx.font = `700 30px ${FONT_BODY}`;
-  ctx.fillText(displayPrice(p.wholesale_price) || '—', padX + 18, y + 58);
+  ctx.fillText(displayPrice(p.price) || '—', padX + 18, y + 58);
   const retail = p.retail_price && !p.retail_price.includes('报价') ? p.retail_price : '议价';
   ctx.textAlign = 'right';
   ctx.fillStyle = '#d97706';
@@ -992,7 +980,7 @@ function addToCart(p, qty) {
   const n = Math.max(1, parseInt(qty, 10) || 1);
   const idx = cart.findIndex((it) => it.id === p.id);
   if (idx >= 0) cart[idx].qty = (parseInt(cart[idx].qty, 10) || 0) + n;
-  else cart.push({ id: p.id, name: p.name, spec: p.spec, price: p.wholesale_price, base_price: p.wholesale_price, retail: p.retail_price, moq: p.moq, brand: p.brand, image: p.image, qty: n });
+  else cart.push({ id: p.id, name: p.name, spec: p.spec, price: p.price, base_price: p.price, retail: p.retail_price, moq: p.moq, brand: p.brand, image: p.image, qty: n });
   setCart(cart);
   toastTip('已加入购物车');
 }
@@ -1080,14 +1068,14 @@ function detailHtml(p) {
     </div>
     <div class="detail-wrap">
       <div class="detail-media">
-        ${p.image ? `<img src="${p.image}" alt="${escapeHtml(p.name)}" onclick="openLightbox('${p.image.replace(/'/g, "\\'")}', '${escapeHtml(p.name).replace(/'/g, "\\'")}')" />` : '<div class="card-placeholder">🍱</div>'}
+        ${p.image ? `<img src="${escapeHtml(safeImgUrl(p.image))}" alt="${escapeHtml(p.name)}" onclick="openLightbox('${safeImgUrl(p.image)}', '${escapeHtml(p.name).replace(/'/g, "\\'")}')" />` : '<div class="card-placeholder">🍱</div>'}
         ${badge}
       </div>
       <div class="detail-info">
         <h1 class="detail-name">${escapeHtml(p.name)}</h1>
         <p class="detail-spec">${escapeHtml(p.spec || '')}${p.brand ? ' · ' + escapeHtml(p.brand) : ''}</p>
         <div class="detail-price">
-          <div class="price-wholesale"><span>批发价</span><b>${escapeHtml(displayPrice(p.wholesale_price))}</b></div>
+          <div class="price-wholesale"><span>批发价</span><b>${escapeHtml(displayPrice(p.price))}</b></div>
           <div class="price-retail"><span>零售</span><b>${escapeHtml(displayPrice(retailText))}</b></div>
         </div>
         ${p.highlights ? `<p class="detail-highlight">${escapeHtml(p.highlights)}</p>` : ''}
@@ -1112,7 +1100,7 @@ function detailHtml(p) {
       ${detailRow('品牌', p.brand)}
       ${detailRow('分类', p.category)}
       ${detailRow('规格', p.spec)}
-      ${detailRow('批发价', displayPrice(p.wholesale_price))}
+      ${detailRow('批发价', displayPrice(p.price))}
       ${detailRow('零售价', displayPrice(retailText))}
       ${detailRow('起订量', p.moq)}
       ${detailRow('储存方式', p.storage)}
@@ -1158,7 +1146,7 @@ function renderCart() {
     <div class="cart-list">
       ${cart.map((it) => `
         <div class="cart-item" data-id="${escapeHtml(it.id)}">
-          ${it.image ? `<img class="cart-item-img" src="${it.image}" alt="" loading="lazy" />` : '<div class="cart-item-img placeholder">🍱</div>'}
+          ${it.image ? `<img class="cart-item-img" src="${escapeHtml(safeImgUrl(it.image))}" alt="" loading="lazy" />` : '<div class="cart-item-img placeholder">🍱</div>'}
           <div class="cart-item-info">
             <b class="cart-item-name">${escapeHtml(it.name)}</b>
             <span class="cart-item-spec">${escapeHtml(it.spec || '')}${it.brand ? ' · ' + escapeHtml(it.brand) : ''}</span>
@@ -1239,7 +1227,7 @@ function fmtTime(iso) {
 }
 function orderItemHtml(it) {
   return `<div class="order-line">
-    ${it.image ? `<img src="${it.image}" alt="" loading="lazy" />` : '<span class="order-line-ph">🍱</span>'}
+    ${it.image ? `<img src="${escapeHtml(safeImgUrl(it.image))}" alt="" loading="lazy" />` : '<span class="order-line-ph">🍱</span>'}
     <div class="order-line-info"><b>${escapeHtml(it.name)}</b><span>${escapeHtml(it.spec || '')} × ${it.qty}</span></div>
     <span class="order-line-price">${escapeHtml(it.price || '议价')}</span>
   </div>`;
@@ -1336,7 +1324,7 @@ async function loadBrand(key) {
     </div>
     ${(!brand || !brand.intro) ? '<div class="brand-intro"><h2>品牌介绍</h2><p class="brand-empty">该品牌暂未维护公司介绍与资质档案，可联系客服获取详情</p></div>' : ''}
     ${brand && brand.intro ? `<div class="brand-intro"><h2>品牌介绍</h2><p>${escapeHtml(brand.intro).replace(/\n/g, '<br />')}</p></div>` : ''}
-    ${certs.length ? `<div class="brand-certs"><h2>资质证书</h2><div class="cert-grid">${certs.map((c) => `<img src="${c}" alt="资质证书" loading="lazy" onclick="openLightbox('${c.replace(/'/g, "\\'")}', '资质证书')" />`).join('')}</div></div>` : ''}
+    ${certs.length ? `<div class="brand-certs"><h2>资质证书</h2><div class="cert-grid">${certs.map((c) => `<img src="${escapeHtml(safeImgUrl(c))}" alt="资质证书" loading="lazy" onclick="openLightbox('${safeImgUrl(c)}', '资质证书')" />`).join('')}</div></div>` : ''}
     ${brand && brand.services ? `<div class="brand-services"><h2>合作方式</h2><p>${escapeHtml(brand.services).replace(/\n/g, '<br />')}</p></div>` : ''}
     ${brand && brand.contact ? `<div class="brand-contact"><h2>联系方式</h2><p>${escapeHtml(brand.contact).replace(/\n/g, '<br />')}</p></div>` : ''}
     <h2 class="brand-products-title">该品牌在售产品</h2>
