@@ -41,15 +41,19 @@ jobs:
 
       - name: Seed KV data (only if empty)
         run: |
-          npx wrangler kv key list --binding=KV --preview false > /tmp/kvkeys.json \
+          # wrangler 4 对 KV 默认操作本地副本，必须显式 --remote 才是生产；--preview 已废弃
+          npx wrangler kv key list --binding=KV --remote > /tmp/kvkeys.json \
             || { echo "::error::kv key list 查询失败，中止部署避免误覆盖生产 KV"; exit 1; }
-          KEY_COUNT=$(grep -c '"name"' /tmp/kvkeys.json || true)
+          # 输出必须是 JSON 数组，否则视为查询失败（防止把查询错误误判成"生产为空"而 seed 覆盖生产）
+          node -e 'const fs=require("fs");const s=fs.readFileSync("/tmp/kvkeys.json","utf8").trim();if(!s.startsWith("[")){console.error("kv key list 输出不是 JSON 数组");process.exit(1)}fs.writeFileSync("/tmp/kvcount",String(JSON.parse(s).length))' \
+            || { echo "::error::无法解析 kv key list 结果，中止部署避免误覆盖生产 KV"; exit 1; }
+          KEY_COUNT=$(cat /tmp/kvcount)
           if [ "$KEY_COUNT" -gt 0 ]; then
             echo "::notice::生产 KV 已有数据（$KEY_COUNT 键），跳过 seed 覆盖（seed 仅用于首次部署初始化）"
           else
             echo "::notice::生产 KV 为空，执行 seed 初始化"
             npm run seed
-            npx wrangler kv:bulk put --binding=KV --preview false data/kv-bulk.json
+            npx wrangler kv bulk put data/kv-bulk.json --binding=KV --remote
           fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
