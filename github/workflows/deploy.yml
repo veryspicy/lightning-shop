@@ -1,0 +1,68 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Sync prod data to seed (pre-deploy)
+        run: |
+          SYNC_OUT="$(node scripts/sync-prod-to-seed.mjs --base-url https://lightning-shop.gora.dpdns.org)"
+          echo "$SYNC_OUT"
+          if echo "$SYNC_OUT" | grep -q '^CHANGED=1' ; then
+            echo "::notice::生产存在增量数据，已同步进 seed，后续部署将基于最新数据"
+          else
+            echo "::notice::生产与仓库 seed 无差异，按原流程继续部署"
+          fi
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_PASSWORD }}
+
+      - name: Sync ADMIN_PASSWORD secret
+        run: echo "${{ secrets.ADMIN_PASSWORD }}" | npx wrangler secret put ADMIN_PASSWORD
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Seed KV data (only if empty)
+        run: |
+          npx wrangler kv key list --binding=KV --preview false > /tmp/kvkeys.json \
+            || { echo "::error::kv key list 查询失败，中止部署避免误覆盖生产 KV"; exit 1; }
+          KEY_COUNT=$(grep -c '"name"' /tmp/kvkeys.json || true)
+          if [ "$KEY_COUNT" -gt 0 ]; then
+            echo "::notice::生产 KV 已有数据（$KEY_COUNT 键），跳过 seed 覆盖（seed 仅用于首次部署初始化）"
+          else
+            echo "::notice::生产 KV 为空，执行 seed 初始化"
+            npm run seed
+            npx wrangler kv:bulk put --binding=KV --preview false data/kv-bulk.json
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Upload images to R2
+        run: npm run upload:images
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Deploy Worker
+        run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
