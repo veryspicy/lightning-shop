@@ -53,8 +53,10 @@ import {
 
 const CATEGORY_ORDER = ['低GI杂粮', '营养粮油', '黄柿子火锅底料', '野生苦菜', '坚果玉米', '羊杂碎'];
 
-// 阶段 1：商品读路径以 D1 为准。D1 不可用（未绑定/查询异常）时回退 KV，
-// 前台绝不能因为库抖动变成空页——读切的前提是可降级。
+// 阶段 3：商品读路径以 D1 为唯一真源。
+// KV 分支只在两种情况下生效：D1 未绑定（本地/未迁移环境）或 d1ProductList 返回空/异常。
+// 注意判空用的是「返回空数组」而非「抛异常」——D1 里商品被全部下架软删时也必须回退 KV，
+// 否则一次误清空会让前台变成空页且无法自查。
 async function getProducts(env) {
   const rows = await d1ProductList(env);
   if (Array.isArray(rows) && rows.length) return rows;
@@ -69,6 +71,8 @@ async function getProducts(env) {
 // - D1 写失败即整个写操作失败（抛错由调用方转 500），禁止只落 KV 造成单边；
 // - KV 副本回写为 best-effort，失败不影响结果（读已走 D1，副本只服务于降级）；
 // - 无 D1 绑定时（本地/未迁移环境）退回 KV 单写，行为与阶段 1 一致。
+// KV 兜底读只在 D1 无该键（含尚未 migrate 的键）或 D1 查询异常返回 null 时触发；
+// 空串/空对象等「D1 里真实存过的空值」视为命中，不再回落 KV，避免被陈旧副本覆盖。
 async function getDoc(env, key) {
   const hit = await d1GetDoc(env, key);
   if (hit !== null && hit !== undefined) return hit;
