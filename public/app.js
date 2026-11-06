@@ -1244,7 +1244,11 @@ async function submitOrder() {
     localStorage.setItem('ls_query_phone', phone);
     rememberMyOrder(data.order, phone);
     pendingOrderSuccess = data.order;
+    /* 下单即落一份收据快照并立刻弹出，替代「只记订单号」的留存方式 */
+    const receipt = buildReceipt(data.order, phone);
+    saveReceiptSnapshot(receipt);
     toastTip(`下单成功：${data.order.id}`);
+    openReceipt(receipt);
     setTimeout(() => { location.hash = '#/orders'; }, 600);
   } catch (err) {
     toastTip('网络异常，请重试', true);
@@ -1297,6 +1301,7 @@ function orderCardHtml(o) {
     </div>
     <div class="order-card-foot">
       <button type="button" class="btn btn-outline btn-sm" data-action="order-toggle">查看明细</button>
+      <button type="button" class="btn btn-outline btn-sm" data-action="open-receipt" data-order-id="${escapeHtml(o.id)}">收据</button>
     </div>
   </div>`;
 }
@@ -1437,10 +1442,13 @@ async function renderOrders() {
   el.innerHTML = `
     <div class="view-head"><h1>查单</h1></div>
     ${justOrder ? `<div class="order-success">
-      <h2>下单成功，订单号已保存在本机</h2>
+      <h2>下单成功，收据已生成</h2>
       <p>订单号：<span class="order-success-no">${escapeHtml(justOrder.id)}</span></p>
-      <button type="button" class="btn btn-outline btn-sm" data-action="copy-order" data-order-id="${escapeHtml(justOrder.id)}">复制订单号</button>
-      <p class="checkout-tip">凭手机号 + 订单号可随时查单；建议顺手截图，清缓存或换设备后本机记录会丢失。</p>
+      <div class="order-success-actions">
+        <button type="button" class="btn btn-primary btn-sm" data-action="open-receipt" data-order-id="${escapeHtml(justOrder.id)}">保存收据</button>
+        <button type="button" class="btn btn-outline btn-sm" data-action="copy-order" data-order-id="${escapeHtml(justOrder.id)}">复制订单号</button>
+      </div>
+      <p class="checkout-tip">收据含订单号与明细，建议立即「保存图片」；清缓存或换设备后本机收据会丢失，凭收据可随时对账与查单。</p>
     </div>` : ''}
     <div class="order-query panel-params">
       <p class="query-notice">${mode.sms
@@ -1507,10 +1515,314 @@ async function queryOrdersNow() {
       return;
     }
     box.innerHTML = `<div class="order-list">${data.orders.map(orderCardHtml).join('')}</div>`;
+    /* 缓存实时订单，供「收据」按钮在本机无快照时现场生成 */
+    data.orders.forEach((o) => { if (o && o.id) orderCache.set(o.id, o); });
   } catch (err) {
     box.innerHTML = '<div class="view-empty">网络异常，请重试</div>';
   }
 }
+
+/* ================================================================
+ * 下单收据（电子小票）
+ * 下单成功即生成快照凭证：用户不必依赖记忆订单号，凭收据即可对账与查单。
+ * 数据取自下单响应或查单结果（服务端投影价），前端只排版、不加工金额。
+ * ================================================================ */
+const RECEIPTS_KEY = 'ls_order_receipts';
+const RECEIPTS_MAX = 20;
+const RECEIPT_SHOP = { name: 'Lightning Shop', sub: '农牧特产批发 · 源头厂家直供', site: 'lightning-shop.gora.dpdns.org' };
+const RECEIPT_W = 720;
+const RECEIPT_PAD = 30;
+const FONT_SANS = '"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif';
+const FONT_MONO = 'ui-monospace,Consolas,"Courier New",monospace';
+const orderCache = new Map();
+let currentReceipt = null;
+function loadReceipts() {
+  try {
+    const obj = JSON.parse(localStorage.getItem(RECEIPTS_KEY) || '{}');
+    return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {};
+  } catch (e) {
+    return {};
+  }
+}
+/* 只保留最近 RECEIPTS_MAX 张快照；隐私模式/配额满写失败也不影响下单主流程 */
+function saveReceiptSnapshot(r) {
+  if (!r || !r.id) return;
+  const all = loadReceipts();
+  all[r.id] = r;
+  const ids = Object.keys(all).sort((a, b) => String((all[b] && all[b].snapshot_at) || '').localeCompare(String((all[a] && all[a].snapshot_at) || '')));
+  const kept = {};
+  ids.slice(0, RECEIPTS_MAX).forEach((id) => { kept[id] = all[id]; });
+  try {
+    localStorage.setItem(RECEIPTS_KEY, JSON.stringify(kept));
+  } catch (e) { /* 忽略：弹层里仍可当场保存图片 */ }
+}
+function findReceipt(id) {
+  if (!id) return null;
+  return loadReceipts()[id] || null;
+}
+/* 已脱敏串含 * 时原样返回，避免二次脱敏 */
+function maskPhoneText(p) {
+  const s = String(p || '');
+  return /^1\d{10}$/.test(s) ? `${s.slice(0, 3)}****${s.slice(7)}` : s;
+}
+function moneyText(v) {
+  const n = Number(v);
+  if (!n || Number.isNaN(n)) return '人工核算';
+  return `¥${(Math.round(n * 100) / 100).toFixed(2)}`;
+}
+/* 行金额：价目是字符串（可能是「¥12/袋」「议价」），能解析出数字才算小计 */
+function lineAmountText(price, qty) {
+  const m = String(price || '').match(/\d+(?:\.\d+)?/);
+  const n = Math.max(1, parseInt(qty, 10) || 1);
+  if (!m) return String(price || '议价');
+  return `¥${(Math.round(Number(m[0]) * n * 100) / 100).toFixed(2)}`;
+}
+function buildReceipt(order, phoneOverride) {
+  const o = order || {};
+  const items = Array.isArray(o.items) ? o.items : [];
+  return {
+    id: String(o.id || ''),
+    status: String(o.status || 'pending'),
+    created_at: o.created_at || new Date().toISOString(),
+    snapshot_at: new Date().toISOString(),
+    customer_name: String(o.customer_name || ''),
+    customer_phone: String(phoneOverride || o.customer_phone || ''),
+    receiver_name: String(o.receiver_name || ''),
+    receiver_phone: String(o.receiver_phone || ''),
+    province: String(o.province || ''),
+    city: String(o.city || ''),
+    district: String(o.district || ''),
+    address: String(o.address || ''),
+    postal_code: String(o.postal_code || ''),
+    remark: String(o.remark || ''),
+    tracking_no: String(o.tracking_no || ''),
+    items: items.map((it) => ({
+      name: String(it.name || ''),
+      spec: String(it.spec || ''),
+      qty: parseInt(it.qty, 10) || 1,
+      price: displayPrice(it.price),
+    })),
+    total_qty: Number(o.total_qty) || items.reduce((s, it) => s + (parseInt(it.qty, 10) || 1), 0),
+    total_amount: Number(o.total_amount) || 0,
+    shop: RECEIPT_SHOP,
+  };
+}
+function receiptAddress(r) {
+  return [r.province, r.city, r.district, r.address].filter(Boolean).join(' ');
+}
+function receiptHtml(r) {
+  const rows = r.items.map((it) => `<div class="rp-line">
+      <span class="rp-line-name">${escapeHtml(it.name)}${it.spec ? `<i>${escapeHtml(it.spec)}</i>` : ''}</span>
+      <span class="rp-line-qty">× ${it.qty}</span>
+      <span class="rp-line-amt">${escapeHtml(lineAmountText(it.price, it.qty))}</span>
+    </div>`).join('');
+  return `<div class="receipt-paper">
+    <div class="rp-head">
+      <p class="rp-shop">${escapeHtml(r.shop.name)}</p>
+      <p class="rp-sub">${escapeHtml(r.shop.sub)}</p>
+      <p class="rp-title">订单收据</p>
+    </div>
+    <div class="rp-cut"></div>
+    <div class="rp-meta">
+      <p><span>订单号</span><b class="rp-no">${escapeHtml(r.id)}</b></p>
+      <p><span>下单时间</span><b>${fmtTime(r.created_at)}</b></p>
+      <p><span>订单状态</span><b>${escapeHtml(ORDER_STATUS_LABEL[r.status] || r.status || '—')}</b></p>
+    </div>
+    <div class="rp-cut"></div>
+    <div class="rp-block">
+      <p><span>下单方</span><b>${escapeHtml(r.customer_name || '—')}</b></p>
+      <p><span>手机号</span><b>${escapeHtml(maskPhoneText(r.customer_phone) || '—')}</b></p>
+      <p><span>收货人</span><b>${escapeHtml(r.receiver_name || r.customer_name || '—')}${r.receiver_phone ? ' ' + escapeHtml(maskPhoneText(r.receiver_phone)) : ''}</b></p>
+      <p><span>收货地址</span><b>${escapeHtml(receiptAddress(r) || '—')}</b></p>
+    </div>
+    <div class="rp-cut"></div>
+    <div class="rp-items">
+      <div class="rp-line rp-line-head"><span class="rp-line-name">品名</span><span class="rp-line-qty">数量</span><span class="rp-line-amt">金额</span></div>
+      ${rows || '<div class="rp-line"><span class="rp-line-name">（无明细）</span></div>'}
+    </div>
+    <div class="rp-cut"></div>
+    <div class="rp-total">
+      <p><span>合计件数</span><b>${r.total_qty} 件</b></p>
+      <p class="rp-amount"><span>合计金额</span><b>${moneyText(r.total_amount)}</b></p>
+    </div>
+    ${r.remark ? `<p class="rp-remark">备注：${escapeHtml(r.remark)}</p>` : ''}
+    <div class="rp-cut"></div>
+    <p class="rp-foot">本收据为下单凭证，请妥善保存</p>
+    <p class="rp-foot">查单需手机号 + 订单号；客服可凭下单手机号协助找回订单号</p>
+    <p class="rp-foot rp-foot-site">${escapeHtml(r.shop.site)}</p>
+    <p class="rp-foot rp-stamp">生成时间 ${fmtTime(r.snapshot_at)}</p>
+  </div>`;
+}
+function openReceipt(r) {
+  const mask = document.getElementById('receipt-mask');
+  const body = document.getElementById('receipt-body');
+  if (!mask || !body || !r || !r.id) return;
+  currentReceipt = r;
+  body.innerHTML = receiptHtml(r);
+  mask.hidden = false;
+  document.body.style.overflow = 'hidden';
+  const scroll = body.parentElement;
+  if (scroll) scroll.scrollTop = 0;
+}
+function closeReceipt() {
+  const mask = document.getElementById('receipt-mask');
+  if (!mask || mask.hidden) return;
+  mask.hidden = true;
+  document.body.style.overflow = '';
+}
+/* 打开某订单的收据：优先本机快照（保留下单时价目），退回实时查单数据 */
+function openReceiptByOrderId(id) {
+  const snap = findReceipt(id);
+  if (snap) return openReceipt(snap);
+  const live = orderCache.get(id);
+  if (live) return openReceipt(buildReceipt(live));
+  toastTip('本机没有该订单收据，请先查询到订单后再打开', true);
+}
+/* 把收据画成 PNG：纯 canvas 绘制，不引第三方库，离线下也能存图 */
+function paintReceiptCanvas(r) {
+  const W = RECEIPT_W;
+  const PAD = RECEIPT_PAD;
+  const MW = W - PAD * 2;
+  const DPR = 2;
+  const probe = document.createElement('canvas').getContext('2d');
+  const ops = [];
+  const pxOf = (font) => Number((String(font).match(/(\d+(?:\.\d+)?)px/) || [0, 16])[1]);
+  const measure = (t, f) => { probe.font = f; return probe.measureText(t).width; };
+  const wrap = (t, f) => {
+    const out = [];
+    let cur = '';
+    String(t == null ? '' : t).split('').forEach((ch) => {
+      if (cur && measure(cur + ch, f) > MW) { out.push(cur); cur = ch; } else cur += ch;
+    });
+    out.push(cur);
+    return out;
+  };
+  const pushText = (t, font, color, opt) => {
+    const o = opt || {};
+    wrap(t, font).forEach((row, i) => {
+      ops.push({ kind: 'text', text: row, font, color, align: o.align || 'left', gap: i === 0 ? (o.gap || 0) : 0 });
+    });
+  };
+  const pushRow = (left, right, font, color, gap) => {
+    const rows = wrap(left, font);
+    rows.forEach((row, i) => {
+      ops.push({ kind: 'text', text: row, font, color, align: 'left', gap: i === 0 ? (gap || 0) : 0, right: i === rows.length - 1 ? right : '' });
+    });
+  };
+  const rule = () => ops.push({ kind: 'rule', gap: 14 });
+  pushText(r.shop.name, `700 32px ${FONT_SANS}`, '#0f172a', { align: 'center' });
+  pushText(r.shop.sub, `16px ${FONT_SANS}`, '#64748b', { align: 'center', gap: 8 });
+  pushText('订单收据', `18px ${FONT_SANS}`, '#334155', { align: 'center', gap: 12 });
+  rule();
+  pushRow('订单号', r.id, `700 22px ${FONT_MONO}`, '#0f172a', 0);
+  pushText(`下单时间：${fmtTime(r.created_at)}`, `16px ${FONT_SANS}`, '#334155', { gap: 10 });
+  pushText(`订单状态：${ORDER_STATUS_LABEL[r.status] || r.status || '—'}`, `16px ${FONT_SANS}`, '#334155', { gap: 6 });
+  rule();
+  pushText(`下单方：${r.customer_name || '—'}`, `16px ${FONT_SANS}`, '#334155', { gap: 0 });
+  pushText(`手机号：${maskPhoneText(r.customer_phone) || '—'}`, `16px ${FONT_SANS}`, '#334155', { gap: 6 });
+  pushText(`收货人：${(r.receiver_name || r.customer_name || '—')}${r.receiver_phone ? ' ' + maskPhoneText(r.receiver_phone) : ''}`, `16px ${FONT_SANS}`, '#334155', { gap: 6 });
+  pushText(`收货地址：${receiptAddress(r) || '—'}`, `16px ${FONT_SANS}`, '#334155', { gap: 6 });
+  rule();
+  pushRow('品名（规格 × 数量）', '金额', `700 15px ${FONT_SANS}`, '#0f172a', 0);
+  r.items.forEach((it) => {
+    pushRow(`${it.name}${it.spec ? '  ' + it.spec : ''} × ${it.qty}`, lineAmountText(it.price, it.qty), `16px ${FONT_SANS}`, '#334155', 10);
+  });
+  if (!r.items.length) pushText('（无明细）', `16px ${FONT_SANS}`, '#64748b', { gap: 10 });
+  rule();
+  pushText(`合计件数：${r.total_qty} 件`, `16px ${FONT_SANS}`, '#334155', { gap: 0 });
+  pushRow('合计金额', moneyText(r.total_amount), `700 26px ${FONT_SANS}`, '#0f172a', 12);
+  if (r.remark) pushText(`备注：${r.remark}`, `16px ${FONT_SANS}`, '#475569', { gap: 12 });
+  rule();
+  pushText('本收据为下单凭证，请妥善保存', `15px ${FONT_SANS}`, '#334155', { align: 'center', gap: 0 });
+  pushText('查单需手机号 + 订单号；客服可凭下单手机号协助找回', `14px ${FONT_SANS}`, '#64748b', { align: 'center', gap: 6 });
+  pushText(r.shop.site, `14px ${FONT_SANS}`, '#94a3b8', { align: 'center', gap: 6 });
+  pushText(`生成时间 ${fmtTime(r.snapshot_at)}`, `13px ${FONT_SANS}`, '#94a3b8', { align: 'center', gap: 6 });
+  /* 先按指令集算总高，再定画布尺寸（改尺寸会重置 ctx，故绘制放第二轮） */
+  let height = PAD;
+  ops.forEach((op) => {
+    height += op.gap || 0;
+    height += op.kind === 'rule' ? 14 : pxOf(op.font) * 1.6;
+  });
+  height = Math.ceil(height + PAD);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(W * DPR);
+  canvas.height = Math.ceil(height * DPR);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(DPR, DPR);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, height);
+  ctx.textBaseline = 'top';
+  let y = PAD;
+  ops.forEach((op) => {
+    y += op.gap || 0;
+    if (op.kind === 'rule') {
+      ctx.save();
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.moveTo(PAD, y + 6);
+      ctx.lineTo(W - PAD, y + 6);
+      ctx.stroke();
+      ctx.restore();
+      y += 14;
+      return;
+    }
+    ctx.font = op.font;
+    ctx.fillStyle = op.color;
+    ctx.textAlign = op.align || 'left';
+    const x = op.align === 'center' ? W / 2 : (op.align === 'right' ? W - PAD : PAD);
+    ctx.fillText(op.text, x, y);
+    if (op.right) {
+      ctx.textAlign = 'right';
+      ctx.fillText(op.right, W - PAD, y);
+    }
+    y += pxOf(op.font) * 1.6;
+  });
+  return canvas;
+}
+function saveReceiptImage() {
+  const r = currentReceipt;
+  if (!r) return;
+  try {
+    const canvas = paintReceiptCanvas(r);
+    if (canvas.toBlob) {
+      canvas.toBlob((blob) => {
+        if (!blob) return toastTip('生成收据图片失败，可改用「打印 / 存 PDF」', true);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `订单收据_${r.id || 'unknown'}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        toastTip('收据图片已保存：订单收据_' + r.id + '.png');
+      }, 'image/png');
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = `订单收据_${r.id || 'unknown'}.png`;
+    a.click();
+  } catch (e) {
+    toastTip('生成收据图片失败，可改用「打印 / 存 PDF」', true);
+  }
+}
+function printReceipt() {
+  if (!currentReceipt) return;
+  window.print();
+}
+(function bindReceiptLayer() {
+  const mask = document.getElementById('receipt-mask');
+  if (!mask) return;
+  mask.addEventListener('click', (e) => {
+    if (e.target === mask || e.target.closest('.contact-close')) closeReceipt();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !mask.hidden) closeReceipt();
+  });
+})();
 
 /* ================================================================
  * 品牌页
@@ -1603,6 +1915,14 @@ document.addEventListener('click', (e) => {
     if (contactBtn) contactBtn.click();
   } else if (action === 'copy-order') {
     copyOrderId(btn.dataset.orderId || '');
+  } else if (action === 'open-receipt') {
+    openReceiptByOrderId(btn.dataset.orderId || '');
+  } else if (action === 'receipt-save') {
+    saveReceiptImage();
+  } else if (action === 'receipt-print') {
+    printReceipt();
+  } else if (action === 'receipt-close') {
+    closeReceipt();
   } else if (action === 'query-orders') {
     queryOrdersNow();
   } else if (action === 'send-query-code') {
