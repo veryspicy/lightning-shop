@@ -203,6 +203,17 @@ KV 时代下单是「`genOrderId` 用 `KV.get` 探重 → `saveOrder` 写 KV」�
 - 纯函数级：D1 正常 → `source=d1` 且 KV 一份副本；D1 抛错 → `ok:false` 且 KV **零写入**；`no_db` → `source=kv`；KV 副本抛错 → 主流程仍 `ok`。
 - 端到端：登录 → 建 2 商品（成本价 40/60） → 下单（展示价 44/66，金额 154） → 后台列表/详情（明细含 `base_price`） → `pending→paid→shipped`（版本 1→2→3，旧版本号 409，非法流转 400） → 客户聚合 1 单 154 → 另一号码下单后取消，客户金额回落 0 → `migrate` 被拒（`already_completed`） → `verify` 计数一致且无缺失键。
 
+生产写路径验证（2026-11-06，`lightning-shop.gora.dpdns.org`）：
+
+生产不能注入故障，因此验证方式改为「真实写 + 直查库」：
+
+1. 后台登录 → 新建测试商品 → 改价 → 软删，三步均 2xx；
+2. 每步后用 `wrangler d1 execute lightning-shop-db --remote` 直查主库，确认成本价/起订量/`deleted` 已按预期落库（不是只落了 KV）；
+3. `GET /api/admin/d1/verify` 收尾：`kv={products:56,orders:4}`、`d1={products:56,orders:4,order_items:4}`、`kv_drift` 无异常、`last_dirty=null`、`ok=true`——**全程无写失败样本**，说明没有一条路径退回「只写 KV」；
+4. 清理：按 id 精确删除 3 条测试行，复核后台列表 56 条、无 `p60-` 残留。
+
+顺带确认两点历史误解：后台 `/api/admin/products` 返回的是**裸数组**（不是 `{products}`）；`retail_price` 走 `applyMarginStr`，只有价格配置 `enabled` 时按 margin 加价，否则原样保存——不是「无条件重算」。
+
 ## 5. 避坑清单
 
 - **D1 读副本是最终一致**：会话/读己之写场景必须 `withSession("first-primary")`，否则刚写的订单可能查不到。
