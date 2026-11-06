@@ -214,6 +214,28 @@ KV 时代下单是「`genOrderId` 用 `KV.get` 探重 → `saveOrder` 写 KV」�
 
 顺带确认两点历史误解：后台 `/api/admin/products` 返回的是**裸数组**（不是 `{products}`）；`retail_price` 走 `applyMarginStr`，只有价格配置 `enabled` 时按 margin 加价，否则原样保存——不是「无条件重算」。
 
+## 4.1 阶段 3 上线与生产端到端验证（2026-11-06）
+
+发布路径：PR #33（`feat/d1-stage3-order-write` → dev）合并后，PR #34（dev → main）一次性把阶段 0-3 上线，`Deploy to Cloudflare Workers` run 42214489748 = success。
+
+生产端到端（`lightning-shop.gora.dpdns.org`，订单写链路）：
+
+1. 匿名下单用真实在售商品（`p01` × 1）→ 2xx，`d1PersistOrder` 落库，KV 副本同步，verify 的 orders/order_items 计数同步 +1；
+2. 后台订单详情回读：`total_qty=1`、`total_amount=55`、明细快照含 `base_price=50元/箱` 与 `price=55元/箱`（服务端按价格配置重算，未采信请求体）；
+3. 状态流转走 D1 原子 CAS：`pending → paid`（version 1→2）→ `cancelled`（version 2→3），两次均回读一致；非法流转仍由 `ORDER_STATUS.next` 拦成 400，旧 version 仍 409；
+4. 中文写入验证：显式 UTF-8 字节发送 `{"customer_name":"中文测试-张三"}`，D1 内中文完好 —— PowerShell 5.1 的 `Invoke-RestMethod` 默认按 ISO-8859-1 编码 body，中文会变 `?`，属客户端问题而非服务端，勿误判为乱码 bug；
+5. 收尾 `GET /api/admin/d1/verify`：`ok=true`、`kv={products:56,orders:0}`、`d1={products:56,orders:0,order_items:0}`、`kv_drift.abnormal=false`、`last_dirty=null`。
+
+接口事实补充（本轮踩到的）：
+
+- `POST /api/orders` 返回 `{ok, order}`，不是裸 order；
+- 订单金额字段是 `total_amount` / `total_qty`，**不是** `total`；后台列表是 `{ok, orders, total}`，客户列表是 `{ok, customers, total}`，商品列表才是裸数组；
+- `GET /api/admin/orders/:id` 返回 `{ok, order}`，订单地址不落库（`address` 回读为空，与 KV 时代一致）。
+
+数据清理：本次 3 条 + 历史 4 条验证订单（`D261106083095043AB3` / `D26110609171F96D659` / `D26110609456F13E61BC08A` / `D2611060945C3DDC67DEE54` / `D261106120393C6D60E528A` / `D2611061204818304D015E6` / `D261106121232E6A32068E7`）按 id 精确删除：`order_items` 7 行 + `orders` 7 行，KV 副本 `orders:*` 7 键与 4 个测试号 `customers:*` 一并清除，删前快照见 `temp/order-cleanup-backup.json`。清理后后台订单/客户均为空、商品仍 56 条。
+
+> 坑：`wrangler kv key delete` 在 binding 同时配置 `id` 与 `preview_id` 时必须显式加 `--preview false` 才是生产命名空间，否则直接报错退出（早期 `key list` 也是同一类坑）。
+
 ## 5. 避坑清单
 
 - **D1 读副本是最终一致**：会话/读己之写场景必须 `withSession("first-primary")`，否则刚写的订单可能查不到。
