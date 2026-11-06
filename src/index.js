@@ -26,9 +26,19 @@
  *   PUT  /api/products/:id        -> 更新产品（需 x-admin-token）
  *   DELETE /api/products/:id      -> 删除产品（需 x-admin-token）
  *   POST /api/upload              -> 图片上传 base64 -> R2（需 x-admin-token）
+ *   POST /api/admin/d1/migrate    -> KV 数据分批搬迁到 D1（幂等，需 x-admin-token）
+ *   GET  /api/admin/d1/verify     -> KV 与 D1 一致性核对（需 x-admin-token）
  *   GET  /img/*                   -> R2 图片代理
  *   其余                           -> 静态资源（public/）
  */
+
+import {
+  d1SaveProduct,
+  d1DeleteProduct,
+  d1SaveOrder,
+  migrateBatch,
+  verifyConsistency,
+} from './d1.js';
 
 const CATEGORY_ORDER = ['低GI杂粮', '营养粮油', '黄柿子火锅底料', '野生苦菜', '坚果玉米', '羊杂碎'];
 
@@ -748,6 +758,9 @@ async function rebuildProductsIndex(env, extraIds = []) {
 // 单条写入：只碰自己的 key，不碰索引（并发安全）
 async function saveProduct(env, item) {
   await env.KV.put(`products:${item.id}`, JSON.stringify(item));
+  // 影子双写 D1：KV 仍是读源，D1 累积权威数据，供阶段 1 切换读路径。
+  // 失败只记账（d1_dirty），绝不回滚主写。
+  await d1SaveProduct(env, item);
 }
 
 /* ================= 订单 / 客户 / 品牌档案 ================= */
@@ -827,6 +840,9 @@ async function getOrders(env) {
 
 async function saveOrder(env, order) {
   await env.KV.put(`orders:${order.id}`, JSON.stringify(order));
+  // 影子双写 D1：订单是并发冲突最敏感的数据（重号覆盖=静默丢单），
+  // D1 主键冲突会直接报错而非静默覆盖，阶段 1 改用 INSERT 语义后彻底消除该风险。
+  await d1SaveOrder(env, order);
 }
 
 // 客户档案：按手机号聚合（无独立写接口，下单/后台变更时 upsert）
@@ -1665,6 +1681,27 @@ async function handleApi(request, env, url) {
     }
   }
 
+  /* ---- 后台：D1 迁移与一致性核对（阶段 0，仅管理员） ---- */
+  if (path.startsWith('/api/admin/d1/')) {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (user.role !== 'admin') return forbidden();
+    if (!env.DB) return json({ error: 'd1_not_bound', message: 'D1 binding DB 未配置' }, 503);
+    // 分批搬迁：KV 全量 -> D1（products / orders / order_items / kv_doc）
+    // 幂等可重入：靠 migration_state 游标续跑，中途失败重调即继续
+    if (path === '/api/admin/d1/migrate' && method === 'POST') {
+      const limit = Number(url.searchParams.get('limit') || 100);
+      const r = await migrateBatch(env, limit);
+      return jsonNoCache({ ok: true, ...r });
+    }
+    // 一致性核对：KV 与 D1 计数对比 + 抽样主键命中检查 + 影子写脏标记
+    if (path === '/api/admin/d1/verify' && method === 'GET') {
+      const r = await verifyConsistency(env, Number(url.searchParams.get('sample') || 5));
+      return jsonNoCache({ ok: true, ...r });
+    }
+    return notFound();
+  }
+
   /* ---- 后台：订单 ---- */
   if (path === '/api/admin/orders' && method === 'GET') {
     const user = await authUser(request, env);
@@ -1818,6 +1855,7 @@ async function handleApi(request, env, url) {
       const removed = latest[idx];
       await env.KV.delete(`products:${removed.id}`);
       await markProductDeleted(env, removed.id);
+      await d1DeleteProduct(env, removed.id);
       await rebuildProductsIndex(env);
       if (removed.image) {
         const key = removed.image.replace(/^\/img\//, '');
