@@ -1167,6 +1167,7 @@ function renderCart() {
     </div>
     <div class="checkout-form panel-params">
       <h2>提交订单</h2>
+      <p class="query-notice">下单不收款：提交后请按订单金额微信转账，后台确认后发货。下单成功后订单号会自动保存在本机，凭手机号 + 订单号可随时查单。</p>
       <label class="form-field"><span>公司/个人名称 *</span><input type="text" id="co-name" maxlength="40" placeholder="如：上海 XX 贸易有限公司 / 王小明" autocomplete="off" /></label>
       <label class="form-field"><span>手机号 *</span><input type="tel" id="co-phone" maxlength="11" placeholder="11 位手机号，用于查单" autocomplete="off" /></label>
       <h3 class="form-subhead">收货地址</h3>
@@ -1187,7 +1188,6 @@ function renderCart() {
       <div class="checkout-actions">
         <button type="button" class="btn btn-primary" id="co-submit" data-action="submit-order">提交订单</button>
       </div>
-      <p class="checkout-tip">下单不收款：提交后请按订单金额微信转账，后台确认后发货。</p>
     </div>`;
 }
 async function submitOrder() {
@@ -1242,6 +1242,8 @@ async function submitOrder() {
     }
     setCart([]);
     localStorage.setItem('ls_query_phone', phone);
+    rememberMyOrder(data.order, phone);
+    pendingOrderSuccess = data.order;
     toastTip(`下单成功：${data.order.id}`);
     setTimeout(() => { location.hash = '#/orders'; }, 600);
   } catch (err) {
@@ -1300,6 +1302,26 @@ function orderCardHtml(o) {
 }
 let queryModeCache = null;
 let queryTurnstileToken = '';
+let pendingOrderSuccess = null;
+const MY_ORDERS_KEY = 'ls_my_orders';
+const MY_ORDERS_MAX = 10;
+function loadMyOrders() {
+  try {
+    const list = JSON.parse(localStorage.getItem(MY_ORDERS_KEY) || '[]');
+    return Array.isArray(list) ? list.filter((x) => x && x.id) : [];
+  } catch (e) {
+    return [];
+  }
+}
+/* 下单成功即在本机留档订单号：用户忘记订单号时可直接点选回填 */
+function rememberMyOrder(order, phoneOverride) {
+  if (!order || !order.id) return;
+  const list = loadMyOrders().filter((x) => x.id !== order.id);
+  list.unshift({ id: order.id, phone: phoneOverride || order.customer_phone || '', ts: order.created_at || new Date().toISOString() });
+  try {
+    localStorage.setItem(MY_ORDERS_KEY, JSON.stringify(list.slice(0, MY_ORDERS_MAX)));
+  } catch (e) { /* 隐私模式/配额满时忽略，不影响下单 */ }
+}
 async function fetchQueryMode(force) {
   if (queryModeCache && !force) return queryModeCache;
   try {
@@ -1350,7 +1372,7 @@ function startCodeCountdown(btn, ttl) {
 }
 async function sendQueryCode() {
   const phone = document.getElementById('q-phone').value.trim();
-  if (!/^1\d{10}$/.test(phone)) return toastTip('请填写正确的手机号', true);
+  if (!/^1\d{10}$/.test(phone)) return setQueryError('请填写正确的手机号');
   const btn = document.getElementById('q-send');
   if (btn && btn.disabled) return;
   try {
@@ -1360,33 +1382,92 @@ async function sendQueryCode() {
       body: JSON.stringify({ phone }),
     });
     const data = await res.json();
-    if (!res.ok || !data.ok) return toastTip((data && data.message) || '验证码发送失败', true);
+    if (!res.ok || !data.ok) return setQueryError((data && data.message) || '验证码发送失败');
     toastTip('验证码已发送，5 分钟内有效');
     startCodeCountdown(btn, data.ttl);
   } catch (err) {
     toastTip('网络异常，请重试', true);
   }
 }
+function fallbackCopyText(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch (e) { toastTip('复制失败，请手动长按选择订单号', true); }
+  document.body.removeChild(ta);
+}
+function copyOrderId(id) {
+  if (!id) return;
+  const done = () => toastTip('订单号已复制：' + id);
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(id).then(done).catch(() => fallbackCopyText(id, done));
+  } else {
+    fallbackCopyText(id, done);
+  }
+}
+/* 查单页的报错一律显示在表单顶部（底部提示用户容易漏看） */
+function setQueryError(msg) {
+  const box = document.getElementById('q-error');
+  if (!box) return toastTip(msg, true);
+  box.textContent = msg;
+  box.hidden = false;
+  if (box.scrollIntoView) box.scrollIntoView({ block: 'nearest' });
+}
+function clearQueryError() {
+  const box = document.getElementById('q-error');
+  if (box) { box.hidden = true; box.textContent = ''; }
+}
 async function renderOrders() {
   const el = views.orders;
   const savedPhone = localStorage.getItem('ls_query_phone') || '';
   el.innerHTML = '<div class="view-loading">加载中…</div>';
   const mode = await fetchQueryMode();
+  const justOrder = pendingOrderSuccess;
+  pendingOrderSuccess = null;
+  const myOrders = loadMyOrders().filter((o) => !savedPhone || o.phone === savedPhone).slice(0, 5);
+  const recentHtml = !mode.sms && myOrders.length
+    ? `<div class="recent-chips">
+        <p class="recent-chips-title">本机最近下单（点击填入上方订单号）</p>
+        ${myOrders.map((o) => `<button type="button" class="recent-chip" data-action="fill-order" data-order-id="${escapeHtml(o.id)}">${escapeHtml(o.id)}</button>`).join('')}
+      </div>`
+    : '';
   el.innerHTML = `
     <div class="view-head"><h1>查单</h1></div>
+    ${justOrder ? `<div class="order-success">
+      <h2>下单成功，订单号已保存在本机</h2>
+      <p>订单号：<span class="order-success-no">${escapeHtml(justOrder.id)}</span></p>
+      <button type="button" class="btn btn-outline btn-sm" data-action="copy-order" data-order-id="${escapeHtml(justOrder.id)}">复制订单号</button>
+      <p class="checkout-tip">凭手机号 + 订单号可随时查单；建议顺手截图，清缓存或换设备后本机记录会丢失。</p>
+    </div>` : ''}
     <div class="order-query panel-params">
+      <p class="query-notice">${mode.sms
+    ? '查单需短信验证码，5 分钟内有效，最多尝试 3 次；只需手机号，无需订单号。'
+    : '查单需同时提供手机号和订单号（订单号含随机段，无法被猜测，用于保护订单隐私）。下单成功后订单号会自动保存在本机，忘记时可点选下方记录填入。'}</p>
+      <p class="query-notice is-err" id="q-error" hidden></p>
       <div class="order-query-row">
         <label class="form-field"><span>手机号 *</span><input type="tel" id="q-phone" maxlength="11" placeholder="下单时填写的手机号" autocomplete="off" value="${escapeHtml(savedPhone)}" /></label>
         ${mode.sms
     ? '<label class="form-field"><span>短信验证码 *</span><input type="text" id="q-code" maxlength="6" inputmode="numeric" placeholder="6 位数字" autocomplete="one-time-code" /></label>'
     : '<label class="form-field"><span>订单号 *</span><input type="text" id="q-order" maxlength="20" placeholder="下单成功页显示的订单号" autocomplete="off" /></label>'}
       </div>
+      ${recentHtml}
       ${mode.sms ? '<div class="checkout-actions"><button type="button" class="btn btn-outline btn-sm" id="q-send" data-action="send-query-code">获取验证码</button></div>' : ''}
       ${mode.turnstile_site_key ? '<div id="q-turnstile" class="turnstile-slot"></div>' : ''}
       <div class="checkout-actions"><button type="button" class="btn btn-primary" data-action="query-orders">查询</button></div>
-      <p class="checkout-tip">${mode.sms
-    ? '查单需短信验证码，5 分钟内有效，最多尝试 3 次。'
-    : '为保护订单隐私，查单需同时提供手机号与订单号。订单号含随机段，无法被猜测。'}</p>
+      ${mode.sms ? '' : `<div class="query-forgot">
+        <button type="button" class="query-forgot-btn" data-action="forgot-order-toggle">忘记订单号？</button>
+        <div class="query-forgot-body" id="q-forgot" hidden>
+          <ol>
+            <li>本机记录：下单成功后订单号会自动保存在本机，点上方「本机最近下单」即可填入；</li>
+            <li>客服找回：联系客服并提供下单手机号、大致金额与收货人，客服按手机号核对订单后告知订单号；</li>
+            <li>清缓存、换设备或隐私模式下本机记录会丢失，下单成功时请顺手截图保存。</li>
+          </ol>
+          <button type="button" class="btn btn-outline btn-sm" data-action="open-contact">联系客服找回订单号</button>
+        </div>
+      </div>`}
     </div>
     <div id="order-results"></div>`;
   if (savedPhone) document.getElementById('q-phone').select();
@@ -1395,19 +1476,20 @@ async function renderOrders() {
 async function queryOrdersNow() {
   const mode = await fetchQueryMode();
   const phone = document.getElementById('q-phone').value.trim();
-  if (!/^1\d{10}$/.test(phone)) return toastTip('请填写正确的手机号', true);
+  if (!/^1\d{10}$/.test(phone)) return setQueryError('请填写正确的手机号');
   const payload = { phone };
   if (mode.sms) {
     const code = (document.getElementById('q-code').value || '').trim();
-    if (!/^\d{6}$/.test(code)) return toastTip('请填写 6 位短信验证码', true);
+    if (!/^\d{6}$/.test(code)) return setQueryError('请填写 6 位短信验证码');
     payload.code = code;
   } else {
     const orderId = (document.getElementById('q-order').value || '').trim();
-    if (!orderId) return toastTip('查单需填写订单号', true);
+    if (!orderId) return setQueryError('请填写订单号；忘记订单号可点下方「忘记订单号？」查看找回方式');
     payload.order_id = orderId;
     if (queryTurnstileToken) payload.turnstile_token = queryTurnstileToken;
   }
   const box = document.getElementById('order-results');
+  clearQueryError();
   box.innerHTML = '<div class="view-loading">查询中…</div>';
   try {
     const res = await fetch('/api/orders/query', {
@@ -1504,6 +1586,23 @@ document.addEventListener('click', (e) => {
     renderCart();
   } else if (action === 'submit-order') {
     submitOrder();
+  } else if (action === 'fill-order') {
+    const input = document.getElementById('q-order');
+    if (input) {
+      input.value = btn.dataset.orderId || '';
+      input.focus();
+    }
+    clearQueryError();
+  } else if (action === 'forgot-order-toggle') {
+    const body = document.getElementById('q-forgot');
+    if (!body) return;
+    body.hidden = !body.hidden;
+    btn.setAttribute('aria-expanded', String(!body.hidden));
+  } else if (action === 'open-contact') {
+    const contactBtn = document.getElementById('contact-open');
+    if (contactBtn) contactBtn.click();
+  } else if (action === 'copy-order') {
+    copyOrderId(btn.dataset.orderId || '');
   } else if (action === 'query-orders') {
     queryOrdersNow();
   } else if (action === 'send-query-code') {
