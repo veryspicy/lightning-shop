@@ -1971,6 +1971,10 @@ function withSecurityHeaders(resp) {
 // 公开 API 边缘缓存时长：原 60s，收到 30s 以压低改价/文案变更的可见延迟。
 // 下架/删除走 force bump 即时失效，不依赖此 TTL 兜底。
 const CACHE_TTL_SEC = 30;
+// 公开只读 API 的 Cache-Control：必须同时显式给 max-age。
+// 只给 s-maxage 时源站没有 max-age，Cloudflare 会按浏览器缓存默认值补成 max-age=14400（4 小时），
+// 结果是边缘 30s 就刷新了，但老访客的浏览器仍按 4 小时缓存旧列表，新增商品迟迟看不到。
+const PUBLIC_API_CC = `public, max-age=${CACHE_TTL_SEC}, s-maxage=${CACHE_TTL_SEC}`;
 
 // 公开 API 边缘缓存的版本号：任何写操作成功后 +1，使旧缓存立即失效。
 // 只有 60s TTL 而没有失效机制时，商品下架/改价/删除后最长 60s 仍能被匿名读到
@@ -2054,7 +2058,8 @@ export default {
     }
 
     // 只读公开 API 边缘缓存（Cache API，TTL=CACHE_TTL_SEC）：GET /api/* 非后台接口，无管理 token
-    // 缓存副本仅 s-maxage：命中时浏览器不缓存（无 max-age），边缘共享缓存 CACHE_TTL_SEC 直读
+    // 缓存副本与回源响应都带 max-age=CACHE_TTL_SEC，浏览器与边缘同一个 30s 节奏
+    // （只给 s-maxage 时 Cloudflare 会把浏览器 TTL 补成默认 4 小时）
     if (
       url.pathname.startsWith('/api/') &&
       request.method === 'GET' &&
@@ -2068,11 +2073,16 @@ export default {
       cacheUrl.searchParams.set('__epoch', String(epoch));
       const cacheKey = new Request(cacheUrl.toString(), { method: 'GET' });
       const hit = await cache.match(cacheKey);
-      if (hit) return withSecurityHeaders(hit);
+      if (hit) {
+        const copy = withSecurityHeaders(hit);
+        copy.headers.set('Cache-Control', PUBLIC_API_CC);
+        return copy;
+      }
       const resp = withSecurityHeaders(await handleApi(request, env, url));
       if (resp && resp.status === 200 && (resp.headers.get('Content-Type') || '').includes('application/json')) {
+        resp.headers.set('Cache-Control', PUBLIC_API_CC);
         const cached = resp.clone();
-        cached.headers.set('Cache-Control', `s-maxage=${CACHE_TTL_SEC}`);
+        cached.headers.set('Cache-Control', PUBLIC_API_CC);
         cached.headers.delete('Set-Cookie');
         await cache.put(cacheKey, cached);
       }
