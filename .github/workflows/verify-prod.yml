@@ -1,0 +1,53 @@
+name: Verify prod (read-only smoke)
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: public cache behaviour
+        run: |
+          echo "--- first request ---"
+          curl -sS -D /tmp/h1 -o /dev/null https://lightning-shop.gora.dpdns.org/api/products
+          grep -i -E "^(HTTP/|cache-control|age|cf-cache-status)" /tmp/h1 || true
+          sleep 3
+          echo "--- second request (same URL) ---"
+          curl -sS -D /tmp/h2 -o /dev/null https://lightning-shop.gora.dpdns.org/api/products
+          grep -i -E "^(HTTP/|cache-control|age|cf-cache-status)" /tmp/h2 || true
+          echo "--- home + products ---"
+          curl -sS -o /dev/null -w "home=%{http_code}\n" https://lightning-shop.gora.dpdns.org/
+          curl -sS -o /tmp/p.json -w "products=%{http_code} bytes=%{size_download}\n" https://lightning-shop.gora.dpdns.org/api/products
+          node -e "const a=require('/tmp/p.json');console.log('product_count='+a.length)"
+          # 边缘 TTL 由源站 s-maxage 决定；浏览器 TTL 若被 Cache Rule 抬高，会在这里暴露（面板项，暂只告警不阻断）
+          cc=$(grep -i "^cache-control:" /tmp/h2 | tr -d '\r' | sed 's/^[Cc]ache-[Cc]ontrol: *//')
+          maxage=$(echo "$cc" | tr ',' '\n' | sed -n 's/^ *max-age=\([0-9]*\).*/\1/p')
+          echo "cache_control=$cc browser_max_age=${maxage:-none}"
+          if [ -n "$maxage" ] && [ "$maxage" -gt 0 ]; then
+            echo "::warning title=Browser TTL::/api/* 浏览器缓存 max-age=$maxage（期望 0），需在 Cloudflare Cache Rules 将 Browser TTL 改为 Respect origin"
+          fi
+
+      - name: login rate limit per account (limit 5 / 300s)
+        run: |
+          saw429=0
+          first429=""
+          last=""
+          for i in $(seq 1 7); do
+            code=$(curl -sS -o /tmp/l -w "%{http_code}" -X POST https://lightning-shop.gora.dpdns.org/api/auth/login \
+              -H 'content-type: application/json' \
+              -d '{"username":"__ratelimit_probe__","password":"wrong-password"}')
+            echo "attempt $i -> HTTP $code :: $(head -c 160 /tmp/l)"
+            last="$code"
+            if [ "$code" = "429" ] && [ -z "$first429" ]; then first429="$i"; fi
+            if [ "$code" = "429" ]; then saw429=1; fi
+            sleep 1
+          done
+          echo "first_429_at=${first429:-never} last=${last}"
+          # 计数持久化在 Durable Object，连续 run 之间可能有 300s 窗口残留，
+          # 故不断言"第 6 次才 429"，只要求拦得住且末次仍被拦。
+          if [ "$saw429" = "1" ] && [ "$last" = "429" ]; then
+            echo "PASS: per-account login throttle enforced"
+          else
+            echo "::error title=Rate limit::账号维度登录闸未生效：7 次错误登录未出现 429"
+            exit 1
+          fi

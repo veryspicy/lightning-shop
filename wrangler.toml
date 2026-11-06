@@ -7,6 +7,8 @@ compatibility_date = "2026-10-25"
 directory = "./public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+# 请求先进入 Worker fetch（主站化 301、指纹脚本长缓存等逻辑生效），未命中再走 ASSETS 兜底
+run_worker_first = true
 
 # KV：产品货盘数据
 [[kv_namespaces]]
@@ -26,3 +28,66 @@ SITE_NAME = "Lightning Shop"
 CONTACT_WECHAT = "lightning-shop"
 # 管理后台密码不在此配置：本地开发在 .dev.vars 设置 ADMIN_PASSWORD，
 # 线上部署用 `wrangler secret put ADMIN_PASSWORD` 注入加密环境变量
+
+# Observability：日志、链路追踪与问题检测（持久化开启）
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true
+
+[observability.issues]
+enabled = true
+
+# 限流 binding（Cloudflare 原生 Rate Limiting API）
+# 按 Cloudflare 机房（PoP）计数、跨 isolate 生效，与 Worker 内内存桶取严。
+# namespace_id 是账户内唯一整数标识，limit/period 中 period 只支持 10 或 60 秒。
+[[ratelimits]]
+name = "RL_LOGIN"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+[[ratelimits]]
+name = "RL_ORDER"
+namespace_id = "1002"
+
+  [ratelimits.simple]
+  limit = 20
+  period = 60
+
+[[ratelimits]]
+name = "RL_QUERY"
+namespace_id = "1003"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+# 账号维度登录闸：键为「IP|用户名」，堵跨 isolate 单账号口令爆破。
+# 原生 RL 的 period 只支持 10/60 秒，故用 5 次/60 秒（比内存桶 5 次/300 秒更严），两闸取严。
+[[ratelimits]]
+name = "RL_LOGIN_ACCT"
+namespace_id = "1004"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60
+
+# 账号维度登录闸的确定性实现：Durable Object 单实例串行、计数持久化。
+# 内存桶随 isolate 重启清零，原生 Rate Limiting binding 在实测中未真正累计计数
+# （连续 7 次错误登录毫无拦截），故把「同账号累计 N 次即拦」交给 DO 兜底。
+[[durable_objects.bindings]]
+name = "LOGIN_THROTTLE"
+class_name = "LoginThrottle"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LoginThrottle"]

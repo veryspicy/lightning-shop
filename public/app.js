@@ -11,9 +11,10 @@ let products = [];
 let total = 0;
 let activeCategory = '';
 let activeBrand = '';
-let priceConfig = null;
 let loading = false;
 const PAGE_SIZE = 24;
+let currentPage = 0; // 当前页码（0-based），PC 分页器使用
+let totalPages = 0;  // 总页数
 // 单行折叠状态：chip 列表始终保持一行，放不下时溢出项隐藏 + 「展开 N 个」按钮
 let categoryExpanded = false;
 let brandExpanded = false;
@@ -35,25 +36,21 @@ function escapeHtml(s) {
   }[c]));
 }
 
-/* 价格策略：前台展示价 = 出厂价 × (1 + 利润率%)，后台数据不变 */
-function formatNum(n) {
-  return String(parseFloat(n.toFixed(2)));
+/* 图片地址白名单：站内 /img/{安全文件名} 或 http(s) 绝对地址，其余一律丢弃。
+   订单明细/商品图来自外部输入（匿名下单、供应商上传），直接拼进 src 会形成存储型 XSS。 */
+function safeImgUrl(u) {
+  const s = String(u ?? '').trim();
+  if (!s || s.length > 300) return '';
+  if (/[\u0000-\u001f"'<>\\]/.test(s)) return '';
+  if (/^\/img\/[A-Za-z0-9._-]+$/.test(s) && !s.includes('..')) return s;
+  if (/^https?:\/\/[^\s]+$/i.test(s)) return s;
+  return '';
 }
 
-function applyMargin(priceStr, cfg) {
-  if (!cfg || !cfg.enabled || !cfg.margin || !priceStr) return priceStr;
-  if (!/元/.test(priceStr)) return priceStr; // 议价/报价说明等无价格数字的文案原样
-  const rate = 1 + cfg.margin / 100;
-  // 只加成"元"前的价格数字（含区间 9.9-13.9、多档 12/11.5/11、阶梯 100斤起12元），数量单位数字不动
-  const tokenRe = /(\d+(?:\.\d+)?(?:\s*[\/\-]\s*\d+(?:\.\d+)?)*)\s*元/g;
-  return priceStr.replace(tokenRe, (whole, nums) => {
-    const scaled = nums.replace(/\d+(?:\.\d+)?/g, (m) => formatNum(parseFloat(m) * rate));
-    return whole.replace(nums, scaled);
-  });
-}
-
+/* 价格：展示价一律由服务端投影下发（已按后台策略加价），前端不再二次加价，
+ * 也不再拉取 /api/site/price（利润率属于内部经营参数，不对匿名下发） */
 function displayPrice(str) {
-  return applyMargin(str, priceConfig);
+  return String(str === undefined || str === null ? '' : str);
 }
 
 function cardHtml(p) {
@@ -64,7 +61,7 @@ function cardHtml(p) {
     : '';
 
   const media = p.image
-    ? `<img src="${p.image}" alt="${escapeHtml(p.name)}" loading="lazy" />`
+    ? `<img src="${escapeHtml(safeImgUrl(p.image))}" alt="${escapeHtml(p.name)}" loading="lazy" decoding="async" />`
     : `<div class="card-placeholder" aria-hidden="true">🍱</div>`;
 
   const retailText = p.retail_price && !p.retail_price.includes('报价') ? p.retail_price : '议价';
@@ -78,9 +75,12 @@ function cardHtml(p) {
     <article class="product-card">
       <div class="card-media">${media}${badge}${shareBtn}</div>
       <div class="card-body">
-        <h3 class="card-name">${escapeHtml(p.name)}</h3>
+        <h3 class="card-name"><a href="#/p/${encodeURIComponent(p.id)}" class="card-name-link">${escapeHtml(p.name)}</a></h3>
         <p class="card-spec">${escapeHtml(p.spec)} · ${escapeHtml(p.brand)}</p>
-        <p class="card-highlight">${escapeHtml(p.highlights)}</p>
+        <div class="hl-wrap">
+          <p class="card-highlight">${escapeHtml(p.highlights)}</p>
+          <button class="hl-toggle" type="button" hidden>更多</button>
+        </div>
         <div class="card-meta">
           ${p.cert ? `<span class="card-tag">${escapeHtml(p.cert)}</span>` : ''}
           ${p.moq ? `<span class="card-tag amber">起订 ${escapeHtml(p.moq)}</span>` : ''}
@@ -88,28 +88,93 @@ function cardHtml(p) {
         <div class="card-price">
           <div class="price-wholesale">
             <span>批发价</span>
-            <b>${escapeHtml(displayPrice(p.wholesale_price))}</b>
+            <b>${escapeHtml(displayPrice(p.price))}</b>
           </div>
           <div class="price-retail">
             <span>零售</span>
             <b>${escapeHtml(displayPrice(retailText))}</b>
           </div>
         </div>
+        <a class="card-detail-link" href="#/p/${encodeURIComponent(p.id)}">查看详情 →</a>
       </div>
     </article>`;
 }
 
 function render() {
   grid.innerHTML = products.map(cardHtml).join('');
+  grid.removeAttribute('aria-busy');
   emptyState.hidden = products.length > 0;
   updateResultMeta();
   updateLoadMore();
+  updatePagination();
+  initHighlightToggles();
+}
+
+/* 描述折叠：默认最多显示 3 行；溢出时显示「更多」按钮，点击展开/收起 */
+function initHighlightToggles() {
+  document.querySelectorAll('.hl-wrap').forEach((wrap) => {
+    const p = wrap.querySelector('.card-highlight');
+    const btn = wrap.querySelector('.hl-toggle');
+    if (!p || !btn) return;
+    p.classList.add('clamped');
+    btn.hidden = p.scrollHeight <= p.clientHeight + 1;
+  });
+}
+
+function toggleHighlight(btn) {
+  const wrap = btn.closest('.hl-wrap');
+  if (!wrap) return;
+  const p = wrap.querySelector('.card-highlight');
+  if (!p) return;
+  const isClamped = p.classList.contains('clamped');
+  p.classList.toggle('clamped', !isClamped);
+  btn.textContent = isClamped ? '收起' : '更多';
+}
+
+/* 端判定：768px 断点与 CSS 响应式一致（PC=分页器 / 移动=触底加载） */
+function isMobile() {
+  return window.matchMedia('(max-width: 768px)').matches;
 }
 
 function updateLoadMore() {
   const moreBtn = document.getElementById('load-more');
   if (!moreBtn) return;
+  // PC 端由页码分页器接管，按钮隐藏；移动端保留按钮作触底加载兜底
+  if (!isMobile()) { moreBtn.hidden = true; return; }
   moreBtn.hidden = products.length >= total;
+}
+
+function updatePagination() {
+  const pager = document.getElementById('pagination');
+  if (!pager) return;
+  totalPages = Math.ceil(total / PAGE_SIZE);
+  if (isMobile() || totalPages <= 1) {
+    pager.hidden = true;
+    pager.innerHTML = '';
+    return;
+  }
+  pager.hidden = false;
+  pager.innerHTML = pagerHtml(totalPages, currentPage);
+}
+
+/* 页码窗口：首/尾页 + 当前页前后各 2 页，其余用省略号折叠；页数少时全量展示 */
+function pagerHtml(totalPages, page) {
+  const parts = [];
+  const pushBtn = (text, key, cls, disabled) => {
+    const activeMark = (!disabled && key !== 'prev' && key !== 'next' && Number(key) === page)
+      ? ' aria-current="page"' : '';
+    parts.push(`<button type="button" class="pager-btn${cls ? ' ' + cls : ''}" data-page="${key}" ${disabled ? 'disabled' : ''}${activeMark}>${text}</button>`);
+  };
+  pushBtn('‹ 上一页', 'prev', '', page <= 0);
+  const start = Math.max(0, page - 2);
+  const end = Math.min(totalPages - 1, page + 2);
+  if (start > 0) pushBtn('1', '0', '', false);
+  if (start > 1) parts.push('<span class="pager-ellipsis">…</span>');
+  for (let i = start; i <= end; i++) pushBtn(String(i + 1), String(i), i === page ? 'active' : '', false);
+  if (end < totalPages - 2) parts.push('<span class="pager-ellipsis">…</span>');
+  if (end < totalPages - 1) pushBtn(String(totalPages), String(totalPages - 1), '', false);
+  pushBtn('下一页 ›', 'next', '', page >= totalPages - 1);
+  return parts.join('');
 }
 
 function chipHtml(key, name, count, active) {
@@ -203,6 +268,15 @@ function applyHero(hero) {
       heroEl.style.backgroundImage = `linear-gradient(135deg, rgba(6,78,59,.82) 0%, rgba(5,110,80,.72) 60%, rgba(16,185,129,.66) 100%), url('${hero.bgImage}')`;
       heroEl.style.backgroundSize = 'cover';
       heroEl.style.backgroundPosition = 'center';
+      // 首屏 hero 大图预加载：CSS 背景图不走浏览器预加载，显式 fetchPriority 抢占
+      if (!document.querySelector(`link[rel="preload"][href="${hero.bgImage}"]`)) {
+        const link = document.createElement('link');
+        link.rel = 'preload';
+        link.as = 'image';
+        link.href = hero.bgImage;
+        link.fetchPriority = 'high';
+        document.head.appendChild(link);
+      }
     } else {
       heroEl.style.backgroundImage = '';
     }
@@ -236,34 +310,43 @@ function styleQrGradient(box) {
 
 function applyQr(qr) {
   if (!qr) return;
-  const quoteImg = document.getElementById('quote-qr-img');
-  if (quoteImg && qr.quoteImage) {
-    quoteImg.src = qr.quoteImage;
-    quoteImg.alt = '报价单二维码';
+  // 报价二维码：.b2b 区块 + 联系方式面板同步
+  const quoteImgs = ['quote-qr-img', 'contact-quote-img']
+    .map((id) => document.getElementById(id)).filter(Boolean);
+  if (qr.quoteImage) {
+    quoteImgs.forEach((img) => { img.src = qr.quoteImage; img.alt = '报价单二维码'; });
   }
   const quoteTitle = document.getElementById('quote-qr-title');
-  if (quoteTitle && qr.quoteTitle) quoteTitle.textContent = qr.quoteTitle;
+  const contactQuoteTitle = document.getElementById('contact-quote-title');
+  if (qr.quoteTitle && quoteTitle) quoteTitle.textContent = qr.quoteTitle;
+  if (qr.quoteTitle && contactQuoteTitle) contactQuoteTitle.textContent = qr.quoteTitle;
   const shopTitle = document.getElementById('shop-qr-title');
-  if (shopTitle && qr.shopTitle) shopTitle.textContent = qr.shopTitle;
-  const box = document.getElementById('site-qr');
-  if (box && qr.url && typeof QRCode !== 'undefined') {
-    try {
-      box.innerHTML = '';
-      // 移动端按 220px 容器生成 206px 位图，微信内长按识别更稳
-      const qrSize = window.matchMedia('(max-width: 768px)').matches ? 206 : 180;
-      new QRCode(box, {
-        text: qr.url,
-        width: qrSize,
-        height: qrSize,
-        colorDark: '#111111',
-        colorLight: '#ffffff',
-        correctLevel: QRCode.CorrectLevel.M,
-      });
-      styleQrGradient(box);
-      box.hidden = false;
-    } catch {
-      /* 二维码生成失败不阻塞页面 */
-    }
+  const contactShopTitle = document.getElementById('contact-shop-title');
+  if (qr.shopTitle && shopTitle) shopTitle.textContent = qr.shopTitle;
+  if (qr.shopTitle && contactShopTitle) contactShopTitle.textContent = qr.shopTitle;
+  // 商城二维码：.b2b 区块与联系方式面板各生成一份（同配置同尺寸）
+  const boxes = ['site-qr', 'contact-site-qr']
+    .map((id) => document.getElementById(id)).filter(Boolean);
+  if (qr.url && typeof QRCode !== 'undefined') {
+    boxes.forEach((box) => {
+      try {
+        box.innerHTML = '';
+        // 移动端按 220px 容器生成 206px 位图，微信内长按识别更稳
+        const qrSize = window.matchMedia('(max-width: 768px)').matches ? 206 : 180;
+        new QRCode(box, {
+          text: qr.url,
+          width: qrSize,
+          height: qrSize,
+          colorDark: '#111111',
+          colorLight: '#ffffff',
+          correctLevel: QRCode.CorrectLevel.M,
+        });
+        styleQrGradient(box);
+        box.hidden = false;
+      } catch {
+        /* 二维码生成失败不阻塞页面 */
+      }
+    });
   }
 }
 
@@ -294,6 +377,7 @@ async function reload() {
     const data = await fetchPage(0);
     products = data.items || [];
     total = data.total || products.length;
+    currentPage = 0;
     render();
     updateStats();
   } catch (err) {
@@ -325,14 +409,33 @@ async function loadMore() {
   }
 }
 
+/* PC 分页：切换页码直接替换当前列表（加载指定页） */
+async function goToPage(page) {
+  if (loading) return;
+  if (page < 0 || page >= totalPages) return;
+  currentPage = page;
+  loading = true;
+  try {
+    const data = await fetchPage(currentPage * PAGE_SIZE);
+    products = data.items || [];
+    total = data.total || products.length;
+    render();
+    const productsEl = document.getElementById('products');
+    if (productsEl) productsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (err) {
+    grid.innerHTML = '<p style="color:#dc2626">加载失败，请刷新重试。</p>';
+  } finally {
+    loading = false;
+  }
+}
+
 async function load() {
   try {
-    const [data, cRes, bRes, heroRes, priceRes, qrRes] = await Promise.all([
+    const [data, cRes, bRes, heroRes, qrRes] = await Promise.all([
       fetchPage(0),
       fetch('/api/categories'),
       fetch('/api/brands'),
       fetch('/api/site/hero'),
-      fetch('/api/site/price'),
       fetch('/api/site/qr'),
     ]);
     products = data.items || [];
@@ -340,7 +443,6 @@ async function load() {
     const categories = await cRes.json();
     const brands = await bRes.json();
     const hero = await heroRes.json().catch(() => null);
-    priceConfig = await priceRes.json().catch(() => null);
     const qrConfig = await qrRes.json().catch(() => null);
     renderTabs(categories);
     renderBrandTabs(brands);
@@ -403,6 +505,8 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(() => {
     renderTabs(categoryList);
     renderBrandTabs(brandList);
+    updatePagination();
+    updateLoadMore();
   }, 200);
 });
 
@@ -411,6 +515,93 @@ load();
 /* 商品分页：加载更多 */
 const loadMoreBtn = document.getElementById('load-more');
 if (loadMoreBtn) loadMoreBtn.addEventListener('click', loadMore);
+
+/* 页码分页器事件委托（PC 宽屏） */
+const pager = document.getElementById('pagination');
+if (pager) {
+  pager.addEventListener('click', (e) => {
+    const btn = e.target.closest('button.pager-btn');
+    if (!btn || btn.disabled) return;
+    const key = btn.dataset.page;
+    if (key === 'prev') goToPage(currentPage - 1);
+    else if (key === 'next') goToPage(currentPage + 1);
+    else goToPage(Number(key));
+  });
+}
+
+/* 移动端触底自动加载：滚动接近列表底部自动追加下一页（PC 端由分页器接管，不触发） */
+const loadSentinel = document.getElementById('load-sentinel');
+if (loadSentinel && 'IntersectionObserver' in window) {
+  const io = new IntersectionObserver((entries) => {
+    if (!entries.some((en) => en.isIntersecting)) return;
+    if (!isMobile()) return;
+    if (loading || products.length >= total) return;
+    loadMore();
+  }, { rootMargin: '220px 0px' });
+  io.observe(loadSentinel);
+}
+
+/* 顶部导航「联系方式」入口：弹出报价二维码 + 商城二维码面板 */
+(function () {
+  const openBtn = document.getElementById('contact-open');
+  const mask = document.getElementById('contact-mask');
+  const expressBtn = document.getElementById('express-open');
+  const expressMask = document.getElementById('express-mask');
+  function closeExpress() {
+    if (!expressMask || expressMask.hidden) return;
+    expressMask.hidden = true;
+    if (expressBtn) expressBtn.setAttribute('aria-expanded', 'false');
+    document.body.style.overflow = '';
+  }
+  function openPanel() {
+    closeExpress();
+    mask.hidden = false;
+    openBtn.setAttribute('aria-expanded', 'true');
+    document.body.style.overflow = 'hidden';
+    syncPanelQr();
+  }
+  function closePanel() {
+    mask.hidden = true;
+    openBtn.setAttribute('aria-expanded', 'false');
+    document.body.style.overflow = '';
+  }
+  /* 兜底：若商城二维码尚未由 applyQr 生成，从 .b2b 容器复制一份 */
+  function syncPanelQr() {
+    const target = document.getElementById('contact-site-qr');
+    const source = document.getElementById('site-qr');
+    if (!target || !source) return;
+    if (target.querySelector('canvas,img') || !source.querySelector('canvas,img')) return;
+    const node = source.querySelector('canvas,img');
+    target.innerHTML = '';
+    target.appendChild(node.cloneNode(true));
+    target.hidden = false;
+  }
+  openBtn.addEventListener('click', openPanel);
+  mask.addEventListener('click', (e) => {
+    if (e.target === mask || e.target.closest('.contact-close')) closePanel();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !mask.hidden) closePanel();
+  });
+
+  /* 顶部导航「特惠快递」入口：弹出寄件省钱海报 */
+  (function () {
+    if (!expressBtn || !expressMask) return;
+    function openExpress() {
+      closePanel();
+      expressMask.hidden = false;
+      expressBtn.setAttribute('aria-expanded', 'true');
+      document.body.style.overflow = 'hidden';
+    }
+    expressBtn.addEventListener('click', openExpress);
+    expressMask.addEventListener('click', (e) => {
+      if (e.target === expressMask || e.target.closest('.contact-close')) closeExpress();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !expressMask.hidden) closeExpress();
+    });
+  })();
+})();
 
 /* 页脚隐蔽管理入口：输入 admin 口令后显示供应链管理链接 */
 (function () {
@@ -579,7 +770,7 @@ async function buildSharePoster(p) {
   ctx.font = `13px ${FONT_BODY}`;
   ctx.fillText(wLabel, padX + 18, y + 24);
   ctx.font = `700 30px ${FONT_BODY}`;
-  ctx.fillText(displayPrice(p.wholesale_price) || '—', padX + 18, y + 58);
+  ctx.fillText(displayPrice(p.price) || '—', padX + 18, y + 58);
   const retail = p.retail_price && !p.retail_price.includes('报价') ? p.retail_price : '议价';
   ctx.textAlign = 'right';
   ctx.fillStyle = '#d97706';
@@ -730,6 +921,12 @@ function closeLightbox() {
 }
 
 grid.addEventListener('click', async (e) => {
+  // 点击「更多/收起」-> 展开/折叠描述
+  const hlBtn = e.target.closest('.hl-toggle');
+  if (hlBtn) {
+    toggleHighlight(hlBtn);
+    return;
+  }
   // 点击产品图片 -> 预览大图
   const cardImg = e.target.closest('.card-media img');
   if (cardImg) {
@@ -750,3 +947,443 @@ grid.addEventListener('click', async (e) => {
     btn.disabled = false;
   }
 });
+
+/* ================================================================
+ * 购物车（localStorage）
+ * ================================================================ */
+const CART_KEY = 'ls_cart';
+function getCart() {
+  try { const c = JSON.parse(localStorage.getItem(CART_KEY) || '[]'); return Array.isArray(c) ? c : []; }
+  catch (e) { return []; }
+}
+function setCart(c) {
+  localStorage.setItem(CART_KEY, JSON.stringify(c));
+  updateCartBadge();
+}
+function updateCartBadge() {
+  const c = getCart();
+  const n = c.reduce((s, it) => s + (parseInt(it.qty, 10) || 0), 0);
+  const b = document.getElementById('cart-badge');
+  const fab = document.getElementById('fab-badge');
+  const fabBtn = document.getElementById('cart-fab');
+  const txt = n > 99 ? '99+' : String(n);
+  if (b) { b.hidden = !n; b.textContent = txt; }
+  if (fab) { fab.hidden = !n; fab.textContent = txt; }
+  if (fabBtn) fabBtn.hidden = !n;
+}
+function cartQty(id) {
+  const it = getCart().find((x) => x.id === id);
+  return it ? (parseInt(it.qty, 10) || 0) : 0;
+}
+function addToCart(p, qty) {
+  const cart = getCart();
+  const n = Math.max(1, parseInt(qty, 10) || 1);
+  const idx = cart.findIndex((it) => it.id === p.id);
+  if (idx >= 0) cart[idx].qty = (parseInt(cart[idx].qty, 10) || 0) + n;
+  else cart.push({ id: p.id, name: p.name, spec: p.spec, price: p.price, base_price: p.price, retail: p.retail_price, moq: p.moq, brand: p.brand, image: p.image, qty: n });
+  setCart(cart);
+  toastTip('已加入购物车');
+}
+function cartEstimate(cart) {
+  let total = 0, ok = true;
+  for (const it of cart) {
+    // 合计按下单价（含加价）估算，与 /api/orders 服务端结算口径保持一致
+    const m = String(displayPrice(it.price || '') || '').match(/\d+(?:\.\d+)?/);
+    if (!m) { ok = false; break; }
+    total += parseFloat(m[0]) * (parseInt(it.qty, 10) || 1);
+  }
+  return ok ? Math.round(total * 100) / 100 : null;
+}
+/* 轻量提示（无 toast 组件，用临时浮层） */
+let tipEl = null;
+function toastTip(msg, isErr) {
+  if (!tipEl) {
+    tipEl = document.createElement('div');
+    tipEl.className = 'tip-toast';
+    document.body.appendChild(tipEl);
+  }
+  tipEl.textContent = msg;
+  tipEl.classList.toggle('err', !!isErr);
+  tipEl.classList.add('show');
+  clearTimeout(tipEl._t);
+  tipEl._t = setTimeout(() => tipEl.classList.remove('show'), 2200);
+}
+
+/* ================================================================
+ * Hash 路由：#/p/:id 详情 | #/cart 购物车 | #/orders 查单 | #/b/:key 品牌
+ * ================================================================ */
+const views = {
+  products: document.getElementById('products'),
+  detail: document.getElementById('view-detail'),
+  cart: document.getElementById('view-cart'),
+  orders: document.getElementById('view-orders'),
+  brand: document.getElementById('view-brand'),
+};
+function showView(name) {
+  for (const [k, el] of Object.entries(views)) {
+    if (!el) continue;
+    if (k === 'products') el.hidden = name !== 'products';
+    else el.hidden = name !== k;
+  }
+  window.scrollTo(0, 0);
+}
+function parseHash() {
+  const h = (location.hash || '').replace(/^#\/?/, '');
+  const seg = h.split('/')[0];
+  const param = h.split('/')[1] || '';
+  if (seg === 'p' && param) { showView('detail'); loadDetail(decodeURIComponent(param)); return; }
+  if (seg === 'cart') { showView('cart'); renderCart(); return; }
+  if (seg === 'orders') { showView('orders'); renderOrders(); return; }
+  if (seg === 'b' && param) { showView('brand'); loadBrand(decodeURIComponent(param)); return; }
+  showView('products');
+}
+window.addEventListener('hashchange', parseHash);
+
+/* ================================================================
+ * 商品详情页
+ * ================================================================ */
+let currentDetail = null;
+function detailRow(label, val) {
+  if (val === undefined || val === null || String(val).trim() === '') return '';
+  return `<div class="param-row"><span class="param-label">${escapeHtml(label)}</span><span class="param-value">${escapeHtml(val)}</span></div>`;
+}
+function detailHtml(p) {
+  const badge = p.badge
+    ? `<span class="card-badges">${String(p.badge).split(/[,，|]/).map((s) => s.trim()).filter(Boolean)
+        .map((b) => `<span class="card-badge${b.includes('低GI') ? ' gi' : ''}">${escapeHtml(b)}</span>`).join('')}</span>` : '';
+  const retailText = p.retail_price && !p.retail_price.includes('报价') ? p.retail_price : '议价';
+  const brandCard = p.brand
+    ? `<div class="detail-brand">
+        <div class="brand-card">
+          <div class="brand-card-info">
+            <b class="brand-card-name">${escapeHtml(p.brand)}</b>
+            <span class="brand-card-sub">产地品牌 · 点击查看品牌主页与资质</span>
+          </div>
+          <a class="btn btn-outline btn-sm" href="#/b/${encodeURIComponent(p.brand)}">品牌主页</a>
+        </div>
+      </div>` : '';
+  return `
+    <div class="detail-top">
+      <a class="detail-back" href="#/">← 返回商品列表</a>
+    </div>
+    <div class="detail-wrap">
+      <div class="detail-media">
+        ${p.image ? `<img src="${escapeHtml(safeImgUrl(p.image))}" alt="${escapeHtml(p.name)}" onclick="openLightbox('${safeImgUrl(p.image)}', '${escapeHtml(p.name).replace(/'/g, "\\'")}')" />` : '<div class="card-placeholder">🍱</div>'}
+        ${badge}
+      </div>
+      <div class="detail-info">
+        <h1 class="detail-name">${escapeHtml(p.name)}</h1>
+        <p class="detail-spec">${escapeHtml(p.spec || '')}${p.brand ? ' · ' + escapeHtml(p.brand) : ''}</p>
+        <div class="detail-price">
+          <div class="price-wholesale"><span>批发价</span><b>${escapeHtml(displayPrice(p.price))}</b></div>
+          <div class="price-retail"><span>零售</span><b>${escapeHtml(displayPrice(retailText))}</b></div>
+        </div>
+        ${p.highlights ? `<p class="detail-highlight">${escapeHtml(p.highlights)}</p>` : ''}
+        <div class="detail-meta">
+          ${p.cert ? `<span class="card-tag">${escapeHtml(p.cert)}</span>` : ''}
+          ${p.moq ? `<span class="card-tag amber">起订 ${escapeHtml(p.moq)}</span>` : ''}
+        </div>
+        <div class="detail-buy">
+          <div class="qty-picker">
+            <button type="button" class="qty-btn" data-action="qty-minus" aria-label="减少数量">−</button>
+            <span class="qty-num" id="detail-qty">1</span>
+            <button type="button" class="qty-btn" data-action="qty-plus" aria-label="增加数量">+</button>
+          </div>
+          <button type="button" class="btn btn-primary" data-action="add-cart">加入购物车</button>
+          <button type="button" class="btn btn-outline" data-action="buy-now">立即下单</button>
+        </div>
+      </div>
+    </div>
+    ${brandCard}
+    <div class="detail-params panel-params">
+      <h2>产品参数</h2>
+      ${detailRow('品牌', p.brand)}
+      ${detailRow('分类', p.category)}
+      ${detailRow('规格', p.spec)}
+      ${detailRow('批发价', displayPrice(p.price))}
+      ${detailRow('零售价', displayPrice(retailText))}
+      ${detailRow('起订量', p.moq)}
+      ${detailRow('储存方式', p.storage)}
+      ${detailRow('保质期', p.shelf_life)}
+      ${detailRow('认证/证书', p.cert)}
+      ${detailRow('价格说明', p.price_note)}
+    </div>
+    <div class="detail-tip">
+      <b>下单说明</b>
+      <p>1. 加入购物车后提交订单，凭订单号微信转账；2. 后台确认收款后安排发货；3. 可随时凭手机号+订单号查询进度。</p>
+    </div>`;
+}
+async function loadDetail(id) {
+  const el = views.detail;
+  el.innerHTML = '<div class="view-loading">加载中…</div>';
+  try {
+    const res = await fetch(`/api/products/${encodeURIComponent(id)}`);
+    if (!res.ok) { el.innerHTML = '<div class="view-empty">商品不存在或已下架</div>'; return; }
+    const p = await res.json();
+    currentDetail = p;
+    el.innerHTML = detailHtml(p);
+    document.getElementById('detail-qty').textContent = String(Math.max(1, cartQty(p.id) || 1));
+  } catch (err) {
+    el.innerHTML = '<div class="view-empty">加载失败，请稍后重试</div>';
+  }
+}
+
+/* ================================================================
+ * 购物车视图
+ * ================================================================ */
+function renderCart() {
+  const el = views.cart;
+  const cart = getCart();
+  if (!cart.length) {
+    el.innerHTML = `<div class="view-head"><h1>购物车</h1></div>
+      <div class="view-empty">购物车还是空的，去挑选心仪的商品吧</div>
+      <div class="cart-actions"><a class="btn btn-primary" href="#/">去逛逛</a></div>`;
+    return;
+  }
+  const estimate = cartEstimate(cart);
+  el.innerHTML = `
+    <div class="view-head"><h1>购物车 <span class="muted small">${cart.reduce((s, it) => s + it.qty, 0)} 件</span></h1></div>
+    <div class="cart-list">
+      ${cart.map((it) => `
+        <div class="cart-item" data-id="${escapeHtml(it.id)}">
+          ${it.image ? `<img class="cart-item-img" src="${escapeHtml(safeImgUrl(it.image))}" alt="" loading="lazy" />` : '<div class="cart-item-img placeholder">🍱</div>'}
+          <div class="cart-item-info">
+            <b class="cart-item-name">${escapeHtml(it.name)}</b>
+            <span class="cart-item-spec">${escapeHtml(it.spec || '')}${it.brand ? ' · ' + escapeHtml(it.brand) : ''}</span>
+            <span class="cart-item-price">批发 ${escapeHtml(displayPrice(it.price) || '议价')}</span>
+          </div>
+          <div class="cart-item-side">
+            <div class="qty-picker small">
+              <button type="button" class="qty-btn" data-action="cart-minus" data-id="${escapeHtml(it.id)}">−</button>
+              <span class="qty-num">${it.qty}</span>
+              <button type="button" class="qty-btn" data-action="cart-plus" data-id="${escapeHtml(it.id)}">+</button>
+            </div>
+            <button type="button" class="cart-remove" data-action="cart-remove" data-id="${escapeHtml(it.id)}">删除</button>
+          </div>
+        </div>`).join('')}
+    </div>
+    <div class="cart-summary">
+      <div class="cart-total">合计（下单金额）<b>${estimate !== null ? '¥' + estimate : '人工核算'}</b><span class="cart-total-tip">按当前价目计算，多档批发价可在备注中说明</span></div>
+    </div>
+    <div class="checkout-form panel-params">
+      <h2>提交订单</h2>
+      <label class="form-field"><span>公司/个人名称 *</span><input type="text" id="co-name" maxlength="40" placeholder="如：上海 XX 贸易有限公司 / 王小明" autocomplete="off" /></label>
+      <label class="form-field"><span>手机号 *</span><input type="tel" id="co-phone" maxlength="11" placeholder="11 位手机号，用于查单" autocomplete="off" /></label>
+      <label class="form-field"><span>地址备注</span><textarea id="co-remark" rows="2" maxlength="200" placeholder="收货地址、物流要求等（选填）"></textarea></label>
+      <div class="checkout-actions">
+        <button type="button" class="btn btn-primary" id="co-submit" data-action="submit-order">提交订单</button>
+      </div>
+      <p class="checkout-tip">下单不收款：提交后请按订单金额微信转账，后台确认后发货。</p>
+    </div>`;
+}
+async function submitOrder() {
+  const name = document.getElementById('co-name').value.trim();
+  const phone = document.getElementById('co-phone').value.trim();
+  const remark = document.getElementById('co-remark').value.trim();
+  if (!name) return toastTip('请填写公司/个人名称', true);
+  if (!/^1\d{10}$/.test(phone)) return toastTip('请填写正确的手机号', true);
+  const cart = getCart();
+  if (!cart.length) return toastTip('购物车为空', true);
+  const btn = document.getElementById('co-submit');
+  btn.disabled = true;
+  btn.textContent = '提交中…';
+  try {
+    const res = await fetch('/api/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customer_name: name, customer_phone: phone, remark, items: cart }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      toastTip((data && data.message) || '下单失败', true);
+      btn.disabled = false;
+      btn.textContent = '提交订单';
+      return;
+    }
+    setCart([]);
+    localStorage.setItem('ls_query_phone', phone);
+    toastTip(`下单成功：${data.order.id}`);
+    setTimeout(() => { location.hash = '#/orders'; }, 600);
+  } catch (err) {
+    toastTip('网络异常，请重试', true);
+    btn.disabled = false;
+    btn.textContent = '提交订单';
+  }
+}
+
+/* ================================================================
+ * 查单视图
+ * ================================================================ */
+const ORDER_STATUS_LABEL = { pending: '待确认支付', paid: '已支付待发货', shipped: '已发货', done: '已完成', cancelled: '已取消' };
+const ORDER_STATUS_CLS = { pending: 'st-pending', paid: 'st-paid', shipped: 'st-shipped', done: 'st-done', cancelled: 'st-cancelled' };
+function statusBadge(s) {
+  return `<span class="order-status ${ORDER_STATUS_CLS[s] || 'st-cancelled'}">${ORDER_STATUS_LABEL[s] || escapeHtml(s || '未知')}</span>`;
+}
+function fmtTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const p = (n, l = 2) => String(n).padStart(l, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function orderItemHtml(it) {
+  return `<div class="order-line">
+    ${it.image ? `<img src="${escapeHtml(safeImgUrl(it.image))}" alt="" loading="lazy" />` : '<span class="order-line-ph">🍱</span>'}
+    <div class="order-line-info"><b>${escapeHtml(it.name)}</b><span>${escapeHtml(it.spec || '')} × ${it.qty}</span></div>
+    <span class="order-line-price">${escapeHtml(it.price || '议价')}</span>
+  </div>`;
+}
+function orderCardHtml(o) {
+  const totalQty = o.items.reduce((s, it) => s + (it.qty || 1), 0);
+  return `<div class="order-card" data-id="${escapeHtml(o.id)}">
+    <div class="order-card-head">
+      <div class="order-card-left">
+        <b class="order-no">${escapeHtml(o.id)}</b>
+        <span class="order-time">${fmtTime(o.created_at)}</span>
+      </div>
+      ${statusBadge(o.status)}
+    </div>
+    <div class="order-card-summary">${escapeHtml(o.customer_name)} · ${escapeHtml(o.customer_phone)} · ${totalQty} 件商品</div>
+    <div class="order-card-body" hidden>
+      <div class="order-lines">${(o.items || []).map(orderItemHtml).join('')}</div>
+      ${o.remark ? `<p class="order-remark">备注：${escapeHtml(o.remark)}</p>` : ''}
+      ${o.tracking_no ? `<p class="order-tracking">物流单号：${escapeHtml(o.tracking_no)}</p>` : ''}
+      ${o.status_note ? `<p class="order-note">${escapeHtml(o.status_note)}</p>` : ''}
+      ${o.status === 'pending' ? `<p class="order-tip">请微信转账后等待确认，或联系客服咨询</p>` : ''}
+    </div>
+    <div class="order-card-foot">
+      <button type="button" class="btn btn-outline btn-sm" data-action="order-toggle">查看明细</button>
+    </div>
+  </div>`;
+}
+function renderOrders() {
+  const el = views.orders;
+  const savedPhone = localStorage.getItem('ls_query_phone') || '';
+  el.innerHTML = `
+    <div class="view-head"><h1>查单</h1></div>
+    <div class="order-query panel-params">
+      <div class="order-query-row">
+        <label class="form-field"><span>手机号 *</span><input type="tel" id="q-phone" maxlength="11" placeholder="下单时填写的手机号" autocomplete="off" value="${escapeHtml(savedPhone)}" /></label>
+        <label class="form-field"><span>订单号（选填）</span><input type="text" id="q-order" maxlength="20" placeholder="留空则显示该手机号全部订单" autocomplete="off" /></label>
+      </div>
+      <div class="checkout-actions"><button type="button" class="btn btn-primary" data-action="query-orders">查询</button></div>
+    </div>
+    <div id="order-results"></div>`;
+  if (savedPhone) document.getElementById('q-phone').select();
+}
+async function queryOrdersNow() {
+  const phone = document.getElementById('q-phone').value.trim();
+  const orderId = document.getElementById('q-order').value.trim();
+  if (!/^1\d{10}$/.test(phone)) return toastTip('请填写正确的手机号', true);
+  const box = document.getElementById('order-results');
+  box.innerHTML = '<div class="view-loading">查询中…</div>';
+  try {
+    const res = await fetch('/api/orders/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone, order_id: orderId || '' }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) { box.innerHTML = '<div class="view-empty">查询失败，请稍后重试</div>'; return; }
+    if (!data.orders.length) {
+      box.innerHTML = `<div class="view-empty">${orderId ? '未找到该订单，请核对订单号与手机号' : '该手机号暂无订单，下单后即可查询'}</div>`;
+      return;
+    }
+    box.innerHTML = `<div class="order-list">${data.orders.map(orderCardHtml).join('')}</div>`;
+  } catch (err) {
+    box.innerHTML = '<div class="view-empty">网络异常，请重试</div>';
+  }
+}
+
+/* ================================================================
+ * 品牌页
+ * ================================================================ */
+async function loadBrand(key) {
+  const el = views.brand;
+  el.innerHTML = '<div class="view-loading">加载中…</div>';
+  let brand = null;
+  let products = [];
+  try {
+    const res = await fetch(`/api/brands/profile/${encodeURIComponent(key)}`);
+    if (res.ok) {
+      const data = await res.json();
+      brand = data.brand || null;
+      products = (brand && brand.products) || [];
+    }
+  } catch (e) { /* 档案缺失时降级 */ }
+  if (!brand && !products.length) {
+    try {
+      const res = await fetch(`/api/products?brand=${encodeURIComponent(key)}`);
+      if (res.ok) { const data = await res.json(); products = Array.isArray(data) ? data : (data.products || []); }
+    } catch (e) { /* ignore */ }
+  }
+  const certs = (brand && Array.isArray(brand.certs)) ? brand.certs : [];
+  el.innerHTML = `
+    <div class="view-head brand-page-head">
+      <h1>${escapeHtml(key)}</h1>
+      <p>${products.length} 个在售产品${brand ? ' · 产地品牌档案' : ''}</p>
+    </div>
+    ${(!brand || !brand.intro) ? '<div class="brand-intro"><h2>品牌介绍</h2><p class="brand-empty">该品牌暂未维护公司介绍与资质档案，可联系客服获取详情</p></div>' : ''}
+    ${brand && brand.intro ? `<div class="brand-intro"><h2>品牌介绍</h2><p>${escapeHtml(brand.intro).replace(/\n/g, '<br />')}</p></div>` : ''}
+    ${certs.length ? `<div class="brand-certs"><h2>资质证书</h2><div class="cert-grid">${certs.map((c) => `<img src="${escapeHtml(safeImgUrl(c))}" alt="资质证书" loading="lazy" onclick="openLightbox('${safeImgUrl(c)}', '资质证书')" />`).join('')}</div></div>` : ''}
+    ${brand && brand.services ? `<div class="brand-services"><h2>合作方式</h2><p>${escapeHtml(brand.services).replace(/\n/g, '<br />')}</p></div>` : ''}
+    ${brand && brand.contact ? `<div class="brand-contact"><h2>联系方式</h2><p>${escapeHtml(brand.contact).replace(/\n/g, '<br />')}</p></div>` : ''}
+    <h2 class="brand-products-title">该品牌在售产品</h2>
+    ${products.length ? `<div class="product-grid">${products.map(cardHtml).join('')}</div>` : '<div class="view-empty">该品牌暂无在售产品</div>'}
+    <div class="cart-actions"><a class="btn btn-outline" href="#/">返回全部商品</a></div>`;
+}
+
+/* ================================================================
+ * 全局事件分发（data-action）
+ * ================================================================ */
+function detailQty() { return Math.max(1, parseInt((document.getElementById('detail-qty') || { textContent: '1' }).textContent, 10) || 1); }
+function changeQty(delta) {
+  const el = document.getElementById('detail-qty');
+  if (!el) return;
+  el.textContent = String(Math.max(1, (parseInt(el.textContent, 10) || 1) + delta));
+}
+function cartItemQty(id, delta) {
+  const cart = getCart();
+  const it = cart.find((x) => x.id === id);
+  if (!it) return;
+  it.qty = Math.max(1, (parseInt(it.qty, 10) || 1) + delta);
+  setCart(cart);
+  renderCart();
+}
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  if (action === 'qty-minus') changeQty(-1);
+  else if (action === 'qty-plus') changeQty(1);
+  else if (action === 'add-cart') {
+    if (currentDetail) addToCart(currentDetail, detailQty());
+  } else if (action === 'buy-now') {
+    if (currentDetail) addToCart(currentDetail, detailQty());
+    location.hash = '#/cart';
+  } else if (action === 'cart-minus') cartItemQty(btn.dataset.id, -1);
+  else if (action === 'cart-plus') cartItemQty(btn.dataset.id, 1);
+  else if (action === 'cart-remove') {
+    const cart = getCart().filter((x) => x.id !== btn.dataset.id);
+    setCart(cart);
+    renderCart();
+  } else if (action === 'submit-order') {
+    submitOrder();
+  } else if (action === 'query-orders') {
+    queryOrdersNow();
+  } else if (action === 'order-toggle') {
+    const card = btn.closest('.order-card');
+    if (!card) return;
+    const body = card.querySelector('.order-card-body');
+    const hidden = body.hidden;
+    body.hidden = !hidden;
+    btn.textContent = hidden ? '收起明细' : '查看明细';
+  }
+});
+
+const cartOpenBtn = document.getElementById('cart-open');
+if (cartOpenBtn) cartOpenBtn.addEventListener('click', () => { location.hash = '#/cart'; });
+const ordersOpenBtn = document.getElementById('orders-open');
+if (ordersOpenBtn) ordersOpenBtn.addEventListener('click', () => { location.hash = '#/orders'; });
+
+updateCartBadge();
+parseHash();

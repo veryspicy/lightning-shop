@@ -10,6 +10,6 @@
     "upload:images": "node scripts/upload-r2.mjs"
   },
   "devDependencies": {
-    "wrangler": "^3.90.0"
+    "wrangler": "^4.155.0"
   }
 }
