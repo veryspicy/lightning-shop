@@ -271,6 +271,51 @@ export async function d1BrandProfiles(env, prefix) {
   }
 }
 
+/**
+ * 订单创建主写（阶段 2）：纯 INSERT，不带 ON CONFLICT DO UPDATE。
+ * 订单号由 orders.id 主键唯一兜底——重号直接报冲突由调用方换号重试，
+ * 而不是像 KV 那样静默覆盖掉已有订单（丢单）。
+ * 返回 { ok:true } / { ok:false, reason:'conflict' } / { ok:false, reason:'no_db'|'error' }。
+ */
+export async function d1InsertOrder(env, order) {
+  if (!env.DB || !order || !order.id) return { ok: false, reason: 'no_db' };
+  const items = Array.isArray(order.items) ? order.items : [];
+  try {
+    const stmts = [
+      env.DB.prepare(`
+        INSERT INTO orders (id, customer_name, customer_phone, remark, status, version,
+          tracking_no, status_note, total_qty, total_amount, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        String(order.id), String(order.customer_name || '').slice(0, 40),
+        String(order.customer_phone || '').slice(0, 20),
+        String(order.remark || '').slice(0, 200), order.status || 'pending', Number(order.version || 1),
+        order.tracking_no || '', order.status_note || '',
+        Number(order.total_qty || 0), Number(order.total_amount || 0),
+        order.created_at || nowIso(), order.updated_at || nowIso(),
+      ),
+    ];
+    items.forEach((it, idx) => {
+      stmts.push(env.DB.prepare(`
+        INSERT INTO order_items (order_id, line_no, product_id, name, spec, price, base_price, moq, qty, image)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        String(order.id), idx + 1, String(it.id || ''),
+        String(it.name || '').slice(0, 80), String(it.spec || '').slice(0, 60),
+        String(it.price || '').slice(0, 40), String(it.base_price || '').slice(0, 40),
+        String(it.moq || '').slice(0, 40), Number.parseInt(it.qty, 10) || 1,
+        String(it.image || '').slice(0, 300),
+      ));
+    });
+    await env.DB.batch(stmts);
+    return { ok: true };
+  } catch (e) {
+    const msg = String(e && e.message ? e.message : e);
+    if (/UNIQUE constraint failed|PRIMARY KEY|constraint/i.test(msg)) return { ok: false, reason: 'conflict' };
+    return { ok: false, reason: 'error', error: msg.slice(0, 200) };
+  }
+}
+
 /** 单条订单读取（后台订单详情/状态页用）。返回 null 表示查无此单或 D1 不可用，由调用方回退 KV。 */
 export async function d1OrderGet(env, id) {
   if (!env.DB || !id) return null;

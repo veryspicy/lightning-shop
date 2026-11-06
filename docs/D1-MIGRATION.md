@@ -134,7 +134,7 @@ curl -s -H "x-admin-token: <token>" https://<domain>/api/admin/d1/verify?sample=
 
 ### 阶段 2：写路径切 D1
 
-**第一刀：订单状态流转改 D1 原子 CAS（本次 PR）**
+**第一刀：订单状态流转改 D1 原子 CAS（已合并 PR #27）**
 
 KV 时代 `POST /api/admin/orders/:id/status` 是「读 → 版本校验 → 写前重读 → 写」，两次读之间仍有窗口，并发下后提交者会覆盖先提交者的流转（只是把窗口缩小，没有消除）。
 
@@ -155,9 +155,25 @@ D1 单库单线程串行写 + 条件更新 = 真 CAS：`meta.changes = 1` 即赢
 - **客户聚合照旧重算**：取消单会影响客户消费统计，CAS 分支同样调用 `upsertCustomer`。
 - **D1 不可用（无 binding / 抛错）自动退回**原 KV 读改写逻辑，行为与阶段 1 一致，不新增故障模式。
 
+**第二刀：订单创建改 D1 主写（本次 PR）**
+
+KV 时代下单是「`genOrderId` 用 `KV.get` 探重 → `saveOrder` 写 KV」，两处都靠不住：
+
+- KV 无事务，先查后写在并发下等于没查（两个请求可同时查到空），重号会**静默覆盖**已有订单，即丢单；
+- KV 最终一致，刚探过不存在的 key 也可能被并发写入顶掉。
+
+改为 `src/d1.js` 新增 `d1InsertOrder`（**纯 INSERT，不带 `ON CONFLICT DO UPDATE`**）+ 路由侧换号重试：
+
+- 订单号唯一性由 `orders.id` 主键兜底，冲突时 D1 直接报错，捕获后换号重试（最多 5 次），彻底消除静默覆盖；
+- 唯一性交给库之后，生成侧只需把随机空间做大：`genOrderId` 改为纯函数，4 字节 → 6 字节（2^48），并去掉 KV 存在性探测这 1~3 次读；
+- 写成功后 KV 只做**副本回写**（`KV.put` 整单），不再走 `saveOrder`，避免对 D1 再做一次 `DELETE order_items + 逐条 INSERT`；
+- **D1 报错直接失败（500）**，绝不退化成「只写 KV」的单边写入——读路径以 D1 为准，只写 KV 等于后台看不到这单；
+- **D1 未绑定**（本地无 binding）才退回 KV 单写，保持可降级。
+
+连带修正：客户聚合来源从 `KV.list({prefix:'orders:'})` 改为 `getOrders()`（D1 优先、KV 兜底）。KV 侧已降级为副本且 `list` 弱一致，继续按 KV 聚合会在刚下单时漏掉新单，导致客户消费额偏小。
+
 **后续待做**
 
-- 订单创建改 D1 主写，靠 `orders.id` 主键冲突替代 `genOrderId` 的 KV 存在性探测（现在重号仍是静默覆盖风险）。
 - 商品写路径：`products:{id}` 存在性检查、`rebuildProductsIndex`（KV 全量 list + 重建索引）改由 D1 查询直接生成索引。
 - 配置类小文档（`site:*` / `config:categories` / `roles` / `users` / 品牌档案）挂 `d1PutDoc` 影子写后再切读，`d1GetDoc` / `d1BrandProfiles` 已就绪。
 
