@@ -37,8 +37,8 @@ migration_state   迁移游标 + 影子写脏标记
 
 | 阶段 | 内容 | 读路径 | 风险 |
 | --- | --- | --- | --- |
-| **0（本次 PR）** | 建表 + 影子双写 + 搬迁端点 + 一致性核对 | 仍读 KV | 极低，D1 挂不影响主流程 |
-| 1 | 读切换到 D1（商品列表/详情、后台订单、客户列表），KV 变缓存 | D1 | 中，需先跑阶段 0 核对通过 |
+| **0（已合并 PR #24）** | 建表 + 影子双写 + 搬迁端点 + 一致性核对 | 仍读 KV | 极低，D1 挂不影响主流程 |
+| **1（本次 PR）** | 读切换到 D1（商品列表、订单列表/查单、客户列表），KV 变兜底缓存；补齐 products/doc 写点的影子双写 | D1（异常回退 KV） | 中，已在阶段 0 核对通过后执行 |
 | 2 | 写真源切 D1（事务、订单号唯一约束、去掉墓碑/重建索引补偿逻辑） | D1 | 中 |
 | 3 | 清理 KV 写路径与遗留补偿代码，KV 仅做热点缓存 | D1 | 低 |
 
@@ -67,6 +67,63 @@ curl -X POST -H "x-admin-token: <token>" https://<domain>/api/admin/d1/migrate?l
 curl -H "x-admin-token: <token>" https://<domain>/api/admin/d1/verify?sample=20
 ```
 
+### 阶段 1 具体改动
+
+前置：阶段 0 已合并部署，`/api/admin/d1/verify` 结果为 `kv == d1`、`last_dirty = null`。
+
+**读路径切 D1（三处，均带 KV 兜底）**
+
+- `getProducts`：改走 `d1ProductList(env)`（`products WHERE deleted = 0 ORDER BY seq, id`）。返回 `null`（D1 异常/未绑定）时回退 `KV.get('products')` —— 前台绝不因库抖动空页。
+- `getOrders`：改走 `d1OrderList(env)`（订单条件下推 + 明细一次 `IN` 查询），取代 KV 时代的 `list()` 全扫 + 逐条 `get`；异常回退原 KV 逻辑。
+- `getCustomers`：改走 `d1CustomerList(env)`（`v_customer_stats` 视图实时聚合），取代 KV 里靠下单/改单回写的 `customers:` 聚合缓存。
+
+**补齐影子双写（阶段 0 的写覆盖缺口）**
+
+阶段 0 只对「单条新增/编辑商品、下单、下单状态流转、删除商品」挂了影子写，以下四条写路径直接 `KV.put`，会让 D1 与 KV 分叉，读切 D1 后表现为「后台改完前台看不见」：
+
+| 位置 | 场景 | 修复 |
+| --- | --- | --- |
+| 分类重命名 / 删除同步 | 批量改产品 `category` | 改走 `saveProduct` |
+| `PATCH /api/products/batch` | 批量改字段 | 改走 `saveProduct` |
+| `POST /api/admin/products/import` | 批量导入（新增 + upsert） | 改走 `saveProduct` |
+
+**表结构补列**
+
+- `migrations/0002_order_items_base_price.sql`：`order_items` 补 `base_price`（出厂价快照）。后台订单页的成本列与成本合计读该字段，0001 建表时漏了。历史行回填 SQL：
+
+```sql
+UPDATE order_items
+SET base_price = COALESCE((SELECT wholesale_price FROM products p WHERE p.id = order_items.product_id), '')
+WHERE base_price = '';
+```
+
+**阶段 1 故意不切的部分**
+
+- 配置类小文档（`site:hero` / `site:price` / `site:qr` / `config:categories` / `roles` / `users` / 品牌档案 / `meta:deletedProducts`）：写路径尚未挂 `d1PutDoc` 影子写，此时切读会让「后台刚改的配置读回旧值」。留到阶段 2 与写真源一起切，`d1GetDoc` / `d1BrandProfiles` 已就绪待用。
+- `sessions:` 会话与 `cache:epoch` 缓存版本号：KV 的语义（TTL + 高频读）本就适用，不进 D1。
+- `products:{id}` 单条读与存在性检查：仍读 KV（阶段 2 写真源切换时一并改）。
+
+### 阶段 1 上线顺序
+
+```bash
+# 1) 补列（可重复执行，重复时报 duplicate column 属预期）
+wrangler d1 execute lightning-shop-db --remote --file=migrations/0002_order_items_base_price.sql
+
+# 2) 回填历史订单明细的出厂价
+wrangler d1 execute lightning-shop-db --remote --command "UPDATE order_items SET base_price = COALESCE((SELECT wholesale_price FROM products p WHERE p.id = order_items.product_id), '') WHERE base_price = '';"
+
+# 3) 部署（读切 D1 + 兜底）
+wrangler deploy
+
+# 4) 冒烟：前台商品列表、后台订单列表、客户列表、查单各一次
+curl -s https://<domain>/api/products | head -c 200
+curl -s -H "x-admin-token: <token>" https://<domain>/api/admin/orders | head -c 200
+curl -s -H "x-admin-token: <token>" https://<domain>/api/admin/customers | head -c 200
+
+# 5) 再核对一次一致性
+curl -s -H "x-admin-token: <token>" https://<domain>/api/admin/d1/verify?sample=20
+```
+
 ## 5. 避坑清单
 
 - **D1 读副本是最终一致**：会话/读己之写场景必须 `withSession("first-primary")`，否则刚写的订单可能查不到。
@@ -78,4 +135,5 @@ curl -H "x-admin-token: <token>" https://<domain>/api/admin/d1/verify?sample=20
 
 ## 6. 回滚
 
-阶段 0 不改变任何读路径，回滚只是把 `wrangler.toml` 里的 D1 binding 移除并重新部署；KV 数据全部原样保留，`DROP TABLE` 即可清空 D1。
+- **阶段 0**：不改变任何读路径，回滚只是把 `wrangler.toml` 里的 D1 binding 移除并重新部署；KV 数据全部原样保留，`DROP TABLE` 即可清空 D1。
+- **阶段 1**：回滚用 `wrangler versions deploy` 回退到上一版本即可（KV 仍是全量主写，数据未丢）。若只是 D1 单点故障、不想回版本，把 `d1ProductList` / `d1OrderList` / `d1CustomerList` 的返回置为 `null`，三个读函数会自动走 KV 兜底分支。`order_items.base_price` 是新增列，回滚后旧代码不读它，无需回退 DDL。

@@ -36,13 +36,20 @@ import {
   d1SaveProduct,
   d1DeleteProduct,
   d1SaveOrder,
+  d1ProductList,
+  d1OrderList,
+  d1CustomerList,
   migrateBatch,
   verifyConsistency,
 } from './d1.js';
 
 const CATEGORY_ORDER = ['低GI杂粮', '营养粮油', '黄柿子火锅底料', '野生苦菜', '坚果玉米', '羊杂碎'];
 
+// 阶段 1：商品读路径以 D1 为准。D1 不可用（未绑定/查询异常）时回退 KV，
+// 前台绝不能因为库抖动变成空页——读切的前提是可降级。
 async function getProducts(env) {
+  const rows = await d1ProductList(env);
+  if (Array.isArray(rows) && rows.length) return rows;
   const raw = await env.KV.get('products', 'json');
   if (raw) return raw;
   return [];
@@ -828,7 +835,13 @@ function withOrderTotals(order) {
   return { ...order, ...orderTotals(order) };
 }
 
+// 阶段 1：订单读路径切 D1（订单明细一次 IN 查询取回，取代 KV 的 key 全扫 + 逐条 get）。
+// D1 异常或无数据时回退 KV，保证后台列表与查单链路不中断。
 async function getOrders(env) {
+  try {
+    const rows = await d1OrderList(env);
+    if (Array.isArray(rows) && rows.length) return rows.map(withOrderTotals);
+  } catch (_) { /* 回退 KV */ }
   const list = await env.KV.list({ prefix: 'orders:' });
   const out = [];
   for (const k of list.keys) {
@@ -922,7 +935,13 @@ async function recomputeCustomers(env) {
   return Array.from(agg.values()).sort((a, b) => String(b.last_order_at || '').localeCompare(String(a.last_order_at || '')));
 }
 
+// 阶段 1：客户档案改由 D1 视图 v_customer_stats 实时聚合（KV 时代的 customers: 聚合记录只是缓存）。
+// 视图为空或 D1 异常时回退 KV，兼容尚未迁移的历史环境。
 async function getCustomers(env) {
+  try {
+    const rows = await d1CustomerList(env);
+    if (Array.isArray(rows) && rows.length) return rows;
+  } catch (_) { /* 回退 KV */ }
   const list = await env.KV.list({ prefix: 'customers:' });
   const out = [];
   for (const k of list.keys) {
@@ -1344,7 +1363,8 @@ async function handleApi(request, env, url) {
       let renamed = 0;
       if (changed.length) {
         for (const p of changed) p.category = name;
-        for (const p of changed) await env.KV.put(`products:${p.id}`, JSON.stringify(p));
+        // 走 saveProduct：KV 主写 + D1 影子写必须同进，漏一处就会让 D1 与 KV 分叉
+        for (const p of changed) await saveProduct(env, p);
         await rebuildProductsIndex(env, changed.map((p) => p.id));
         renamed = changed.length;
       }
@@ -1365,7 +1385,7 @@ async function handleApi(request, env, url) {
       }
       // 自动发现分类（extra）：同步清理产品分类，避免删除后重新聚合出现
       for (const p of used) p.category = '未分类';
-      for (const p of used) await env.KV.put(`products:${p.id}`, JSON.stringify(p));
+      for (const p of used) await saveProduct(env, p);
       await rebuildProductsIndex(env);
       return jsonNoCache({ ok: true, categories: configured, removed: used.length });
     }
@@ -1485,7 +1505,7 @@ async function handleApi(request, env, url) {
     }
     if (updated > 0) {
       for (const item of changed) {
-        await env.KV.put(`products:${item.id}`, JSON.stringify(item));
+        await saveProduct(env, item);
       }
       await rebuildProductsIndex(env, changed.map((p) => p.id));
     }
@@ -1562,11 +1582,12 @@ async function handleApi(request, env, url) {
         upsert.set(key, { item, idx: null });
       }
     }
+    // 导入也是一条写路径：必须与单条新增/编辑共用 saveProduct，否则 D1 少掉整批商品
     if (imported.length) {
-      for (const item of imported) await env.KV.put(`products:${item.id}`, JSON.stringify(item));
+      for (const item of imported) await saveProduct(env, item);
     }
     if (updated.length) {
-      for (const u of updated) await env.KV.put(`products:${u.merged.id}`, JSON.stringify(u.merged));
+      for (const u of updated) await saveProduct(env, u.merged);
     }
     // 单条写完后统一重建索引：导入与后台编辑并发时不会相互覆盖
     const touched = [...imported, ...updated.map((u) => u.merged)].map((x) => x.id);

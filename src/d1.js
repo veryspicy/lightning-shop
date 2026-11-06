@@ -95,11 +95,13 @@ export async function d1SaveOrder(env, order) {
     ];
     items.forEach((it, idx) => {
       stmts.push(env.DB.prepare(`
-        INSERT INTO order_items (order_id, line_no, product_id, name, spec, price, moq, qty, image)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO order_items (order_id, line_no, product_id, name, spec, price, base_price, moq, qty, image)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         String(order.id), idx + 1, String(it.id || ''), String(it.name || '').slice(0, 80),
         String(it.spec || '').slice(0, 60), String(it.price || '').slice(0, 40),
+        // base_price（出厂价）后台成本列要用：公开响应已剔除，但 D1 必须留存快照
+        String(it.base_price || '').slice(0, 40),
         String(it.moq || '').slice(0, 40), Number.parseInt(it.qty, 10) || 1,
         String(it.image || '').slice(0, 300),
       ));
@@ -215,6 +217,58 @@ export async function verifyConsistency(env, sample = 5) {
     ok: missing.length === 0 && missingOrders.length === 0,
     last_dirty: dirty ? dirty.value : null,
   };
+}
+
+/* ================= 阶段 1：读路径（D1 优先，KV 兜底） ================= */
+
+/**
+ * 商品列表读取。返回 null 表示「D1 不可用」，由调用方回退 KV——
+ * 读切 D1 的前提是前台绝不空页，任何 D1 抖动都必须能降级到 KV。
+ */
+export async function d1ProductList(env) {
+  if (!env.DB) return null;
+  try {
+    const rs = await env.DB.prepare(`
+      SELECT id, seq, name, brand, category, spec, wholesale_price, retail_price,
+             price_note, moq, highlights, storage, shelf_life, cert, badge, image,
+             status, created_at, updated_at
+      FROM products WHERE deleted = 0 ORDER BY seq, id
+    `).all();
+    return rs.results || [];
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 配置类小文档读取（kv_doc）。返回 null 表示缺失或 D1 不可用。 */
+export async function d1GetDoc(env, key) {
+  if (!env.DB || !key) return null;
+  try {
+    const row = await env.DB.prepare('SELECT v FROM kv_doc WHERE k = ?').bind(String(key)).first();
+    if (!row || row.v === null || row.v === undefined) return null;
+    try { return JSON.parse(row.v); } catch (_) { return row.v; }
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 品牌档案列表读取：kv_doc 里 brand:profile: 前缀的全部文档。 */
+export async function d1BrandProfiles(env, prefix) {
+  if (!env.DB || !prefix) return null;
+  try {
+    const rs = await env.DB.prepare(
+      "SELECT k, v FROM kv_doc WHERE k LIKE ? ORDER BY k",
+    ).bind(`${prefix}%`).all();
+    const out = [];
+    for (const row of rs.results || []) {
+      let v = row.v;
+      try { v = JSON.parse(row.v); } catch (_) { /* 原样保留 */ }
+      if (v && typeof v === 'object') out.push(v);
+    }
+    return out;
+  } catch (_) {
+    return null;
+  }
 }
 
 /** 客户列表：一条 GROUP BY 取代 KV 时代「全扫订单 + 回写聚合」。 */

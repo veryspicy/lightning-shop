@@ -23,3 +23,6 @@ temp/
 # wrangler build output
 .wrangler-dist/
 
+
+# wrangler deploy temp copy
+.deploy/
