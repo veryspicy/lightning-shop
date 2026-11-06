@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Lightning Shop Worker
  * 路由：
  *   GET  /api/products            -> 全部产品（支持 ?category=  ?brand=  ?q= 过滤；自动排除下架）
@@ -47,6 +47,13 @@ import {
   d1PutDoc,
   d1DeleteDoc,
   d1BrandProfiles,
+  d1SaveVerifyCode,
+  d1CountRecentCodes,
+  d1LatestLiveCode,
+  d1BumpCodeAttempt,
+  d1ConsumeCode,
+  d1PurgeCodes,
+  d1OrdersByPhone,
   migrateBatch,
   verifyConsistency,
 } from './d1.js';
@@ -567,6 +574,14 @@ function publicOrder(order) {
     status: String(o.status || ''),
     customer_name: String(o.customer_name || ''),
     customer_phone: maskPhone(o.customer_phone),
+    // 收货信息：查单接口已做二次验证，本人可见自己的完整地址
+    receiver_name: String(o.receiver_name || ''),
+    receiver_phone: maskPhone(o.receiver_phone || ''),
+    province: String(o.province || ''),
+    city: String(o.city || ''),
+    district: String(o.district || ''),
+    address: String(o.address || ''),
+    postal_code: String(o.postal_code || ''),
     remark: String(o.remark || ''),
     tracking_no: String(o.tracking_no || ''),
     status_note: String(o.status_note || ''),
@@ -918,9 +933,20 @@ async function createOrder(env, order) {
 }
 
 function sanitizeOrder(raw) {
-  const name = String(raw.customer_name || '').trim().slice(0, 40);
-  const phone = String(raw.customer_phone || '').trim().slice(0, 20);
-  const remark = String(raw.remark || '').trim().slice(0, 200);
+  const clip = (v, n) => String(v === undefined || v === null ? '' : v).trim().slice(0, n);
+  const name = clip(raw.customer_name, 40);
+  const phone = clip(raw.customer_phone, 20);
+  const remark = clip(raw.remark, 200);
+  // 结构化收货信息：长度上限与迁移里的列定义保持一致，防止 D1 写入时被静默截断
+  const addr = {
+    receiver_name: clip(raw.receiver_name, 40),
+    receiver_phone: clip(raw.receiver_phone, 20),
+    province: clip(raw.province, 30),
+    city: clip(raw.city, 30),
+    district: clip(raw.district, 30),
+    address: clip(raw.address, 200),
+    postal_code: clip(raw.postal_code, 12),
+  };
   const items = Array.isArray(raw.items)
     ? raw.items.slice(0, 30).map((it) => ({
         id: String(it.id || '').slice(0, 40),
@@ -932,7 +958,268 @@ function sanitizeOrder(raw) {
         image: safeImageUrl(String(it.image || '').slice(0, 300)),
       }))
     : [];
-  return { customer_name: name, customer_phone: phone, remark, items };
+  return { customer_name: name, customer_phone: phone, remark, ...addr, items };
+}
+
+/**
+ * 收货地址校验：结构化地址是发货依据，下单必须齐全——否则地址会再次退化进 remark，
+ * 后台无法按地区筛选、发货必漏字段。仅邮编选填。
+ * 返回空串表示通过，否则返回给用户看的错误文案。
+ */
+function addressIssue(order) {
+  const o = order || {};
+  if (!String(o.province || '').trim()) return '请填写收货省份';
+  if (!String(o.city || '').trim()) return '请填写收货城市';
+  if (!String(o.receiver_name || '').trim()) return '请填写收货人';
+  if (!/^1\d{10}$/.test(String(o.receiver_phone || '').trim())) return '请填写正确的收货手机号';
+  if (String(o.address || '').trim().length < 5) return '请填写详细收货地址（不少于 5 个字）';
+  if (o.postal_code && !/^\d{6}$/.test(String(o.postal_code).trim())) return '邮编格式不正确（6 位数字）';
+  return '';
+}
+
+/* ==================== 查单二次验证 ====================
+ * 背景：POST/GET /api/orders/query 原来只凭手机号一个因子，可被枚举拖库（IDOR/PII 泄露）。
+ * 两档主体机制，都零成本，按环境变量自动选择：
+ *   scope —— 手机号 + 完整订单号。订单号含 48bit 随机段，空间 2^48，无法枚举。零依赖、零成本。
+ *   sms_* —— 手机号 + 短信验证码。需企业资质过签名报备 + 短信套餐，非零成本，故做成可插拔：
+ *            注入 secret 即切档，业务代码不动。免费额度（腾讯云/阿里云 100~500 条，3 个月）只够体验。
+ * 可选叠加：配置 TURNSTILE_SECRET + TURNSTILE_SITE_KEY 后，scope 档追加 Cloudflare Turnstile
+ *   人机校验（Free 计划挑战数不限、免费），进一步压掉脚本枚举。
+ */
+const OTP_TTL_SEC = 300;
+const OTP_MAX_ATTEMPTS = 3;
+const OTP_PER_HOUR = 5;
+const OTP_PER_DAY = 10;
+const OTP_PURPOSE = 'order_query';
+
+function otpMode(env) {
+  const p = String(env.SMS_PROVIDER || '').trim().toLowerCase();
+  if (p === 'tencent' && env.SMS_TC_SECRET_ID && env.SMS_TC_SECRET_KEY
+      && env.SMS_TC_SDK_APP_ID && env.SMS_TC_TEMPLATE_ID) return 'sms_tencent';
+  if (p === 'aliyun' && env.SMS_ALI_KEY_ID && env.SMS_ALI_KEY_SECRET
+      && env.SMS_ALI_SIGN_NAME && env.SMS_ALI_TEMPLATE_CODE) return 'sms_aliyun';
+  return 'scope';
+}
+
+function isSmsMode(mode) {
+  return mode === 'sms_tencent' || mode === 'sms_aliyun';
+}
+
+function randomCode(len = 6) {
+  const buf = crypto.getRandomValues(new Uint8Array(len));
+  return [...buf].map((b) => String(b % 10)).join('');
+}
+
+async function sha256Hex(s) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(s)));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function hmacSha256Bytes(keyBytes, msg) {
+  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg));
+  return new Uint8Array(sig);
+}
+
+function toHexBuf(buf) {
+  return [...buf].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/* 腾讯云短信 TC3-HMAC-SHA256 签名（纯 Web Crypto 实现，不引 SDK）。
+ * 文档：https://cloud.tencent.com/document/api/382/52072 */
+async function sendTencentSms(env, phone, code) {
+  const host = 'sms.tencentcloudapi.com';
+  const service = 'sms';
+  const ts = Math.floor(Date.now() / 1000);
+  const payload = JSON.stringify({
+    PhoneNumberSet: [`+86${phone}`],
+    SmsSdkAppId: String(env.SMS_TC_SDK_APP_ID),
+    SignName: String(env.SMS_TC_SIGN_NAME || ''),
+    TemplateId: String(env.SMS_TC_TEMPLATE_ID),
+    // 模板变量顺序需与控制台模板一致：{{1}}=验证码 {{2}}=有效分钟数
+    TemplateParamSet: [code, String(Math.floor(OTP_TTL_SEC / 60))],
+  });
+  const date = new Date(ts * 1000).toISOString().slice(0, 10);
+  const payloadHash = toHexBuf(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload)));
+  const canonicalHeaders = `content-type:application/json; charset=utf-8\nhost:${host}\n`;
+  const signedHeaders = 'content-type;host';
+  const canonicalRequest = `POST\n/\n\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+  const scope = `${date}/${service}/tc3_request`;
+  const stringToSign = `TC3-HMAC-SHA256\n${ts}\n${scope}\n`
+    + toHexBuf(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonicalRequest)));
+  const kDate = await hmacSha256Bytes(new TextEncoder().encode(`TC3${env.SMS_TC_SECRET_KEY}`), date);
+  const kService = await hmacSha256Bytes(kDate, service);
+  const kSigning = await hmacSha256Bytes(kService, 'tc3_request');
+  const signature = toHexBuf(await hmacSha256Bytes(kSigning, stringToSign));
+  const res = await fetch(`https://${host}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `TC3-HMAC-SHA256 Credential=${env.SMS_TC_SECRET_ID}/${scope}, `
+        + `SignedHeaders=${signedHeaders}, Signature=${signature}`,
+      'Content-Type': 'application/json; charset=utf-8',
+      'X-TC-Action': 'SendSms',
+      'X-TC-Version': '2021-01-11',
+      'X-TC-Timestamp': String(ts),
+      'X-TC-Region': String(env.SMS_TC_REGION || 'ap-guangzhou'),
+    },
+    body: payload,
+  });
+  const data = await res.json().catch(() => ({}));
+  const err = data && data.Response && data.Response.Error;
+  if (err) return { ok: false, reason: String(err.Code || 'tencent_error') };
+  return { ok: true };
+}
+
+/* 阿里云短信 SendSms（RPC 风格 HMAC-SHA1 签名）。文档：https://help.aliyun.com/zh/sms/ */
+async function sendAliyunSms(env, phone, code) {
+  const pct = (s) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  const params = {
+    AccessKeyId: String(env.SMS_ALI_KEY_ID),
+    Action: 'SendSms',
+    Format: 'JSON',
+    PhoneNumbers: String(phone),
+    RegionId: String(env.SMS_ALI_REGION || 'cn-hangzhou'),
+    SignName: String(env.SMS_ALI_SIGN_NAME),
+    SignatureMethod: 'HMAC-SHA1',
+    SignatureNonce: crypto.randomUUID(),
+    SignatureVersion: '1.0',
+    TemplateCode: String(env.SMS_ALI_TEMPLATE_CODE),
+    TemplateParam: JSON.stringify({ code, min: String(Math.floor(OTP_TTL_SEC / 60)) }),
+    Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    Version: '2017-05-25',
+  };
+  const canonical = Object.keys(params).sort()
+    .map((k) => `${pct(k)}=${pct(params[k])}`).join('&');
+  const stringToSign = `GET&${pct('/')}&${pct(canonical)}`;
+  const key = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(`${env.SMS_ALI_KEY_SECRET}&`),
+    { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'],
+  );
+  const sigBytes = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(stringToSign)));
+  const signature = btoa(String.fromCharCode(...sigBytes));
+  const res = await fetch(`https://dysmsapi.aliyuncs.com/?Signature=${pct(signature)}&${canonical}`, { method: 'GET' });
+  const data = await res.json().catch(() => ({}));
+  if (data && data.Code && data.Code !== 'OK') return { ok: false, reason: String(data.Code) };
+  return { ok: true };
+}
+
+async function sendSmsCode(env, mode, phone, code) {
+  try {
+    if (mode === 'sms_tencent') return await sendTencentSms(env, phone, code);
+    if (mode === 'sms_aliyun') return await sendAliyunSms(env, phone, code);
+    return { ok: false, reason: 'no_channel' };
+  } catch (e) {
+    return { ok: false, reason: String((e && e.message) || 'send_error').slice(0, 80) };
+  }
+}
+
+/* Cloudflare Turnstile 服务端校验（免费计划挑战数不限）。 */
+async function verifyTurnstileToken(env, token, ip) {
+  if (!env.TURNSTILE_SECRET) return { ok: true, skipped: true };
+  if (!token) return { ok: false, reason: 'missing_token' };
+  try {
+    const form = new FormData();
+    form.append('secret', String(env.TURNSTILE_SECRET));
+    form.append('response', String(token));
+    if (ip && ip !== 'unknown') form.append('remoteip', ip);
+    const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: form });
+    const data = await res.json().catch(() => ({}));
+    return data && data.success ? { ok: true } : { ok: false, reason: 'captcha_failed' };
+  } catch (_) {
+    return { ok: false, reason: 'captcha_unavailable' };
+  }
+}
+
+/* 发码：频控在前（跨 isolate 用 D1 计数），发成功再落库。 */
+async function issueQueryCode(env, phone) {
+  const mode = otpMode(env);
+  if (!isSmsMode(mode)) return { ok: false, reason: 'sms_not_configured' };
+  const now = Date.now();
+  const hourAgo = new Date(now - 3600 * 1000).toISOString();
+  const dayAgo = new Date(now - 86400 * 1000).toISOString();
+  const perHour = await d1CountRecentCodes(env, phone, OTP_PURPOSE, hourAgo);
+  const perDay = await d1CountRecentCodes(env, phone, OTP_PURPOSE, dayAgo);
+  if (!perHour.ok) return { ok: false, reason: 'store_unavailable' };
+  if (perHour.count >= OTP_PER_HOUR) return { ok: false, reason: 'too_many_hour' };
+  if (perDay.count >= OTP_PER_DAY) return { ok: false, reason: 'too_many_day' };
+  const code = randomCode(6);
+  const salt = crypto.randomUUID();
+  const sent = await sendSmsCode(env, mode, phone, code);
+  if (!sent.ok) return { ok: false, reason: 'send_failed', detail: sent.reason };
+  const saved = await d1SaveVerifyCode(env, {
+    id: crypto.randomUUID(),
+    target: phone,
+    purpose: OTP_PURPOSE,
+    channel: mode,
+    codeHash: await sha256Hex(`${phone}|${OTP_PURPOSE}|${code}|${salt}`),
+    salt,
+    maxAttempts: OTP_MAX_ATTEMPTS,
+    expiresAt: new Date(now + OTP_TTL_SEC * 1000).toISOString(),
+    createdAt: new Date(now).toISOString(),
+  });
+  if (!saved.ok) return { ok: false, reason: 'store_unavailable' };
+  return { ok: true, channel: mode, ttl: OTP_TTL_SEC };
+}
+
+/* 校验码：只存哈希、限次数、成功后原子消费，防重放。 */
+async function checkQueryCode(env, phone, input) {
+  const rec = await d1LatestLiveCode(env, phone, OTP_PURPOSE);
+  if (!rec) return { ok: false, reason: 'code_expired' };
+  if (Number(rec.consumed) === 1) return { ok: false, reason: 'code_reused' };
+  if (String(rec.expires_at) <= new Date().toISOString()) return { ok: false, reason: 'code_expired' };
+  if (Number(rec.attempts) >= Number(rec.max_attempts)) return { ok: false, reason: 'code_locked' };
+  const hash = await sha256Hex(`${phone}|${OTP_PURPOSE}|${input}|${rec.salt}`);
+  if (hash !== rec.code_hash) {
+    await d1BumpCodeAttempt(env, rec.id);
+    return { ok: false, reason: 'code_mismatch' };
+  }
+  const consumed = await d1ConsumeCode(env, rec.id);
+  if (!consumed.ok) return { ok: false, reason: 'code_reused' };
+  return { ok: true };
+}
+
+const QUERY_ERRORS = {
+  code_required: '请输入短信验证码',
+  code_expired: '验证码已过期，请重新获取',
+  code_locked: '验证码尝试次数过多，请重新获取',
+  code_mismatch: '验证码不正确',
+  code_reused: '该验证码已使用，请重新获取',
+  order_id_required: '请输入订单号（用于验证身份）',
+  captcha_failed: '人机验证未通过，请刷新后重试',
+  captcha_unavailable: '人机验证服务暂不可用，请稍后重试',
+  store_unavailable: '验证码服务暂不可用，请稍后重试',
+};
+
+/**
+ * 查单鉴权：按当前档位校验第二因子，通过才允许读订单。
+ * 返回 { ok, orderId } 或 { ok:false, status, code, message }。
+ */
+async function authorizeQuery(env, body, ip) {
+  const mode = otpMode(env);
+  const orderId = String(body?.order_id || '').trim();
+  if (mode === 'scope') {
+    // 订单号 48bit 随机段不可枚举，配合手机号即构成双因子；这一档完全零成本、不依赖外部服务
+    if (!/^D[0-9A-Z]{6,40}$/i.test(orderId)) {
+      return { ok: false, status: 400, code: 'order_id_required', message: QUERY_ERRORS.order_id_required };
+    }
+    // 可选的 Turnstile 叠加：配了 secret 就要求人机 token，没配则纯双因子
+    if (env.TURNSTILE_SECRET) {
+      const captcha = await verifyTurnstileToken(env, body?.turnstile_token, ip);
+      if (!captcha.ok) {
+        return { ok: false, status: 403, code: captcha.reason, message: QUERY_ERRORS.captcha_failed };
+      }
+    }
+    return { ok: true, orderId, mode };
+  }
+  const code = String(body?.code || '').trim();
+  if (!/^\d{6}$/.test(code)) {
+    return { ok: false, status: 400, code: 'code_required', message: QUERY_ERRORS.code_required };
+  }
+  const checked = await checkQueryCode(env, String(body?.phone || '').trim(), code);
+  if (!checked.ok) {
+    return { ok: false, status: 400, code: checked.reason, message: QUERY_ERRORS[checked.reason] || '验证失败' };
+  }
+  return { ok: true, orderId, mode };
 }
 
 // ---- 金额：价格可能是 "50元/箱" 这类带单位字符串，统一解析为数值 ----
@@ -1763,6 +2050,9 @@ async function handleApiImpl(request, env, url) {
       return json({ error: 'bad_request', message: '请填写正确的手机号' }, 400);
     }
     if (!order.customer_name) return json({ error: 'bad_request', message: '请填写公司/个人名称' }, 400);
+    // 结构化收货地址：填了就必须齐全（省份/城市/收货人/手机/详细地址），避免地址再次退化进 remark
+    const addrIssue = addressIssue(order);
+    if (addrIssue) return json({ error: 'bad_request', message: addrIssue }, 400);
     if (!order.items.length) return json({ error: 'bad_request', message: '购物车为空，无法下单' }, 400);
     {
       // 明细快照以商品库为准：前端只传 id+qty 时也能落全量信息，未知商品直接拒绝
@@ -1823,9 +2113,53 @@ async function handleApiImpl(request, env, url) {
     return json({ ok: true, order: publicOrder(withOrderTotals(order)) }, 201);
   }
 
+  /* ---- 查单二次验证：当前档位 + 发码（公开）---- */
+  if (path === '/api/orders/query/mode' && method === 'GET') {
+    const mode = otpMode(env);
+    return jsonNoCache({
+      ok: true,
+      mode,
+      sms: isSmsMode(mode),
+      ttl: OTP_TTL_SEC,
+      // 前端据此决定是否渲染 Turnstile 挂件；空串表示不启用
+      turnstile_site_key: String(env.TURNSTILE_SITE_KEY || ''),
+    });
+  }
+  if (path === '/api/orders/query/code' && method === 'POST') {
+    const ip = clientIp(request);
+    const ipLimit = await rateLimitGuard(env, 'query-code-ip', ip, 5, 300, 'RL_QUERY');
+    if (!ipLimit.ok) return tooManyRequests(ipLimit.retryAfter, '获取验证码过于频繁，请稍后再试');
+    const body = await readJson(request);
+    const phone = String(body?.phone || '').trim();
+    if (!/^1\d{10}$/.test(phone)) return json({ error: 'bad_request', message: '请填写正确的手机号' }, 400);
+    const mode = otpMode(env);
+    if (!isSmsMode(mode)) {
+      return json({ ok: false, error: 'sms_not_configured', mode, message: '当前未配置短信通道，请改用订单号查询' }, 501);
+    }
+    // 只给「名下确有订单」的号码真发短信，省通道费也防被当骚扰工具；
+    // 但响应不区分有无订单，否则本接口会变成手机号是否下过单的探测口（PII 泄露）。
+    const lookup = await d1OrdersByPhone(env, phone, '');
+    const hasOrder = lookup.ok
+      ? lookup.orders.length > 0
+      : (await getOrders(env)).some((o) => o.customer_phone === phone);
+    if (!hasOrder) {
+      return json({ ok: true, mode, ttl: OTP_TTL_SEC, message: '若该手机号有订单，验证码已发送' });
+    }
+    const sent = await issueQueryCode(env, phone);
+    if (!sent.ok) {
+      const tooMany = sent.reason.startsWith('too_many');
+      return json({
+        ok: false,
+        error: sent.reason,
+        message: tooMany ? '验证码获取过于频繁，请稍后再试' : '验证码发送失败，请稍后重试或改用订单号查询',
+      }, tooMany ? 429 : 500);
+    }
+    return json({ ok: true, mode: sent.channel, ttl: sent.ttl, message: '验证码已发送' });
+  }
+
   /* ---- 查单（公开，POST 避免边缘缓存）---- */
   if (path === '/api/orders/query' && method === 'POST') {
-    // 查单凭据只有手机号，必须限流，否则可被用于遍历手机号批量拖取订单信息
+    // 查单凭据至少两因子，且必须限流：单靠手机号可被用于遍历批量拖取订单信息
     const ip = clientIp(request);
     const ipLimit = await rateLimitGuard(env, 'query-ip', ip, 10, 300, 'RL_QUERY');
     if (!ipLimit.ok) return tooManyRequests(ipLimit.retryAfter, '查询过于频繁，请稍后再试');
@@ -1834,12 +2168,20 @@ async function handleApiImpl(request, env, url) {
     if (!/^1\d{10}$/.test(phone)) return json({ error: 'bad_request', message: '请填写正确的手机号' }, 400);
     const phoneLimit = rateLimit('query-phone', phone, 20, 3600);
     if (!phoneLimit.ok) return tooManyRequests(phoneLimit.retryAfter, '该手机号查询过于频繁，请稍后再试');
-    const all = await getOrders(env);
-    const mine = all.filter((o) => o.customer_phone === phone);
-    const orderId = String(body?.order_id || '').trim();
-    const list = orderId ? mine.filter((o) => o.id === orderId) : mine;
-    // 查单仅凭手机号即可调用，返回体必须是公开投影，否则任何人可批量拖走成本价
-    return json({ ok: true, orders: list.slice(0, 50).map(publicOrder), total: list.length });
+    // 第二因子按配置自动生效：订单号 / 短信验证码 / Turnstile（见 otpMode）
+    const auth = await authorizeQuery(env, { ...body, phone }, ip);
+    if (!auth.ok) return json({ error: auth.code, message: auth.message }, auth.status);
+    // 条件下推到 D1；无 DB 时回退 KV 全扫（本地开发无 binding 场景）
+    const byPhone = await d1OrdersByPhone(env, phone, auth.orderId);
+    let list;
+    if (byPhone.ok) {
+      list = byPhone.orders;
+    } else {
+      const all = await getOrders(env);
+      list = all.filter((o) => o.customer_phone === phone && (!auth.orderId || o.id === auth.orderId));
+    }
+    // 查单接口返回体必须是公开投影，否则任何人可通过查单批量拖走成本价
+    return json({ ok: true, mode: auth.mode, orders: list.slice(0, 50).map(publicOrder), total: list.length });
   }
 
   /* ---- 品牌档案（公开）---- */
@@ -1869,15 +2211,24 @@ async function handleApiImpl(request, env, url) {
     if (user.role !== 'admin') return forbidden();
     if (!env.DB) return json({ error: 'd1_not_bound', message: 'D1 binding DB 未配置' }, 503);
     // 分批搬迁：KV 全量 -> D1（products / orders / order_items / kv_doc）
-    // 阶段 3 收口后仅供「D1 重建 / 灾难恢复」：迁移已完成时默认被拒（KV 已是降级副本，
-    // 重跑会把陈旧副本反向覆盖真源），必须显式 ?force=1。
+    // 阶段 3 已收口，本端点属高危运维口：默认关闭（410），
+    // 仅当请求头 x-migrate-token 与环境变量 MIGRATE_TOKEN 一致时才允许执行，
+    // 用完请立刻删除 Worker 上的 MIGRATE_TOKEN，避免长期留存一把能反向覆盖真源的钥匙。
     if (path === '/api/admin/d1/migrate' && method === 'POST') {
+      const token = String(request.headers.get('x-migrate-token') || '');
+      const expected = String(env.MIGRATE_TOKEN || '');
+      if (!expected || !token || token !== expected) {
+        return json({
+          error: 'gone',
+          message: '迁移端点已下线（D1 已是唯一真源）。如需灾难恢复，请临时注入 MIGRATE_TOKEN 并携带 x-migrate-token 头。',
+        }, 410);
+      }
       const limit = Number(url.searchParams.get('limit') || 100);
       const force = url.searchParams.get('force') === '1';
       const r = await migrateBatch(env, limit, force);
       return jsonNoCache({ ok: !r.skipped, ...r });
     }
-    // 一致性核对：KV 有而 D1 无才算异常（KV 已是副本，D1 有 KV 无属正常）
+    // 一致性核对：只读诊断，保留（KV 有而 D1 无才算异常；D1 有 KV 无属正常）
     if (path === '/api/admin/d1/verify' && method === 'GET') {
       const r = await verifyConsistency(env, Number(url.searchParams.get('sample') || 5));
       return jsonNoCache({ ok: true, ...r });
@@ -2220,12 +2571,14 @@ async function handleApiImpl(request, env, url) {
 // 注：script-src 暂保留 'unsafe-inline'（前端存在内联初始化片段），先阻断外域脚本加载。
 const CSP_POLICY = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  // challenges.cloudflare.com 仅为可选的人机校验（Turnstile）预留：未配置 TURNSTILE_SITE_KEY 时前端不会加载该脚本
+  "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self'",
+  "connect-src 'self' https://challenges.cloudflare.com",
   "form-action 'self'",
+  "frame-src https://challenges.cloudflare.com",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "object-src 'none'",

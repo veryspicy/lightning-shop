@@ -1169,7 +1169,21 @@ function renderCart() {
       <h2>提交订单</h2>
       <label class="form-field"><span>公司/个人名称 *</span><input type="text" id="co-name" maxlength="40" placeholder="如：上海 XX 贸易有限公司 / 王小明" autocomplete="off" /></label>
       <label class="form-field"><span>手机号 *</span><input type="tel" id="co-phone" maxlength="11" placeholder="11 位手机号，用于查单" autocomplete="off" /></label>
-      <label class="form-field"><span>地址备注</span><textarea id="co-remark" rows="2" maxlength="200" placeholder="收货地址、物流要求等（选填）"></textarea></label>
+      <h3 class="form-subhead">收货地址</h3>
+      <div class="order-query-row">
+        <label class="form-field"><span>收货人 *</span><input type="text" id="co-receiver" maxlength="40" placeholder="默认同公司/个人名称" autocomplete="off" /></label>
+        <label class="form-field"><span>收货手机号 *</span><input type="tel" id="co-receiver-phone" maxlength="11" placeholder="默认同下单手机号" autocomplete="off" /></label>
+      </div>
+      <div class="order-query-row">
+        <label class="form-field"><span>省份 *</span><input type="text" id="co-province" maxlength="30" placeholder="如：江苏省" autocomplete="off" /></label>
+        <label class="form-field"><span>城市 *</span><input type="text" id="co-city" maxlength="30" placeholder="如：苏州市" autocomplete="off" /></label>
+      </div>
+      <div class="order-query-row">
+        <label class="form-field"><span>区/县</span><input type="text" id="co-district" maxlength="30" placeholder="如：姑苏区" autocomplete="off" /></label>
+        <label class="form-field"><span>邮编</span><input type="text" id="co-postal" maxlength="6" placeholder="选填，6 位数字" autocomplete="off" /></label>
+      </div>
+      <label class="form-field"><span>详细地址 *</span><textarea id="co-address" rows="2" maxlength="200" placeholder="街道、门牌号、楼栋、仓库收货要求等"></textarea></label>
+      <label class="form-field"><span>备注</span><textarea id="co-remark" rows="2" maxlength="200" placeholder="物流要求、开票信息等（选填）"></textarea></label>
       <div class="checkout-actions">
         <button type="button" class="btn btn-primary" id="co-submit" data-action="submit-order">提交订单</button>
       </div>
@@ -1180,8 +1194,22 @@ async function submitOrder() {
   const name = document.getElementById('co-name').value.trim();
   const phone = document.getElementById('co-phone').value.trim();
   const remark = document.getElementById('co-remark').value.trim();
+  // 收货人/收货电话留空时默认与公司名、下单手机号一致（多数批发客户两者相同）
+  const receiverName = (document.getElementById('co-receiver').value.trim() || name);
+  const receiverPhone = (document.getElementById('co-receiver-phone').value.trim() || phone);
+  const province = document.getElementById('co-province').value.trim();
+  const city = document.getElementById('co-city').value.trim();
+  const district = document.getElementById('co-district').value.trim();
+  const address = document.getElementById('co-address').value.trim();
+  const postalCode = document.getElementById('co-postal').value.trim();
   if (!name) return toastTip('请填写公司/个人名称', true);
   if (!/^1\d{10}$/.test(phone)) return toastTip('请填写正确的手机号', true);
+  if (!province) return toastTip('请填写收货省份', true);
+  if (!city) return toastTip('请填写收货城市', true);
+  if (!receiverName) return toastTip('请填写收货人', true);
+  if (!/^1\d{10}$/.test(receiverPhone)) return toastTip('请填写正确的收货手机号', true);
+  if (address.length < 5) return toastTip('请填写详细收货地址（不少于 5 个字）', true);
+  if (postalCode && !/^\d{6}$/.test(postalCode)) return toastTip('邮编格式不正确', true);
   const cart = getCart();
   if (!cart.length) return toastTip('购物车为空', true);
   const btn = document.getElementById('co-submit');
@@ -1191,7 +1219,19 @@ async function submitOrder() {
     const res = await fetch('/api/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ customer_name: name, customer_phone: phone, remark, items: cart }),
+      body: JSON.stringify({
+        customer_name: name,
+        customer_phone: phone,
+        remark,
+        receiver_name: receiverName,
+        receiver_phone: receiverPhone,
+        province,
+        city,
+        district,
+        address,
+        postal_code: postalCode,
+        items: cart,
+      }),
     });
     const data = await res.json();
     if (!res.ok || !data.ok) {
@@ -1245,6 +1285,9 @@ function orderCardHtml(o) {
     <div class="order-card-summary">${escapeHtml(o.customer_name)} · ${escapeHtml(o.customer_phone)} · ${totalQty} 件商品</div>
     <div class="order-card-body" hidden>
       <div class="order-lines">${(o.items || []).map(orderItemHtml).join('')}</div>
+      ${(o.province || o.address)
+    ? `<p class="order-addr">收货：${escapeHtml([o.receiver_name, o.receiver_phone, o.province, o.city, o.district, o.address, o.postal_code].filter(Boolean).join(' '))}</p>`
+    : ''}
       ${o.remark ? `<p class="order-remark">备注：${escapeHtml(o.remark)}</p>` : ''}
       ${o.tracking_no ? `<p class="order-tracking">物流单号：${escapeHtml(o.tracking_no)}</p>` : ''}
       ${o.status_note ? `<p class="order-note">${escapeHtml(o.status_note)}</p>` : ''}
@@ -1255,37 +1298,130 @@ function orderCardHtml(o) {
     </div>
   </div>`;
 }
-function renderOrders() {
+let queryModeCache = null;
+let queryTurnstileToken = '';
+async function fetchQueryMode(force) {
+  if (queryModeCache && !force) return queryModeCache;
+  try {
+    const res = await fetch('/api/orders/query/mode');
+    if (res.ok) queryModeCache = await res.json();
+  } catch (e) { /* 接口不可用时回落订单号双因子 */ }
+  if (!queryModeCache) queryModeCache = { mode: 'scope', sms: false, ttl: 300, turnstile_site_key: '' };
+  return queryModeCache;
+}
+function mountQueryTurnstile(siteKey) {
+  const slot = document.getElementById('q-turnstile');
+  if (!slot) return;
+  queryTurnstileToken = '';
+  const render = () => {
+    if (!window.turnstile) return;
+    window.turnstile.render(slot, {
+      sitekey: siteKey,
+      callback: (token) => { queryTurnstileToken = token; },
+      'expired-callback': () => { queryTurnstileToken = ''; },
+      'error-callback': () => { queryTurnstileToken = ''; },
+    });
+  };
+  if (window.turnstile) return render();
+  if (document.getElementById('cf-turnstile-script')) return;
+  const s = document.createElement('script');
+  s.id = 'cf-turnstile-script';
+  s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+  s.async = true;
+  s.defer = true;
+  s.onload = render;
+  document.head.appendChild(s);
+}
+function startCodeCountdown(btn, ttl) {
+  if (!btn) return;
+  let left = Math.min(60, ttl || 60);
+  btn.disabled = true;
+  btn.textContent = `${left}s 后重发`;
+  const timer = setInterval(() => {
+    left -= 1;
+    if (left <= 0) {
+      clearInterval(timer);
+      btn.disabled = false;
+      btn.textContent = '获取验证码';
+      return;
+    }
+    btn.textContent = `${left}s 后重发`;
+  }, 1000);
+}
+async function sendQueryCode() {
+  const phone = document.getElementById('q-phone').value.trim();
+  if (!/^1\d{10}$/.test(phone)) return toastTip('请填写正确的手机号', true);
+  const btn = document.getElementById('q-send');
+  if (btn && btn.disabled) return;
+  try {
+    const res = await fetch('/api/orders/query/code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) return toastTip((data && data.message) || '验证码发送失败', true);
+    toastTip('验证码已发送，5 分钟内有效');
+    startCodeCountdown(btn, data.ttl);
+  } catch (err) {
+    toastTip('网络异常，请重试', true);
+  }
+}
+async function renderOrders() {
   const el = views.orders;
   const savedPhone = localStorage.getItem('ls_query_phone') || '';
+  el.innerHTML = '<div class="view-loading">加载中…</div>';
+  const mode = await fetchQueryMode();
   el.innerHTML = `
     <div class="view-head"><h1>查单</h1></div>
     <div class="order-query panel-params">
       <div class="order-query-row">
         <label class="form-field"><span>手机号 *</span><input type="tel" id="q-phone" maxlength="11" placeholder="下单时填写的手机号" autocomplete="off" value="${escapeHtml(savedPhone)}" /></label>
-        <label class="form-field"><span>订单号（选填）</span><input type="text" id="q-order" maxlength="20" placeholder="留空则显示该手机号全部订单" autocomplete="off" /></label>
+        ${mode.sms
+    ? '<label class="form-field"><span>短信验证码 *</span><input type="text" id="q-code" maxlength="6" inputmode="numeric" placeholder="6 位数字" autocomplete="one-time-code" /></label>'
+    : '<label class="form-field"><span>订单号 *</span><input type="text" id="q-order" maxlength="20" placeholder="下单成功页显示的订单号" autocomplete="off" /></label>'}
       </div>
+      ${mode.sms ? '<div class="checkout-actions"><button type="button" class="btn btn-outline btn-sm" id="q-send" data-action="send-query-code">获取验证码</button></div>' : ''}
+      ${mode.turnstile_site_key ? '<div id="q-turnstile" class="turnstile-slot"></div>' : ''}
       <div class="checkout-actions"><button type="button" class="btn btn-primary" data-action="query-orders">查询</button></div>
+      <p class="checkout-tip">${mode.sms
+    ? '查单需短信验证码，5 分钟内有效，最多尝试 3 次。'
+    : '为保护订单隐私，查单需同时提供手机号与订单号。订单号含随机段，无法被猜测。'}</p>
     </div>
     <div id="order-results"></div>`;
   if (savedPhone) document.getElementById('q-phone').select();
+  if (mode.turnstile_site_key) mountQueryTurnstile(mode.turnstile_site_key);
 }
 async function queryOrdersNow() {
+  const mode = await fetchQueryMode();
   const phone = document.getElementById('q-phone').value.trim();
-  const orderId = document.getElementById('q-order').value.trim();
   if (!/^1\d{10}$/.test(phone)) return toastTip('请填写正确的手机号', true);
+  const payload = { phone };
+  if (mode.sms) {
+    const code = (document.getElementById('q-code').value || '').trim();
+    if (!/^\d{6}$/.test(code)) return toastTip('请填写 6 位短信验证码', true);
+    payload.code = code;
+  } else {
+    const orderId = (document.getElementById('q-order').value || '').trim();
+    if (!orderId) return toastTip('查单需填写订单号', true);
+    payload.order_id = orderId;
+    if (queryTurnstileToken) payload.turnstile_token = queryTurnstileToken;
+  }
   const box = document.getElementById('order-results');
   box.innerHTML = '<div class="view-loading">查询中…</div>';
   try {
     const res = await fetch('/api/orders/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, order_id: orderId || '' }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
-    if (!res.ok || !data.ok) { box.innerHTML = '<div class="view-empty">查询失败，请稍后重试</div>'; return; }
+    if (!res.ok || !data.ok) {
+      box.innerHTML = `<div class="view-empty">${escapeHtml((data && data.message) || '查询失败，请稍后重试')}</div>`;
+      return;
+    }
     if (!data.orders.length) {
-      box.innerHTML = `<div class="view-empty">${orderId ? '未找到该订单，请核对订单号与手机号' : '该手机号暂无订单，下单后即可查询'}</div>`;
+      box.innerHTML = `<div class="view-empty">${mode.sms ? '该手机号暂无订单，下单后即可查询' : '未找到该订单，请核对订单号与手机号'}</div>`;
       return;
     }
     box.innerHTML = `<div class="order-list">${data.orders.map(orderCardHtml).join('')}</div>`;
@@ -1370,6 +1506,8 @@ document.addEventListener('click', (e) => {
     submitOrder();
   } else if (action === 'query-orders') {
     queryOrdersNow();
+  } else if (action === 'send-query-code') {
+    sendQueryCode();
   } else if (action === 'order-toggle') {
     const card = btn.closest('.order-card');
     if (!card) return;

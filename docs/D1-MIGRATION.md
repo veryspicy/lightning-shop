@@ -230,11 +230,27 @@ KV 时代下单是「`genOrderId` 用 `KV.get` 探重 → `saveOrder` 写 KV」�
 
 - `POST /api/orders` 返回 `{ok, order}`，不是裸 order；
 - 订单金额字段是 `total_amount` / `total_qty`，**不是** `total`；后台列表是 `{ok, orders, total}`，客户列表是 `{ok, customers, total}`，商品列表才是裸数组；
-- `GET /api/admin/orders/:id` 返回 `{ok, order}`，订单地址不落库（`address` 回读为空，与 KV 时代一致）。
+- `GET /api/admin/orders/:id` 返回 `{ok, order}`；订单地址自 `0003` 起结构化落库（`receiver_name` / `receiver_phone` / `province` / `city` / `district` / `address` / `postal_code`），见 4.2。
 
 数据清理：本次 3 条 + 历史 4 条验证订单（`D261106083095043AB3` / `D26110609171F96D659` / `D26110609456F13E61BC08A` / `D2611060945C3DDC67DEE54` / `D261106120393C6D60E528A` / `D2611061204818304D015E6` / `D261106121232E6A32068E7`）按 id 精确删除：`order_items` 7 行 + `orders` 7 行，KV 副本 `orders:*` 7 键与 4 个测试号 `customers:*` 一并清除，删前快照见 `temp/order-cleanup-backup.json`。清理后后台订单/客户均为空、商品仍 56 条。
 
 > 坑：`wrangler kv key delete` 在 binding 同时配置 `id` 与 `preview_id` 时必须显式加 `--preview false` 才是生产命名空间，否则直接报错退出（早期 `key list` 也是同一类坑）。
+
+## 4.2 结构化地址与查单二次验证（`0003`，本地已验证，待上线）
+
+迁移：`migrations/0003_order_address_verify.sql`（在干净库从 0001 顺序执行通过，11 条语句）
+
+1. `orders` 新增 7 个收货字段（全部 `DEFAULT ''`，存量行读出空串，前端按「未填写」展示），并建 `idx_orders_province`；
+2. 新表 `verify_code` 支撑一次性验证码：只存 `SHA-256(phone|purpose|code|salt)`，`attempts` 落库计数，`consumed` 原子消费防重放；
+3. `created_at` 默认值用 `strftime('%Y-%m-%dT%H:%M:%fZ','now')`，与代码里 `new Date().toISOString()` 同格式 —— 混进 `datetime('now')` 的空格格式会让 `>=` 字符串比较错序。
+
+本地端到端（`wrangler dev --local`，`temp/verify_query_otp.py`）：
+
+- `scope` 档：只给手机号 → 400 `code_required`；手机号 + 订单号 → 200；错订单号 → 空结果；
+- `sms` 档（假密钥）：发码 → `sms_tencent`；无码查单 → `code_required`；错码 → `code_mismatch` 并累计，第 3 次后正确码也返回 `code_locked`；已消费码重放 → `code_reused`；过期码 → `code_expired`；同号码 1 小时内第 6 次发码 → 429 `too_many_hour`；
+- 下单写链：完整收货信息落库，`GET /api/admin/orders/:id` 回读 7 个字段齐全。
+
+> 坑：`wrangler dev` 运行期间用另一个进程 `d1 execute` 写同一个 `--persist-to` 目录，dev 进程**看不到**新数据（它持有启动时的 sqlite 副本）；造测试数据必须先停 dev、写完再启。
 
 ## 5. 避坑清单
 
