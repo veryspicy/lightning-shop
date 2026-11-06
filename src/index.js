@@ -37,6 +37,7 @@ import {
   d1DeleteProduct,
   d1SaveOrder,
   d1ProductList,
+  d1ProductExists,
   d1OrderList,
   d1OrderGet,
   d1OrderUpdateStatus,
@@ -728,35 +729,67 @@ async function markProductDeleted(env, id) {
 // extraIds：本次刚写入的单条商品 id。KV.list 是弱一致读——写入后立即 list 可能读不到新 key，
 // 若索引只以 list 为准，新增/导入的商品会从索引里整体丢失，表现为「后台新增成功、前台一直看不到，
 // 直到下一次重建才凭空出现」。对已知 id 用 KV.get 强一致读补进来，可直接消除这个窗口。
+//
+// 阶段 2：索引改由 D1 权威表直接生成（D1 是强一致的，写入后立刻可查，extraIds 窗口天然消失）。
+// KV 降级为索引缓存，只在 D1 不可用时才走原来的 KV.list 全量扫描。
+// 反向自愈：D1 缺行但 KV 索引里有 → 说明某次影子写漏了，补写 D1 并纳入本次索引，
+// 避免「影子写失败一次，商品就从前台永久消失」。已删除商品有墓碑，不会被这一步复活。
+function indexRowOfProduct(p) {
+  const item = { id: String(p.id || ''), seq: Number(p.seq) || 0 };
+  for (const f of PRODUCT_FIELDS) item[f] = String(p[f] ?? '');
+  item.image = String(p.image || '');
+  item.status = p.status === '下架' ? '下架' : '上架';
+  if (!item.category) item.category = '未分类';
+  return item;
+}
+
 async function rebuildProductsIndex(env, extraIds = []) {
   const raw = await env.KV.get('products', 'json');
   const fromIndex = Array.isArray(raw) ? raw : [];
   const deleted = await getDeletedProductIds(env);
   const byId = new Map();
-  // KV.list 单页上限 1000，必须翻页，否则商品过千后重建会把后面的商品整批丢掉
-  let cursor;
-  do {
-    const page = await env.KV.list({ prefix: 'products:', cursor });
-    for (const k of page.keys) {
-      const id = k.name.slice('products:'.length);
-      const p = await env.KV.get(k.name, 'json');
-      if (p && typeof p === 'object') byId.set(p.id || id, { ...p, id: p.id || id });
+  const d1Rows = await d1ProductList(env);
+  if (Array.isArray(d1Rows)) {
+    for (const row of d1Rows) {
+      const id = String(row && row.id ? row.id : '').trim();
+      if (!id || deleted.has(id)) continue;
+      byId.set(id, indexRowOfProduct(row));
     }
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
+    // 反向自愈：索引里有、D1 里没有的商品补写 D1（影子写漏写的兜底）
+    for (const p of fromIndex) {
+      const id = String((p && p.id) || '').trim();
+      if (!id || deleted.has(id) || byId.has(id)) continue;
+      const single = await env.KV.get(`products:${id}`, 'json');
+      const item = single && typeof single === 'object' ? { ...single, id: single.id || id } : p;
+      byId.set(id, indexRowOfProduct(item));
+      await d1SaveProduct(env, item);
+    }
+  } else {
+    // KV.list 单页上限 1000，必须翻页，否则商品过千后重建会把后面的商品整批丢掉
+    let cursor;
+    do {
+      const page = await env.KV.list({ prefix: 'products:', cursor });
+      for (const k of page.keys) {
+        const id = k.name.slice('products:'.length);
+        const p = await env.KV.get(k.name, 'json');
+        if (p && typeof p === 'object') byId.set(p.id || id, { ...p, id: p.id || id });
+      }
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+    // 兼容历史数据：索引里有、单条缺失的商品先补写单条，避免重建时把商品弄丢
+    // （已删除的 id 有墓碑，不补写，否则删除会被这一步回滚）
+    for (const p of fromIndex) {
+      if (p && p.id && !byId.has(p.id) && !deleted.has(String(p.id))) {
+        byId.set(p.id, p);
+        await env.KV.put(`products:${p.id}`, JSON.stringify(p));
+      }
+    }
+  }
   for (const rawId of extraIds) {
     const id = String(rawId || '').trim();
     if (!id || deleted.has(id) || byId.has(id)) continue;
     const p = await env.KV.get(`products:${id}`, 'json');
     if (p && typeof p === 'object') byId.set(p.id || id, { ...p, id: p.id || id });
-  }
-  // 兼容历史数据：索引里有、单条缺失的商品先补写单条，避免重建时把商品弄丢
-  // （已删除的 id 有墓碑，不补写，否则删除会被这一步回滚）
-  for (const p of fromIndex) {
-    if (p && p.id && !byId.has(p.id) && !deleted.has(String(p.id))) {
-      byId.set(p.id, p);
-      await env.KV.put(`products:${p.id}`, JSON.stringify(p));
-    }
   }
   const merged = Array.from(byId.values()).sort(
     (a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0) || String(a.id).localeCompare(String(b.id))
@@ -771,6 +804,14 @@ async function saveProduct(env, item) {
   // 影子双写 D1：KV 仍是读源，D1 累积权威数据，供阶段 1 切换读路径。
   // 失败只记账（d1_dirty），绝不回滚主写。
   await d1SaveProduct(env, item);
+}
+
+// 商品 id 占用检查：阶段 2 起以 D1 主键为准（强一致，软删行也算占用，id 不可复用）。
+// D1 不可用时回退 KV 探测，保持本地无 binding 场景可用。
+async function productIdTaken(env, id) {
+  const hit = await d1ProductExists(env, id);
+  if (hit !== null) return hit;
+  return !!(await env.KV.get(`products:${id}`));
 }
 
 /* ================= 订单 / 客户 / 品牌档案 ================= */
@@ -1593,7 +1634,7 @@ async function handleApi(request, env, url) {
           seqCursor.id = makeProductId(seqCursor.seq);
         }
         // 占用检查：并发导入/新增撞到同一 id 时顺延，避免覆盖已有商品单条
-        for (let guard = 0; guard < 20 && await env.KV.get(`products:${seqCursor.id}`); guard++) {
+        for (let guard = 0; guard < 20 && await productIdTaken(env, seqCursor.id); guard++) {
           seqCursor.seq += 1;
           seqCursor.id = makeProductId(seqCursor.seq);
         }
@@ -1995,7 +2036,7 @@ async function handleApi(request, env, url) {
       const latest = await rebuildProductsIndex(env);
       // 并发新增时 seq 可能撞车：占用检查后顺延，避免覆盖他人刚建的商品
       let { id, seq } = nextId(latest);
-      for (let guard = 0; guard < 20 && await env.KV.get(`products:${id}`); guard++) {
+      for (let guard = 0; guard < 20 && await productIdTaken(env, id); guard++) {
         ({ id, seq } = nextId([...latest, { id, seq }]));
       }
       const item = { id, seq, ...sanitizeProduct(raw) };

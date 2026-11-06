@@ -240,6 +240,22 @@ export async function d1ProductList(env) {
   }
 }
 
+/**
+ * 商品 id 是否已被占用（阶段 2：替代 KV 的存在性探测）。
+ * 查的是全表、含 deleted=1 的软删行——软删商品仍占着主键，id 不可复用。
+ * 返回 true/false；D1 不可用返回 null，由调用方回退 KV 探测。
+ */
+export async function d1ProductExists(env, id) {
+  if (!env.DB || !id) return null;
+  try {
+    const row = await env.DB.prepare('SELECT 1 AS hit FROM products WHERE id = ?')
+      .bind(String(id)).first();
+    return !!(row && row.hit);
+  } catch (_) {
+    return null;
+  }
+}
+
 /** 配置类小文档读取（kv_doc）。返回 null 表示缺失或 D1 不可用。 */
 export async function d1GetDoc(env, key) {
   if (!env.DB || !key) return null;
