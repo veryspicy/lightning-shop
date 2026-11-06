@@ -39,7 +39,7 @@ migration_state   迁移游标 + 影子写脏标记
 | --- | --- | --- | --- |
 | **0（已合并 PR #24）** | 建表 + 影子双写 + 搬迁端点 + 一致性核对 | 仍读 KV | 极低，D1 挂不影响主流程 |
 | **1（本次 PR）** | 读切换到 D1（商品列表、订单列表/查单、客户列表），KV 变兜底缓存；补齐 products/doc 写点的影子双写 | D1（异常回退 KV） | 中，已在阶段 0 核对通过后执行 |
-| 2 | 写真源切 D1（事务、订单号唯一约束、去掉墓碑/重建索引补偿逻辑） | D1 | 中 |
+| **2（进行中 PR #27）** | 写真源切 D1：订单状态流转改 D1 条件更新（原子 CAS）；后续接订单号唯一约束、商品写路径 | D1 | 中 |
 | 3 | 清理 KV 写路径与遗留补偿代码，KV 仅做热点缓存 | D1 | 低 |
 
 ### 阶段 0 具体改动
@@ -123,6 +123,43 @@ curl -s -H "x-admin-token: <token>" https://<domain>/api/admin/customers | head 
 # 5) 再核对一次一致性
 curl -s -H "x-admin-token: <token>" https://<domain>/api/admin/d1/verify?sample=20
 ```
+
+
+### 阶段 1.1 补漏（已合并 PR #26）
+
+阶段 1 上线后冒烟发现并修复：
+
+- `d1OrderList` 明细投影漏了 `base_price` → 后台订单页成本列与成本合计整体变空。已补。
+- `GET /api/admin/orders/:id` 仍直读 KV → 单条订单读与列表读源不一致。新增 `d1OrderGet`，改为 D1 优先、KV 兜底。
+
+### 阶段 2：写路径切 D1
+
+**第一刀：订单状态流转改 D1 原子 CAS（本次 PR）**
+
+KV 时代 `POST /api/admin/orders/:id/status` 是「读 → 版本校验 → 写前重读 → 写」，两次读之间仍有窗口，并发下后提交者会覆盖先提交者的流转（只是把窗口缩小，没有消除）。
+
+改为 `src/d1.js` 新增 `d1OrderUpdateStatus`：
+
+```sql
+UPDATE orders
+   SET status = ?, version = ?, tracking_no = ?, status_note = ?, updated_at = ?
+ WHERE id = ? AND version = ?   -- 旧版本号
+```
+
+D1 单库单线程串行写 + 条件更新 = 真 CAS：`meta.changes = 1` 即赢得竞争，`= 0` 即期间已被他人推进，直接返回 409。
+
+关键实现约束：
+
+- **只有确认该单在 D1 里才走 CAS**：路由先用 `d1OrderGet` 取单并记录来源。历史未双写的单 `UPDATE` 命中 0 行，若不加来源判断会被误判成版本冲突，因此这类单退回 KV 读改写。
+- **CAS 成功后 KV 只做副本回写**（`KV.put` 原始对象），不再走 `saveOrder`——否则会对 D1 再执行一次 `DELETE order_items + 逐条 INSERT`，白白多出一批写额度和一次瞬时不一致。
+- **客户聚合照旧重算**：取消单会影响客户消费统计，CAS 分支同样调用 `upsertCustomer`。
+- **D1 不可用（无 binding / 抛错）自动退回**原 KV 读改写逻辑，行为与阶段 1 一致，不新增故障模式。
+
+**后续待做**
+
+- 订单创建改 D1 主写，靠 `orders.id` 主键冲突替代 `genOrderId` 的 KV 存在性探测（现在重号仍是静默覆盖风险）。
+- 商品写路径：`products:{id}` 存在性检查、`rebuildProductsIndex`（KV 全量 list + 重建索引）改由 D1 查询直接生成索引。
+- 配置类小文档（`site:*` / `config:categories` / `roles` / `users` / 品牌档案）挂 `d1PutDoc` 影子写后再切读，`d1GetDoc` / `d1BrandProfiles` 已就绪。
 
 ## 5. 避坑清单
 

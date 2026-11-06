@@ -290,6 +290,31 @@ export async function d1OrderGet(env, id) {
   }
 }
 
+/**
+ * 订单状态流转的原子 CAS：UPDATE ... WHERE id = ? AND version = 旧版本。
+ * 返回 { ok:true } 表示本请求赢得竞争；{ ok:false, reason:'conflict' } 表示版本已被他人推进；
+ * { ok:false, reason:'no_db' | 'error' } 表示 D1 不可用，调用方应回退 KV 读改写。
+ */
+export async function d1OrderUpdateStatus(env, id, patch) {
+  if (!env.DB || !id) return { ok: false, reason: 'no_db' };
+  const expected = Number(patch?.version || 1) - 1;
+  try {
+    const r = await env.DB.prepare(`
+      UPDATE orders
+         SET status = ?, version = ?, tracking_no = ?, status_note = ?, updated_at = ?
+       WHERE id = ? AND version = ?
+    `).bind(
+      String(patch.status || ''), Number(patch.version || 1),
+      String(patch.trackingNo || ''), String(patch.statusNote || ''),
+      String(patch.updatedAt || nowIso()), String(id), expected,
+    ).run();
+    const changed = (r && r.meta && Number(r.meta.changes)) || 0;
+    return changed > 0 ? { ok: true } : { ok: false, reason: 'conflict' };
+  } catch (_) {
+    return { ok: false, reason: 'error' };
+  }
+}
+
 /** 客户列表：一条 GROUP BY 取代 KV 时代「全扫订单 + 回写聚合」。 */
 export async function d1CustomerList(env) {
   const rs = await env.DB.prepare(`
