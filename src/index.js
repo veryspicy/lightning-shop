@@ -26,8 +26,8 @@
  *   PUT  /api/products/:id        -> 更新产品（需 x-admin-token）
  *   DELETE /api/products/:id      -> 删除产品（需 x-admin-token）
  *   POST /api/upload              -> 图片上传 base64 -> R2（需 x-admin-token）
- *   POST /api/admin/d1/migrate    -> KV 数据分批搬迁到 D1（幂等，需 x-admin-token）
- *   GET  /api/admin/d1/verify     -> KV 与 D1 一致性核对（需 x-admin-token）
+ *   POST /api/admin/d1/migrate    -> [已下线] KV 数据分批搬迁到 D1；需 ALLOW_LEGACY_D1_ADMIN=1 才可用
+ *   GET  /api/admin/d1/verify     -> [已下线] KV 与 D1 一致性核对；需 ALLOW_LEGACY_D1_ADMIN=1 才可用
  *   GET  /img/*                   -> R2 图片代理
  *   其余                           -> 静态资源（public/）
  */
@@ -1868,6 +1868,15 @@ async function handleApiImpl(request, env, url) {
     if (!user) return unauthorized();
     if (user.role !== 'admin') return forbidden();
     if (!env.DB) return json({ error: 'd1_not_bound', message: 'D1 binding DB 未配置' }, 503);
+    // 阶段 3 收口：迁移已完结，这两个端点默认下线。
+    // migrate 能用 KV 陈旧副本反向覆盖 D1 真源，常开入口本身就是风险；
+    // 灾难恢复场景临时设置 ALLOW_LEGACY_D1_ADMIN=1 重新开启，用完即撤。
+    if (String(env.ALLOW_LEGACY_D1_ADMIN || '') !== '1') {
+      return jsonNoCache({
+        error: 'endpoint_retired',
+        message: '该端点已下线；如需灾难恢复，请临时设置 ALLOW_LEGACY_D1_ADMIN=1',
+      }, 410);
+    }
     // 分批搬迁：KV 全量 -> D1（products / orders / order_items / kv_doc）
     // 阶段 3 收口后仅供「D1 重建 / 灾难恢复」：迁移已完成时默认被拒（KV 已是降级副本，
     // 重跑会把陈旧副本反向覆盖真源），必须显式 ?force=1。
