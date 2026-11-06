@@ -70,6 +70,22 @@ export async function d1DeleteProduct(env, id) {
   }
 }
 
+/* 结构化收货地址的固定绑定顺序：orders 表 7 个地址列，统一从这里取，
+ * 避免 INSERT（d1InsertOrder）与 UPSERT（d1UpsertOrder）两处顺序写岔导致字段错位。 */
+function addressBinds(order) {
+  const o = order || {};
+  const clip = (v, n) => String(v === undefined || v === null ? '' : v).trim().slice(0, n);
+  return [
+    clip(o.receiver_name, 40),
+    clip(o.receiver_phone, 20),
+    clip(o.province, 30),
+    clip(o.city, 30),
+    clip(o.district, 30),
+    clip(o.address, 200),
+    clip(o.postal_code, 12),
+  ];
+}
+
 /**
  * 订单 upsert 内核：orders + order_items 全量重写明细行（事务批次）。
  * 返回 { ok, reason } —— reason 取值 ok / no_db / error，调用方据此决定降级还是失败。
@@ -82,20 +98,25 @@ export async function d1UpsertOrder(env, order) {
     const stmts = [
       env.DB.prepare(`
         INSERT INTO orders (id, customer_name, customer_phone, remark, status, version,
-          tracking_no, status_note, total_qty, total_amount, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          tracking_no, status_note, total_qty, total_amount, created_at, updated_at,
+          receiver_name, receiver_phone, province, city, district, address, postal_code)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           customer_name = excluded.customer_name, customer_phone = excluded.customer_phone,
           remark = excluded.remark, status = excluded.status, version = excluded.version,
           tracking_no = excluded.tracking_no, status_note = excluded.status_note,
           total_qty = excluded.total_qty, total_amount = excluded.total_amount,
-          updated_at = excluded.updated_at
+          updated_at = excluded.updated_at,
+          receiver_name = excluded.receiver_name, receiver_phone = excluded.receiver_phone,
+          province = excluded.province, city = excluded.city, district = excluded.district,
+          address = excluded.address, postal_code = excluded.postal_code
       `).bind(
         String(order.id), order.customer_name || '', order.customer_phone || '',
         order.remark || '', order.status || 'pending', Number(order.version || 1),
         order.tracking_no || '', order.status_note || '',
         Number(order.total_qty || 0), Number(order.total_amount || 0),
         order.created_at || nowIso(), order.updated_at || nowIso(),
+        ...addressBinds(order),
       ),
       env.DB.prepare('DELETE FROM order_items WHERE order_id = ?').bind(String(order.id)),
     ];
@@ -382,8 +403,9 @@ export async function d1InsertOrder(env, order) {
     const stmts = [
       env.DB.prepare(`
         INSERT INTO orders (id, customer_name, customer_phone, remark, status, version,
-          tracking_no, status_note, total_qty, total_amount, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          tracking_no, status_note, total_qty, total_amount, created_at, updated_at,
+          receiver_name, receiver_phone, province, city, district, address, postal_code)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         String(order.id), String(order.customer_name || '').slice(0, 40),
         String(order.customer_phone || '').slice(0, 20),
@@ -391,6 +413,7 @@ export async function d1InsertOrder(env, order) {
         order.tracking_no || '', order.status_note || '',
         Number(order.total_qty || 0), Number(order.total_amount || 0),
         order.created_at || nowIso(), order.updated_at || nowIso(),
+        ...addressBinds(order),
       ),
     ];
     items.forEach((it, idx) => {
@@ -492,4 +515,131 @@ export async function d1OrderList(env, status) {
     });
   }
   return rows.map((r) => ({ ...r, items: byOrder.get(r.id) || [] }));
+}
+
+/* ==================== 查单验证码（verify_code） ====================
+ * 公开查单的二次验证。表里只存 code_hash，明文码既不落库也不进日志。
+ * 所有函数在 D1 不可用时返回「降级信号」而非抛错，由调用方决定是拒绝请求还是放行：
+ * 查单属于敏感接口，D1 不可用时一律失败关闭（fail-closed），不放行。
+ */
+
+/** 写入一条验证码记录。返回 { ok, reason }。 */
+export async function d1SaveVerifyCode(env, rec) {
+  if (!env.DB) return { ok: false, reason: 'no_db' };
+  try {
+    await env.DB.prepare(`
+      INSERT INTO verify_code (id, target, purpose, channel, code_hash, salt,
+        attempts, max_attempts, consumed, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?)
+    `).bind(
+      String(rec.id), String(rec.target), String(rec.purpose || 'order_query'),
+      String(rec.channel || 'sms'), String(rec.codeHash || ''), String(rec.salt || ''),
+      Number(rec.maxAttempts || 3), String(rec.expiresAt), String(rec.createdAt || nowIso()),
+    ).run();
+    return { ok: true };
+  } catch (e) {
+    await markDirty(env, `verify-save ${e && e.message}`);
+    return { ok: false, reason: 'error' };
+  }
+}
+
+/** 统计某手机号在 sinceIso 之后已发码次数（跨 isolate 的真实频控）。 */
+export async function d1CountRecentCodes(env, target, purpose, sinceIso) {
+  if (!env.DB) return { ok: false, reason: 'no_db', count: 0 };
+  try {
+    const row = await env.DB.prepare(`
+      SELECT COUNT(*) AS n FROM verify_code
+       WHERE target = ? AND purpose = ? AND created_at >= ?
+    `).bind(String(target), String(purpose || 'order_query'), String(sinceIso)).first();
+    return { ok: true, count: Number(row && row.n) || 0 };
+  } catch (_) {
+    return { ok: false, reason: 'error', count: 0 };
+  }
+}
+
+/** 取该手机号最近一条验证码记录（不滤 consumed / 过期，判定交给调用方给出准确文案）。 */
+export async function d1LatestLiveCode(env, target, purpose) {
+  if (!env.DB) return null;
+  try {
+    return await env.DB.prepare(`
+      SELECT * FROM verify_code
+       WHERE target = ? AND purpose = ?
+       ORDER BY created_at DESC LIMIT 1
+    `).bind(String(target), String(purpose || 'order_query')).first() || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 校验失败时累加尝试次数，返回累加后的 attempts / max_attempts。 */
+export async function d1BumpCodeAttempt(env, id) {
+  if (!env.DB) return { ok: false, reason: 'no_db' };
+  try {
+    const row = await env.DB.prepare(
+      'UPDATE verify_code SET attempts = attempts + 1 WHERE id = ? RETURNING attempts, max_attempts',
+    ).bind(String(id)).first();
+    return { ok: true, attempts: Number(row && row.attempts) || 0, maxAttempts: Number(row && row.max_attempts) || 3 };
+  } catch (_) {
+    return { ok: false, reason: 'error' };
+  }
+}
+
+/**
+ * 原子消费：只有 consumed 仍为 0 的请求能抢到（changes > 0）。
+ * 并发下同一验证码只可能有一次成功，避免同一码被重放拉多次订单。
+ */
+export async function d1ConsumeCode(env, id) {
+  if (!env.DB) return { ok: false, reason: 'no_db' };
+  try {
+    const r = await env.DB.prepare(
+      'UPDATE verify_code SET consumed = 1 WHERE id = ? AND consumed = 0',
+    ).bind(String(id)).run();
+    const changed = (r && r.meta && Number(r.meta.changes)) || 0;
+    return changed > 0 ? { ok: true } : { ok: false, reason: 'already_consumed' };
+  } catch (_) {
+    return { ok: false, reason: 'error' };
+  }
+}
+
+/** 清理过期/已消费的历史记录（后台低频调用即可，不需要定时任务）。 */
+export async function d1PurgeCodes(env, beforeIso) {
+  if (!env.DB) return { ok: false, reason: 'no_db' };
+  try {
+    const r = await env.DB.prepare('DELETE FROM verify_code WHERE created_at < ?').bind(String(beforeIso)).run();
+    return { ok: true, deleted: (r && r.meta && Number(r.meta.changes)) || 0 };
+  } catch (_) {
+    return { ok: false, reason: 'error' };
+  }
+}
+
+/** 按下单手机号取订单（查单专用：条件下推到 SQL，避免 KV 时代全表扫）。 */
+export async function d1OrdersByPhone(env, phone, orderId) {
+  if (!env.DB || !phone) return { ok: false, reason: 'no_db', orders: [] };
+  try {
+    const sql = orderId
+      ? 'SELECT * FROM orders WHERE customer_phone = ? AND id = ? ORDER BY created_at DESC LIMIT 50'
+      : 'SELECT * FROM orders WHERE customer_phone = ? ORDER BY created_at DESC LIMIT 50';
+    const stmt = orderId
+      ? env.DB.prepare(sql).bind(String(phone), String(orderId))
+      : env.DB.prepare(sql).bind(String(phone));
+    const rs = await stmt.all();
+    const rows = rs.results || [];
+    if (!rows.length) return { ok: true, orders: [] };
+    const ids = rows.map((r) => r.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const itemsRes = await env.DB.prepare(
+      `SELECT * FROM order_items WHERE order_id IN (${placeholders}) ORDER BY order_id, line_no`,
+    ).bind(...ids).all();
+    const byOrder = new Map();
+    for (const it of itemsRes.results || []) {
+      if (!byOrder.has(it.order_id)) byOrder.set(it.order_id, []);
+      byOrder.get(it.order_id).push({
+        id: it.product_id, name: it.name, spec: it.spec, price: it.price,
+        base_price: it.base_price || '', moq: it.moq, qty: it.qty, image: it.image,
+      });
+    }
+    return { ok: true, orders: rows.map((r) => ({ ...r, items: byOrder.get(r.id) || [] })) };
+  } catch (_) {
+    return { ok: false, reason: 'error', orders: [] };
+  }
 }

@@ -92,6 +92,14 @@ npm run deploy
 | `GET /api/products/:id` | 单个产品 |
 | `GET /api/categories` | 分类及数量 |
 | `GET /img/:key` | R2 图片代理 |
+| `POST /api/orders` | 匿名下单（收货信息为结构化字段） |
+| `POST /api/orders/query` | 公开查单，**必须两因子**：手机号 + 订单号（或短信验证码） |
+| `POST /api/orders/query/code` | 发短信验证码（仅 `sms` 档可用） |
+| `GET /api/config` | 前端配置（查单模式 `mode`、Turnstile site key） |
+
+## 公开查单的二次验证
+
+公开查单要求「手机号 + 订单号」（默认档），配置短信密钥后自动升级为「手机号 + 订单号 + 短信验证码」；可选叠加 Cloudflare Turnstile 人机校验。三档机制、免费通道选型、频控与安全实现见 [docs/ORDER-QUERY-VERIFY.md](docs/ORDER-QUERY-VERIFY.md)。
 
 ## 数据更新
 

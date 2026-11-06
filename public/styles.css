@@ -748,6 +748,7 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .form-field > span { display: block; font-size: 13px; font-weight: 500; margin-bottom: 4px; }
 .form-field input, .form-field textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--border, #e5e9f2); border-radius: 8px; padding: 10px 12px; font-size: 14px; font-family: inherit; background: #fff; }
 .form-field input:focus, .form-field textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, .12); }
+.form-subhead { font-size: 14px; font-weight: 600; margin: 16px 0 10px; padding-top: 12px; border-top: 1px dashed var(--border, #e5e9f2); color: var(--text, #334155); }
 .checkout-actions { margin-top: 4px; }
 .checkout-tip { font-size: 12px; color: var(--text-light, #8a94a6); margin-top: 8px; }
 .cart-actions { margin: 16px 0; }
@@ -777,6 +778,8 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .order-line-price { font-size: 13px; color: var(--primary); font-weight: 600; }
 .order-remark, .order-tracking, .order-note, .order-tip { font-size: 13px; margin: 6px 0 0; }
 .order-remark { color: #64748b; }
+.order-addr { font-size: 13px; margin: 6px 0 0; color: #334155; }
+.turnstile-slot { margin: 8px 0; min-height: 0; }
 .order-tracking { color: #2563eb; }
 .order-note { color: #7c3aed; }
 .order-tip { color: #b45309; }

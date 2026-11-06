@@ -1584,7 +1584,13 @@ function renderOrderModal(o) {
       <div class="kv"><b>金额</b><span style="color:var(--accent);font-weight:700">¥${money(o.total_amount)}</span></div>
       ${costTotal > 0 ? `<div class="kv"><b>出厂成本</b><span>¥${money(costTotal)}</span></div>
       <div class="kv"><b>预计毛利</b><span style="font-weight:700">¥${money(numOf(o.total_amount) - costTotal)}</span></div>` : ''}
-      ${o.remark ? `<div class="kv" style="grid-column:1/-1"><b>地址备注</b><span>${escapeHtml(o.remark)}</span></div>` : ''}
+      ${(o.province || o.address || o.receiver_name) ? `<div class="kv" style="grid-column:1/-1"><b>收货信息</b><span>${escapeHtml([
+      o.receiver_name || '',
+      o.receiver_phone || '',
+      [o.province, o.city, o.district, o.address].filter(Boolean).join(''),
+      o.postal_code ? `（${o.postal_code}）` : '',
+    ].filter(Boolean).join(' · '))}</span></div>` : ''}
+      ${o.remark ? `<div class="kv" style="grid-column:1/-1"><b>备注</b><span>${escapeHtml(o.remark)}</span></div>` : ''}
       ${o.tracking_no ? `<div class="kv" style="grid-column:1/-1"><b>物流单号</b><span>${escapeHtml(o.tracking_no)}</span></div>` : ''}
       ${o.note ? `<div class="kv" style="grid-column:1/-1"><b>后台备注</b><span>${escapeHtml(o.note)}</span></div>` : ''}
     </div>
