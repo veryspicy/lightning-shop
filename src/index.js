@@ -26,21 +26,91 @@
  *   PUT  /api/products/:id        -> 更新产品（需 x-admin-token）
  *   DELETE /api/products/:id      -> 删除产品（需 x-admin-token）
  *   POST /api/upload              -> 图片上传 base64 -> R2（需 x-admin-token）
+ *   POST /api/admin/d1/migrate    -> KV 数据分批搬迁到 D1（幂等，需 x-admin-token）
+ *   GET  /api/admin/d1/verify     -> KV 与 D1 一致性核对（需 x-admin-token）
  *   GET  /img/*                   -> R2 图片代理
  *   其余                           -> 静态资源（public/）
  */
 
+import {
+  d1SaveProduct,
+  d1DeleteProduct,
+  d1PersistOrder,
+  d1ProductList,
+  d1ProductExists,
+  d1OrderList,
+  d1OrderGet,
+  d1OrderUpdateStatus,
+  d1InsertOrder,
+  d1CustomerList,
+  d1GetDoc,
+  d1PutDoc,
+  d1DeleteDoc,
+  d1BrandProfiles,
+  migrateBatch,
+  verifyConsistency,
+} from './d1.js';
+
 const CATEGORY_ORDER = ['低GI杂粮', '营养粮油', '黄柿子火锅底料', '野生苦菜', '坚果玉米', '羊杂碎'];
 
+// 阶段 3：商品读路径以 D1 为唯一真源。
+// KV 分支只在两种情况下生效：D1 未绑定（本地/未迁移环境）或 d1ProductList 返回空/异常。
+// 注意判空用的是「返回空数组」而非「抛异常」——D1 里商品被全部下架软删时也必须回退 KV，
+// 否则一次误清空会让前台变成空页且无法自查。
 async function getProducts(env) {
+  const rows = await d1ProductList(env);
+  if (Array.isArray(rows) && rows.length) return rows;
   const raw = await env.KV.get('products', 'json');
   if (raw) return raw;
   return [];
 }
 
+// 配置类小文档（site:hero / site:price / site:qr / config:categories / roles / users / brand:profile:*）
+// 读路径：D1 优先，缺失或 D1 不可用回退 KV（kv_doc 缺失时必须能读回旧值，不能读成默认值）。
+// 阶段 3：写路径 = D1 主写 + KV 副本回写。
+// - D1 写失败即整个写操作失败（抛错由调用方转 500），禁止只落 KV 造成单边；
+// - KV 副本回写为 best-effort，失败不影响结果（读已走 D1，副本只服务于降级）；
+// - 无 D1 绑定时（本地/未迁移环境）退回 KV 单写，行为与阶段 1 一致。
+// KV 兜底读只在 D1 无该键（含尚未 migrate 的键）或 D1 查询异常返回 null 时触发；
+// 空串/空对象等「D1 里真实存过的空值」视为命中，不再回落 KV，避免被陈旧副本覆盖。
+async function getDoc(env, key) {
+  const hit = await d1GetDoc(env, key);
+  if (hit !== null && hit !== undefined) return hit;
+  return await env.KV.get(key, 'json');
+}
+
+async function putDoc(env, key, value) {
+  const v = typeof value === 'string' ? value : JSON.stringify(value);
+  if (!env.DB) {
+    await env.KV.put(key, v);
+    return;
+  }
+  const ok = await d1PutDoc(env, key, v);
+  if (!ok) throw new Error(`doc_write_failed:${key}`);
+  try {
+    await env.KV.put(key, v);
+  } catch (e) {
+    // 副本回写失败不影响正确性，D1 已是唯一权威源
+  }
+}
+
+async function delDoc(env, key) {
+  if (!env.DB) {
+    await env.KV.delete(key);
+    return;
+  }
+  const ok = await d1DeleteDoc(env, key);
+  if (!ok) throw new Error(`doc_delete_failed:${key}`);
+  try {
+    await env.KV.delete(key);
+  } catch (e) {
+    // 同上
+  }
+}
+
 // 配置分类：管理员维护的分类名列表（KV config:categories），缺省使用 CATEGORY_ORDER
 async function getConfigCategories(env) {
-  const raw = await env.KV.get('config:categories', 'json');
+  const raw = await getDoc(env, 'config:categories');
   if (Array.isArray(raw) && raw.length > 0) {
     return [...new Set(raw.map((x) => String(x).trim()).filter(Boolean))];
   }
@@ -48,7 +118,7 @@ async function getConfigCategories(env) {
 }
 
 async function getCategories(env) {
-  const raw = await env.KV.get('categories', 'json');
+  const raw = await getDoc(env, 'categories');
   if (raw) return raw;
   return [];
 }
@@ -141,7 +211,7 @@ async function getRoles(env) {
 
 async function saveRoles(env, roles) {
   const custom = Object.values(roles).filter((r) => !r.builtin);
-  await env.KV.put('roles', JSON.stringify(custom));
+  await putDoc(env, 'roles', custom);
 }
 
 // 角色权限解析：'*' 表示全部权限
@@ -170,7 +240,7 @@ async function getUsers(env) {
 }
 
 async function saveUsers(env, users) {
-  await env.KV.put('users', JSON.stringify(users));
+  await putDoc(env, 'users', users);
 }
 
 function randomToken() {
@@ -549,7 +619,7 @@ const DEFAULT_HERO = {
 };
 
 async function getHero(env) {
-  const raw = await env.KV.get('site:hero', 'json');
+  const raw = await getDoc(env, 'site:hero');
   if (raw && raw.title) return raw;
   return DEFAULT_HERO;
 }
@@ -562,7 +632,7 @@ async function saveHero(env, hero) {
   };
   if (!h.title) h.title = DEFAULT_HERO.title;
   if (!h.eyebrow) h.eyebrow = DEFAULT_HERO.eyebrow;
-  await env.KV.put('site:hero', JSON.stringify(h));
+  await putDoc(env, 'site:hero', h);
   return h;
 }
 
@@ -570,7 +640,7 @@ async function saveHero(env, hero) {
 const DEFAULT_PRICE = { enabled: true, margin: 10 };
 
 async function getPrice(env) {
-  const raw = await env.KV.get('site:price', 'json');
+  const raw = await getDoc(env, 'site:price');
   if (raw && typeof raw.margin === 'number') {
     return { enabled: !!raw.enabled, margin: raw.margin };
   }
@@ -582,7 +652,7 @@ async function savePrice(env, raw) {
   if (!Number.isFinite(margin)) margin = DEFAULT_PRICE.margin;
   margin = Math.min(500, Math.max(0, Math.round(margin * 10) / 10));
   const p = { enabled: raw.enabled !== false, margin };
-  await env.KV.put('site:price', JSON.stringify(p));
+  await putDoc(env, 'site:price', p);
   return p;
 }
 
@@ -639,7 +709,7 @@ const DEFAULT_QR = {
 };
 
 async function getQr(env) {
-  const raw = await env.KV.get('site:qr', 'json');
+  const raw = await getDoc(env, 'site:qr');
   if (raw && (raw.url || raw.quoteImage)) {
     return {
       url: String(raw.url || DEFAULT_QR.url).trim() || DEFAULT_QR.url,
@@ -660,7 +730,7 @@ async function saveQr(env, raw) {
   };
   if (!q.url) q.url = DEFAULT_QR.url;
   if (!q.quoteImage) q.quoteImage = DEFAULT_QR.quoteImage;
-  await env.KV.put('site:qr', JSON.stringify(q));
+  await putDoc(env, 'site:qr', q);
   return q;
 }
 
@@ -702,52 +772,103 @@ async function markProductDeleted(env, id) {
   const set = await getDeletedProductIds(env);
   set.add(String(id));
   // 保留最近 500 条即可覆盖重建窗口，避免墓碑无限增长
-  await env.KV.put('meta:deletedProducts', JSON.stringify(Array.from(set).slice(-500)));
+  // 墓碑集合同时影子写 D1：阶段 3 切读后仍需原地可用
+  await putDoc(env, 'meta:deletedProducts', Array.from(set).slice(-500));
 }
 
 // extraIds：本次刚写入的单条商品 id。KV.list 是弱一致读——写入后立即 list 可能读不到新 key，
 // 若索引只以 list 为准，新增/导入的商品会从索引里整体丢失，表现为「后台新增成功、前台一直看不到，
 // 直到下一次重建才凭空出现」。对已知 id 用 KV.get 强一致读补进来，可直接消除这个窗口。
+//
+// 阶段 2：索引改由 D1 权威表直接生成（D1 是强一致的，写入后立刻可查，extraIds 窗口天然消失）。
+// KV 降级为索引缓存，只在 D1 不可用时才走原来的 KV.list 全量扫描。
+// 反向自愈：D1 缺行但 KV 索引里有 → 说明某次影子写漏了，补写 D1 并纳入本次索引，
+// 避免「影子写失败一次，商品就从前台永久消失」。已删除商品有墓碑，不会被这一步复活。
+function indexRowOfProduct(p) {
+  const item = { id: String(p.id || ''), seq: Number(p.seq) || 0 };
+  for (const f of PRODUCT_FIELDS) item[f] = String(p[f] ?? '');
+  item.image = String(p.image || '');
+  item.status = p.status === '下架' ? '下架' : '上架';
+  if (!item.category) item.category = '未分类';
+  return item;
+}
+
 async function rebuildProductsIndex(env, extraIds = []) {
   const raw = await env.KV.get('products', 'json');
   const fromIndex = Array.isArray(raw) ? raw : [];
   const deleted = await getDeletedProductIds(env);
   const byId = new Map();
-  // KV.list 单页上限 1000，必须翻页，否则商品过千后重建会把后面的商品整批丢掉
-  let cursor;
-  do {
-    const page = await env.KV.list({ prefix: 'products:', cursor });
-    for (const k of page.keys) {
-      const id = k.name.slice('products:'.length);
-      const p = await env.KV.get(k.name, 'json');
-      if (p && typeof p === 'object') byId.set(p.id || id, { ...p, id: p.id || id });
+  const d1Rows = await d1ProductList(env);
+  // 阶段 3：商品真源在 D1。D1 有数据时一律以 D1 为准，不再用 KV 索引反补 D1——
+  // 反补会把已删除/已回滚的旧数据写回权威库。D1 无数据（首次部署/未迁移）才走 KV 兜底。
+  if (Array.isArray(d1Rows) && d1Rows.length) {
+    for (const row of d1Rows) {
+      const id = String(row && row.id ? row.id : '').trim();
+      if (!id || deleted.has(id)) continue;
+      byId.set(id, indexRowOfProduct(row));
     }
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
+  } else {
+    // KV.list 单页上限 1000，必须翻页，否则商品过千后重建会把后面的商品整批丢掉
+    let cursor;
+    do {
+      const page = await env.KV.list({ prefix: 'products:', cursor });
+      for (const k of page.keys) {
+        const id = k.name.slice('products:'.length);
+        const p = await env.KV.get(k.name, 'json');
+        if (p && typeof p === 'object') byId.set(p.id || id, { ...p, id: p.id || id });
+      }
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+    // 兼容历史数据：索引里有、单条缺失的商品先补写单条，避免重建时把商品弄丢
+    // （已删除的 id 有墓碑，不补写，否则删除会被这一步回滚）
+    for (const p of fromIndex) {
+      if (p && p.id && !byId.has(p.id) && !deleted.has(String(p.id))) {
+        byId.set(p.id, p);
+        await env.KV.put(`products:${p.id}`, JSON.stringify(p));
+      }
+    }
+  }
   for (const rawId of extraIds) {
     const id = String(rawId || '').trim();
     if (!id || deleted.has(id) || byId.has(id)) continue;
     const p = await env.KV.get(`products:${id}`, 'json');
     if (p && typeof p === 'object') byId.set(p.id || id, { ...p, id: p.id || id });
   }
-  // 兼容历史数据：索引里有、单条缺失的商品先补写单条，避免重建时把商品弄丢
-  // （已删除的 id 有墓碑，不补写，否则删除会被这一步回滚）
-  for (const p of fromIndex) {
-    if (p && p.id && !byId.has(p.id) && !deleted.has(String(p.id))) {
-      byId.set(p.id, p);
-      await env.KV.put(`products:${p.id}`, JSON.stringify(p));
-    }
-  }
   const merged = Array.from(byId.values()).sort(
     (a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0) || String(a.id).localeCompare(String(b.id))
   );
-  await env.KV.put('products', JSON.stringify(merged));
+  // 阶段 3：D1 为真源，KV 索引只做副本（读已走 D1），副本写失败不影响结果
+  if (env.DB) {
+    try {
+      await env.KV.put('products', JSON.stringify(merged));
+    } catch { /* 副本回写失败不影响正确性 */ }
+  } else {
+    await env.KV.put('products', JSON.stringify(merged));
+  }
   return merged;
 }
 
 // 单条写入：只碰自己的 key，不碰索引（并发安全）
+// 阶段 3：D1 主写。D1 写失败即抛错（整体失败），禁止只落 KV 造成单边；
+// KV 单条降级为副本回写（best-effort），读完走 D1。
 async function saveProduct(env, item) {
-  await env.KV.put(`products:${item.id}`, JSON.stringify(item));
+  if (!env.DB) {
+    await env.KV.put(`products:${item.id}`, JSON.stringify(item));
+    return;
+  }
+  const ok = await d1SaveProduct(env, item);
+  if (!ok) throw new Error(`product_write_failed:${item.id}`);
+  try {
+    await env.KV.put(`products:${item.id}`, JSON.stringify(item));
+  } catch (_) { /* 副本回写失败不影响正确性 */ }
+}
+
+// 商品 id 占用检查：阶段 2 起以 D1 主键为准（强一致，软删行也算占用，id 不可复用）。
+// D1 不可用时回退 KV 探测，保持本地无 binding 场景可用。
+async function productIdTaken(env, id) {
+  const hit = await d1ProductExists(env, id);
+  if (hit !== null) return hit;
+  return !!(await env.KV.get(`products:${id}`));
 }
 
 /* ================= 订单 / 客户 / 品牌档案 ================= */
@@ -765,20 +886,35 @@ function genOrderIdTs(d) {
   return `${pad(d.getFullYear() % 100)}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}`;
 }
 
-// 订单号必须唯一：KV 无事务无 CAS，重复 id 会直接覆盖已有订单（静默丢单）。
-// 并发场景下「先查后写」并不能真正防撞（两个请求可能同时查到空），故随机空间必须足够大：
-// 4 字节 = 2^32 空间，同分钟 50 单的碰撞概率约 3e-7；查重只作为兜底。
-async function genOrderId(env) {
+// 订单号必须唯一：阶段 2 起订单真源在 D1，重号会被 orders.id 主键直接拒绝、由创建逻辑换号重试，
+// 不再出现 KV 时代「重复 id 静默覆盖已有订单」的丢单风险。
+// 既然唯一性由库兜底，生成侧只需把随机空间做大：6 字节 = 2^48，同分钟碰撞概率可忽略。
+function genOrderId() {
   const ts = genOrderIdTs(new Date());
-  for (let i = 0; i < 3; i += 1) {
-    const bytes = new Uint8Array(4);
-    crypto.getRandomValues(bytes);
-    const rnd = [...bytes].map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join('');
-    const id = `D${ts}${rnd}`;
-    if (!(await env.KV.get(`orders:${id}`))) return id;
-  }
-  const rnd = [...crypto.getRandomValues(new Uint8Array(4))].map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join('');
+  const rnd = [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join('');
   return `D${ts}${rnd}`;
+}
+
+// 阶段 2：订单创建走 D1 主写（纯 INSERT，主键冲突即换号重试），KV 降级为副本回写。
+// D1 未绑定（本地无 binding）时退回 KV 单写，保持可降级；D1 报错则直接失败，
+// 绝不做「只写 KV」的单边写入——否则读路径在 D1 看不到单，等于后台丢单。
+async function createOrder(env, order) {
+  for (let i = 0; i < 5; i += 1) {
+    order.id = genOrderId();
+    const r = await d1InsertOrder(env, order);
+    if (r.ok) {
+      try {
+        await env.KV.put(`orders:${order.id}`, JSON.stringify(order));
+      } catch (_) { /* 副本回写失败不影响下单，后台读走 D1 */ }
+      return { ok: true, source: 'd1' };
+    }
+    if (r.reason === 'no_db') {
+      await env.KV.put(`orders:${order.id}`, JSON.stringify(order));
+      return { ok: true, source: 'kv' };
+    }
+    if (r.reason !== 'conflict') return { ok: false, reason: r.reason };
+  }
+  return { ok: false, reason: 'conflict' };
 }
 
 function sanitizeOrder(raw) {
@@ -815,7 +951,13 @@ function withOrderTotals(order) {
   return { ...order, ...orderTotals(order) };
 }
 
+// 阶段 1：订单读路径切 D1（订单明细一次 IN 查询取回，取代 KV 的 key 全扫 + 逐条 get）。
+// D1 异常或无数据时回退 KV，保证后台列表与查单链路不中断。
 async function getOrders(env) {
+  try {
+    const rows = await d1OrderList(env);
+    if (Array.isArray(rows) && rows.length) return rows.map(withOrderTotals);
+  } catch (_) { /* 回退 KV */ }
   const list = await env.KV.list({ prefix: 'orders:' });
   const out = [];
   for (const k of list.keys) {
@@ -825,17 +967,20 @@ async function getOrders(env) {
   return out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
 }
 
+// 阶段 3：订单写路径最后收口。实现下沉到 d1.js 的 d1PersistOrder：
+// D1 唯一主写 + KV 副本；D1 报错即失败由调用方 500，绝不单边写 KV（否则后台读不到这次变更）。
 async function saveOrder(env, order) {
-  await env.KV.put(`orders:${order.id}`, JSON.stringify(order));
+  return await d1PersistOrder(env, order);
 }
 
 // 客户档案：按手机号聚合（无独立写接口，下单/后台变更时 upsert）
 // 幂等重算：以已落库订单独占为准重新聚合，天然幂等。旧实现用 += 增量累加，
 // 并发下单必然丢更新，且错误会永久沉淀在 customers 记录里。
-async function aggregateCustomer(env, phone, keys) {
+// 订单集合来源改为 getOrders()（D1 优先、KV 兜底）：KV 侧已是副本且 list 弱一致，
+// 继续按 KV 聚合会在刚下单时漏掉新单，导致客户消费额偏小。
+async function aggregateCustomer(env, phone, orders) {
   let agg = null;
-  for (const name of keys) {
-    const o = await env.KV.get(name, 'json');
+  for (const o of orders) {
     if (!o || String(o.customer_phone || '').trim() !== phone) continue;
     const t = orderTotals(o);
     if (!agg) {
@@ -860,16 +1005,15 @@ async function aggregateCustomer(env, phone, keys) {
 async function recomputeOneCustomer(env, phone) {
   const p = String(phone || '').trim();
   if (!p) return null;
-  let agg = null;
-  // 纯重算仍是「读—算—写」，并发下单时会互相写回较旧的聚合结果。
-  // 因此写完再核一次订单集合，若期间有新订单就再算一轮，让记录尽快收敛到真实值。
-  for (let round = 0; round < 2; round += 1) {
-    const before = (await env.KV.list({ prefix: 'orders:' })).keys.map((k) => k.name).sort();
-    agg = await aggregateCustomer(env, p, before);
-    if (!agg) return null;
-    await env.KV.put(`customers:${p}`, JSON.stringify(agg));
-    const after = (await env.KV.list({ prefix: 'orders:' })).keys.map((k) => k.name).sort();
-    if (after.join(',') === before.join(',')) return agg;
+  // 阶段 3：客户聚合真源是 D1 视图 v_customer_stats，订单落库即实时生效，不再回写 KV。
+  // 旧实现为了「让记录收敛」做两轮全量订单扫描（每次下单多拉两遍订单表），
+  // 在 D1 时代已无意义，直接去掉，只保留本地无 D1 时的 KV 兜底记录。
+  const agg = await aggregateCustomer(env, p, await getOrders(env));
+  if (!agg) return null;
+  if (!env.DB) {
+    try {
+      await env.KV.put(`customers:${p}`, JSON.stringify(agg));
+    } catch (_) { /* 兜底缓存写失败不影响下单 */ }
   }
   return agg;
 }
@@ -906,7 +1050,13 @@ async function recomputeCustomers(env) {
   return Array.from(agg.values()).sort((a, b) => String(b.last_order_at || '').localeCompare(String(a.last_order_at || '')));
 }
 
+// 阶段 1：客户档案改由 D1 视图 v_customer_stats 实时聚合（KV 时代的 customers: 聚合记录只是缓存）。
+// 视图为空或 D1 异常时回退 KV，兼容尚未迁移的历史环境。
 async function getCustomers(env) {
+  try {
+    const rows = await d1CustomerList(env);
+    if (Array.isArray(rows) && rows.length) return rows;
+  } catch (_) { /* 回退 KV */ }
   const list = await env.KV.list({ prefix: 'customers:' });
   const out = [];
   for (const k of list.keys) {
@@ -946,13 +1096,40 @@ function brandProfileKeyFromListName(name) {
 
 async function getBrandProfile(env, key) {
   if (!key) return null;
-  const hit = await env.KV.get(brandProfileKvKey(key), 'json');
+  const hit = await getDoc(env, brandProfileKvKey(key));
   if (hit) return hit;
   // 兼容历史写入的原始（非编码）key
-  return await env.KV.get(`${BRAND_PROFILE_PREFIX}${key}`, 'json');
+  return await getDoc(env, `${BRAND_PROFILE_PREFIX}${key}`);
 }
 
 async function getBrandProfiles(env) {
+  const sortFn = (a, b) => String(a.key || '').localeCompare(String(b.key || ''), 'zh');
+  const d1Rows = await d1BrandProfiles(env, BRAND_PROFILE_PREFIX);
+
+  // 阶段 2：品牌档案以 D1 kv_doc 为准（一次 SELECT 取全量，替代原来的 N 次 get）。
+  // 仍保留一次 KV.list 做反向自愈：KV 里有、D1 缺行的档案（影子写漏写、迁移漏扫）
+  // 直接从 KV 读回并补写 D1 后并入结果——否则切读 D1 的瞬间，这些档案就会从后台列表里消失。
+  if (Array.isArray(d1Rows)) {
+    const byKey = new Map();
+    for (const p of d1Rows) {
+      const key = String(p.key || '').trim();
+      if (key) byKey.set(key, { ...p, key });
+    }
+    const list = await env.KV.list({ prefix: BRAND_PROFILE_PREFIX });
+    for (const k of list.keys) {
+      const key = brandProfileKeyFromListName(k.name);
+      if (!key || byKey.has(key)) continue;
+      // getBrandProfile 内部已是「D1 优先、缺失回退 KV」，这里拿到的必然是可用的那份
+      const p = (await getBrandProfile(env, key)) || (await env.KV.get(k.name, 'json'));
+      if (!p) continue;
+      const fixed = { ...p, key: p.key || key };
+      byKey.set(key, fixed);
+      await d1PutDoc(env, brandProfileKvKey(fixed.key), JSON.stringify(fixed));
+    }
+    return [...byKey.values()].sort(sortFn);
+  }
+
+  // D1 不可用：完全回退 KV 原逻辑
   const list = await env.KV.list({ prefix: BRAND_PROFILE_PREFIX });
   const seen = new Set();
   const out = [];
@@ -964,7 +1141,7 @@ async function getBrandProfiles(env) {
     seen.add(key);
     out.push({ ...p, key: p.key || key });
   }
-  return out.sort((a, b) => String(a.key || '').localeCompare(String(b.key || ''), 'zh'));
+  return out.sort(sortFn);
 }
 
 async function saveBrandProfile(env, profile) {
@@ -977,21 +1154,32 @@ async function saveBrandProfile(env, profile) {
     next.created_at = (prev && prev.created_at) || now;
   }
   next.updated_at = now;
-  await env.KV.put(brandProfileKvKey(next.key), JSON.stringify(next));
+  await putDoc(env, brandProfileKvKey(next.key), next);
   const legacy = `${BRAND_PROFILE_PREFIX}${next.key}`;
   if (legacy !== brandProfileKvKey(next.key) && (await env.KV.get(legacy))) {
-    await env.KV.delete(legacy);
+    await delDoc(env, legacy);
   }
   return next;
 }
 
 async function deleteBrandProfile(env, key) {
-  await env.KV.delete(brandProfileKvKey(key));
+  await delDoc(env, brandProfileKvKey(key));
   const legacy = `${BRAND_PROFILE_PREFIX}${key}`;
-  if (legacy !== brandProfileKvKey(key)) await env.KV.delete(legacy);
+  if (legacy !== brandProfileKvKey(key)) await delDoc(env, legacy);
 }
 
+// 顶层兜底：D1 主写失败等异常一律转统一 500 JSON。
+// 不兜底时 Workers 会把异常堆栈直接回给客户端（泄露内部路径与实现细节）。
 async function handleApi(request, env, url) {
+  try {
+    return await handleApiImpl(request, env, url);
+  } catch (e) {
+    console.error('api_error', url.pathname, e && e.message);
+    return json({ error: 'server_error', message: '服务暂时不可用，请稍后重试' }, 500);
+  }
+}
+
+async function handleApiImpl(request, env, url) {
   const path = url.pathname;
   const method = request.method;
   const products = await getProducts(env);
@@ -1305,7 +1493,7 @@ async function handleApi(request, env, url) {
       if (name.length > 20) return json({ error: 'bad_request', message: '分类名称过长（≤20字）' }, 400);
       if (configured.includes(name)) return json({ error: 'duplicated', message: '分类已存在' }, 400);
       const next = [...configured, name];
-      await env.KV.put('config:categories', JSON.stringify(next));
+      await putDoc(env, 'config:categories', next);
       return jsonNoCache({ ok: true, categories: next });
     }
     if (method === 'PUT') {
@@ -1324,11 +1512,12 @@ async function handleApi(request, env, url) {
       if (!isConfigured && changed.length === 0) return json({ error: 'not_found', message: '分类不存在' }, 404);
       let next = isConfigured ? configured.map((c) => (c === old ? name : c)) : configured;
       if (!next.includes(name)) next = [...next, name];
-      await env.KV.put('config:categories', JSON.stringify(next));
+      await putDoc(env, 'config:categories', next);
       let renamed = 0;
       if (changed.length) {
         for (const p of changed) p.category = name;
-        for (const p of changed) await env.KV.put(`products:${p.id}`, JSON.stringify(p));
+        // 走 saveProduct：KV 主写 + D1 影子写必须同进，漏一处就会让 D1 与 KV 分叉
+        for (const p of changed) await saveProduct(env, p);
         await rebuildProductsIndex(env, changed.map((p) => p.id));
         renamed = changed.length;
       }
@@ -1344,12 +1533,12 @@ async function handleApi(request, env, url) {
       if (isConfigured) {
         // 配置分类：仅移除配置（保持原设计，产品分类保留并自动出现在自动发现区）
         const next = configured.filter((c) => c !== name);
-        await env.KV.put('config:categories', JSON.stringify(next));
+        await putDoc(env, 'config:categories', next);
         return jsonNoCache({ ok: true, categories: next, removed: 0 });
       }
       // 自动发现分类（extra）：同步清理产品分类，避免删除后重新聚合出现
       for (const p of used) p.category = '未分类';
-      for (const p of used) await env.KV.put(`products:${p.id}`, JSON.stringify(p));
+      for (const p of used) await saveProduct(env, p);
       await rebuildProductsIndex(env);
       return jsonNoCache({ ok: true, categories: configured, removed: used.length });
     }
@@ -1469,7 +1658,7 @@ async function handleApi(request, env, url) {
     }
     if (updated > 0) {
       for (const item of changed) {
-        await env.KV.put(`products:${item.id}`, JSON.stringify(item));
+        await saveProduct(env, item);
       }
       await rebuildProductsIndex(env, changed.map((p) => p.id));
     }
@@ -1537,7 +1726,7 @@ async function handleApi(request, env, url) {
           seqCursor.id = makeProductId(seqCursor.seq);
         }
         // 占用检查：并发导入/新增撞到同一 id 时顺延，避免覆盖已有商品单条
-        for (let guard = 0; guard < 20 && await env.KV.get(`products:${seqCursor.id}`); guard++) {
+        for (let guard = 0; guard < 20 && await productIdTaken(env, seqCursor.id); guard++) {
           seqCursor.seq += 1;
           seqCursor.id = makeProductId(seqCursor.seq);
         }
@@ -1546,11 +1735,12 @@ async function handleApi(request, env, url) {
         upsert.set(key, { item, idx: null });
       }
     }
+    // 导入也是一条写路径：必须与单条新增/编辑共用 saveProduct，否则 D1 少掉整批商品
     if (imported.length) {
-      for (const item of imported) await env.KV.put(`products:${item.id}`, JSON.stringify(item));
+      for (const item of imported) await saveProduct(env, item);
     }
     if (updated.length) {
-      for (const u of updated) await env.KV.put(`products:${u.merged.id}`, JSON.stringify(u.merged));
+      for (const u of updated) await saveProduct(env, u.merged);
     }
     // 单条写完后统一重建索引：导入与后台编辑并发时不会相互覆盖
     const touched = [...imported, ...updated.map((u) => u.merged)].map((x) => x.id);
@@ -1615,12 +1805,19 @@ async function handleApi(request, env, url) {
     if (order.total_qty > 50000) {
       return json({ error: 'bad_request', message: '单笔数量超出上限，请分批下单或联系业务员' }, 400);
     }
-    order.id = await genOrderId(env);
     order.status = 'pending';
     order.version = 1;
     order.created_at = new Date().toISOString();
     order.updated_at = order.created_at;
-    await saveOrder(env, order);
+    // 阶段 2：D1 主写，主键冲突自动换号重试；KV 仅副本回写
+    const created = await createOrder(env, order);
+    if (!created.ok) {
+      const conflict = created.reason === 'conflict';
+      return json({
+        error: conflict ? 'unavailable' : 'server_error',
+        message: conflict ? '订单号生成冲突，请重试' : '下单写入失败，请稍后重试',
+      }, conflict ? 503 : 500);
+    }
     await upsertCustomer(env, order);
     // 响应走公开投影：下单接口匿名可写，绝不能把 base_price（成本价）回吐给调用方
     return json({ ok: true, order: publicOrder(withOrderTotals(order)) }, 201);
@@ -1665,6 +1862,29 @@ async function handleApi(request, env, url) {
     }
   }
 
+  /* ---- 后台：D1 迁移与一致性核对（阶段 0，仅管理员） ---- */
+  if (path.startsWith('/api/admin/d1/')) {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (user.role !== 'admin') return forbidden();
+    if (!env.DB) return json({ error: 'd1_not_bound', message: 'D1 binding DB 未配置' }, 503);
+    // 分批搬迁：KV 全量 -> D1（products / orders / order_items / kv_doc）
+    // 阶段 3 收口后仅供「D1 重建 / 灾难恢复」：迁移已完成时默认被拒（KV 已是降级副本，
+    // 重跑会把陈旧副本反向覆盖真源），必须显式 ?force=1。
+    if (path === '/api/admin/d1/migrate' && method === 'POST') {
+      const limit = Number(url.searchParams.get('limit') || 100);
+      const force = url.searchParams.get('force') === '1';
+      const r = await migrateBatch(env, limit, force);
+      return jsonNoCache({ ok: !r.skipped, ...r });
+    }
+    // 一致性核对：KV 有而 D1 无才算异常（KV 已是副本，D1 有 KV 无属正常）
+    if (path === '/api/admin/d1/verify' && method === 'GET') {
+      const r = await verifyConsistency(env, Number(url.searchParams.get('sample') || 5));
+      return jsonNoCache({ ok: true, ...r });
+    }
+    return notFound();
+  }
+
   /* ---- 后台：订单 ---- */
   if (path === '/api/admin/orders' && method === 'GET') {
     const user = await authUser(request, env);
@@ -1681,7 +1901,10 @@ async function handleApi(request, env, url) {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
       if (!await can(env, user, 'orders')) return forbidden();
-      const order = await env.KV.get(`orders:${om[1]}`, 'json');
+      // 先按 D1 读（阶段 1 已切），拿到来源标记：只有确认该单在 D1 里才走 CAS，
+      // 否则历史未双写单会因 UPDATE 命中 0 行被误判为版本冲突。
+      const d1Order = await d1OrderGet(env, om[1]);
+      const order = d1Order || (await env.KV.get(`orders:${om[1]}`, 'json'));
       if (!order) return notFound();
       const body = await readJson(request);
       const next = String(body?.status || '').trim();
@@ -1692,19 +1915,62 @@ async function handleApi(request, env, url) {
       if (!ORDER_STATUS[next] || !ORDER_STATUS[order.status].next.includes(next)) {
         return json({ error: 'bad_request', message: `状态不允许从「${ORDER_STATUS[order.status].label}」流转到该状态` }, 400);
       }
-      // KV 无 CAS：写前重读一次，缩小读改写窗口，避免把他人已提交的流转覆盖掉
+      const patch = {
+        status: next,
+        version: Number(order.version || 1) + 1,
+        trackingNo: body?.tracking_no !== undefined
+          ? String(body.tracking_no).trim().slice(0, 100)
+          : (order.tracking_no || ''),
+        statusNote: body?.status_note !== undefined
+          ? String(body.status_note).trim().slice(0, 200)
+          : (order.status_note || ''),
+        updatedAt: new Date().toISOString(),
+      };
+      // 阶段 2：状态流转改由 D1 条件更新（UPDATE ... WHERE version = 旧值）完成，
+      // D1 单库单线程写 + 条件更新即真原子 CAS，彻底消除 KV 时代「重读—写」仍可能覆盖他人流转的窗口。
+      // 命中 0 行说明期间已有人改过（或 D1 无此单），按冲突处理；D1 不可用时退回 KV 读改写。
+      const cas = d1Order
+        ? await d1OrderUpdateStatus(env, order.id, patch)
+        : { ok: false, reason: 'no_db' };
+      if (cas.ok) {
+        const merged = {
+          ...order,
+          status: patch.status,
+          version: patch.version,
+          tracking_no: patch.trackingNo,
+          status_note: patch.statusNote,
+          updated_at: patch.updatedAt,
+        };
+        // KV 侧降级为副本：只回写，不再对 D1 做第二次明细重写；副本失败不影响已生效的 D1 结果
+        try {
+          await env.KV.put(`orders:${order.id}`, JSON.stringify(merged));
+        } catch (_) { /* 副本回写失败忽略，后台读走 D1 */ }
+        // 状态流转会改变订单是否计入客户消费（尤其取消），必须同步重算客户聚合
+        await upsertCustomer(env, merged);
+        return json({ ok: true, order: withOrderTotals(merged) });
+      }
+      if (cas.reason === 'conflict') {
+        return json({ error: 'conflict', message: '订单状态刚被他人更新，请刷新后重试' }, 409);
+      }
+      // D1 绑定存在但读写报错：不做单边 KV 写（读路径在 D1 看不到这次流转，等于丢更新），直接失败可重试。
+      if (cas.reason === 'error') {
+        return json({ error: 'server_error', message: '订单状态保存失败，请稍后重试' }, 500);
+      }
+      // 仅 D1 未绑定（本地降级环境）才走 KV 读改写：此时 KV 就是唯一真源
       const fresh = await env.KV.get(`orders:${om[1]}`, 'json');
       if (!fresh) return notFound();
       if (String(fresh.status) !== String(order.status) || Number(fresh.version || 1) !== Number(order.version || 1)) {
         return json({ error: 'conflict', message: '订单状态刚被他人更新，请刷新后重试' }, 409);
       }
-      order.status = next;
-      order.version = Number(order.version || 1) + 1;
-      if (body?.tracking_no !== undefined) order.tracking_no = String(body.tracking_no).trim().slice(0, 100);
-      if (body?.status_note !== undefined) order.status_note = String(body.status_note).trim().slice(0, 200);
-      order.updated_at = new Date().toISOString();
-      await saveOrder(env, order);
-      // 状态流转会改变订单是否计入客户消费（尤其取消），必须同步重算客户聚合
+      order.status = patch.status;
+      order.version = patch.version;
+      order.tracking_no = patch.trackingNo;
+      order.status_note = patch.statusNote;
+      order.updated_at = patch.updatedAt;
+      const saved = await saveOrder(env, order);
+      if (!saved.ok) {
+        return json({ error: 'server_error', message: '订单状态保存失败，请稍后重试' }, 500);
+      }
       await upsertCustomer(env, order);
       return json({ ok: true, order: withOrderTotals(order) });
     }
@@ -1715,7 +1981,8 @@ async function handleApi(request, env, url) {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
       if (!await can(env, user, 'orders')) return forbidden();
-      const order = await env.KV.get(`orders:${om[1]}`, 'json');
+      // 阶段 1：单条订单也读 D1；D1 查无或异常（含尚未双写的历史单）时回退 KV
+      const order = (await d1OrderGet(env, om[1])) || (await env.KV.get(`orders:${om[1]}`, 'json'));
       return order ? jsonNoCache({ ok: true, order: withOrderTotals(order) }) : notFound();
     }
   }
@@ -1814,10 +2081,18 @@ async function handleApi(request, env, url) {
         return json({ ok: true, product: merged });
       }
 
-      // DELETE：同步删除详情 KV 与关联 R2 图片
+      // DELETE：D1 软删为主（失败即整体失败），KV 单条与索引副本随后回写；关联 R2 图片同步清理
       const removed = latest[idx];
-      await env.KV.delete(`products:${removed.id}`);
       await markProductDeleted(env, removed.id);
+      if (env.DB) {
+        const okDel = await d1DeleteProduct(env, removed.id);
+        if (!okDel) throw new Error(`product_delete_failed:${removed.id}`);
+        try {
+          await env.KV.delete(`products:${removed.id}`);
+        } catch { /* 副本删除失败不影响正确性 */ }
+      } else {
+        await env.KV.delete(`products:${removed.id}`);
+      }
       await rebuildProductsIndex(env);
       if (removed.image) {
         const key = removed.image.replace(/^\/img\//, '');
@@ -1871,7 +2146,7 @@ async function handleApi(request, env, url) {
       const latest = await rebuildProductsIndex(env);
       // 并发新增时 seq 可能撞车：占用检查后顺延，避免覆盖他人刚建的商品
       let { id, seq } = nextId(latest);
-      for (let guard = 0; guard < 20 && await env.KV.get(`products:${id}`); guard++) {
+      for (let guard = 0; guard < 20 && await productIdTaken(env, id); guard++) {
         ({ id, seq } = nextId([...latest, { id, seq }]));
       }
       const item = { id, seq, ...sanitizeProduct(raw) };
