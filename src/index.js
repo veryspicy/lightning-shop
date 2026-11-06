@@ -795,20 +795,13 @@ async function rebuildProductsIndex(env, extraIds = []) {
   const deleted = await getDeletedProductIds(env);
   const byId = new Map();
   const d1Rows = await d1ProductList(env);
-  if (Array.isArray(d1Rows)) {
+  // 阶段 3：商品真源在 D1。D1 有数据时一律以 D1 为准，不再用 KV 索引反补 D1——
+  // 反补会把已删除/已回滚的旧数据写回权威库。D1 无数据（首次部署/未迁移）才走 KV 兜底。
+  if (Array.isArray(d1Rows) && d1Rows.length) {
     for (const row of d1Rows) {
       const id = String(row && row.id ? row.id : '').trim();
       if (!id || deleted.has(id)) continue;
       byId.set(id, indexRowOfProduct(row));
-    }
-    // 反向自愈：索引里有、D1 里没有的商品补写 D1（影子写漏写的兜底）
-    for (const p of fromIndex) {
-      const id = String((p && p.id) || '').trim();
-      if (!id || deleted.has(id) || byId.has(id)) continue;
-      const single = await env.KV.get(`products:${id}`, 'json');
-      const item = single && typeof single === 'object' ? { ...single, id: single.id || id } : p;
-      byId.set(id, indexRowOfProduct(item));
-      await d1SaveProduct(env, item);
     }
   } else {
     // KV.list 单页上限 1000，必须翻页，否则商品过千后重建会把后面的商品整批丢掉
@@ -840,16 +833,30 @@ async function rebuildProductsIndex(env, extraIds = []) {
   const merged = Array.from(byId.values()).sort(
     (a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0) || String(a.id).localeCompare(String(b.id))
   );
-  await env.KV.put('products', JSON.stringify(merged));
+  // 阶段 3：D1 为真源，KV 索引只做副本（读已走 D1），副本写失败不影响结果
+  if (env.DB) {
+    try {
+      await env.KV.put('products', JSON.stringify(merged));
+    } catch { /* 副本回写失败不影响正确性 */ }
+  } else {
+    await env.KV.put('products', JSON.stringify(merged));
+  }
   return merged;
 }
 
 // 单条写入：只碰自己的 key，不碰索引（并发安全）
+// 阶段 3：D1 主写。D1 写失败即抛错（整体失败），禁止只落 KV 造成单边；
+// KV 单条降级为副本回写（best-effort），读完走 D1。
 async function saveProduct(env, item) {
-  await env.KV.put(`products:${item.id}`, JSON.stringify(item));
-  // 影子双写 D1：KV 仍是读源，D1 累积权威数据，供阶段 1 切换读路径。
-  // 失败只记账（d1_dirty），绝不回滚主写。
-  await d1SaveProduct(env, item);
+  if (!env.DB) {
+    await env.KV.put(`products:${item.id}`, JSON.stringify(item));
+    return;
+  }
+  const ok = await d1SaveProduct(env, item);
+  if (!ok) throw new Error(`product_write_failed:${item.id}`);
+  try {
+    await env.KV.put(`products:${item.id}`, JSON.stringify(item));
+  } catch (_) { /* 副本回写失败不影响正确性 */ }
 }
 
 // 商品 id 占用检查：阶段 2 起以 D1 主键为准（强一致，软删行也算占用，id 不可复用）。
@@ -2062,11 +2069,18 @@ async function handleApiImpl(request, env, url) {
         return json({ ok: true, product: merged });
       }
 
-      // DELETE：同步删除详情 KV 与关联 R2 图片
+      // DELETE：D1 软删为主（失败即整体失败），KV 单条与索引副本随后回写；关联 R2 图片同步清理
       const removed = latest[idx];
-      await env.KV.delete(`products:${removed.id}`);
       await markProductDeleted(env, removed.id);
-      await d1DeleteProduct(env, removed.id);
+      if (env.DB) {
+        const okDel = await d1DeleteProduct(env, removed.id);
+        if (!okDel) throw new Error(`product_delete_failed:${removed.id}`);
+        try {
+          await env.KV.delete(`products:${removed.id}`);
+        } catch { /* 副本删除失败不影响正确性 */ }
+      } else {
+        await env.KV.delete(`products:${removed.id}`);
+      }
       await rebuildProductsIndex(env);
       if (removed.image) {
         const key = removed.image.replace(/^\/img\//, '');
