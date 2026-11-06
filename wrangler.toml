@@ -70,3 +70,13 @@ namespace_id = "1003"
   [ratelimits.simple]
   limit = 30
   period = 60
+
+# 账号维度登录闸：键为「IP|用户名」，堵跨 isolate 单账号口令爆破。
+# 原生 RL 的 period 只支持 10/60 秒，故用 5 次/60 秒（比内存桶 5 次/300 秒更严），两闸取严。
+[[ratelimits]]
+name = "RL_LOGIN_ACCT"
+namespace_id = "1004"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60

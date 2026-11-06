@@ -930,8 +930,9 @@ async function handleApi(request, env, url) {
     }
     const username = String(body.username).trim();
     const password = String(body.password);
-    const acctLimit = rateLimit('login-acct', `${ip}|${username.toLowerCase()}`, 5, 300);
-    if (!acctLimit.ok) return tooManyRequests(acctLimit.retryAfter, '该账号尝试过于频繁，请 5 分钟后再试');
+    // 账号闸同样走双闸：内存桶 5 次/300 秒（单 isolate 精确）+ RL_LOGIN_ACCT 5 次/60 秒（按 PoP 计数、跨 isolate 生效）
+    const acctLimit = await rateLimitGuard(env, 'login-acct', `${ip}|${username.toLowerCase()}`, 5, 300, 'RL_LOGIN_ACCT');
+    if (!acctLimit.ok) return tooManyRequests(acctLimit.retryAfter, '该账号尝试过于频繁，请稍后再试');
     const users = await getUsers(env);
     const migrated = await ensureAdminUser(env, users, username, password);
     let user = migrated || users.find((u) => u.username === username && u.status !== 'disabled');
