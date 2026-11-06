@@ -35,7 +35,7 @@
 import {
   d1SaveProduct,
   d1DeleteProduct,
-  d1SaveOrder,
+  d1PersistOrder,
   d1ProductList,
   d1ProductExists,
   d1OrderList,
@@ -53,8 +53,10 @@ import {
 
 const CATEGORY_ORDER = ['低GI杂粮', '营养粮油', '黄柿子火锅底料', '野生苦菜', '坚果玉米', '羊杂碎'];
 
-// 阶段 1：商品读路径以 D1 为准。D1 不可用（未绑定/查询异常）时回退 KV，
-// 前台绝不能因为库抖动变成空页——读切的前提是可降级。
+// 阶段 3：商品读路径以 D1 为唯一真源。
+// KV 分支只在两种情况下生效：D1 未绑定（本地/未迁移环境）或 d1ProductList 返回空/异常。
+// 注意判空用的是「返回空数组」而非「抛异常」——D1 里商品被全部下架软删时也必须回退 KV，
+// 否则一次误清空会让前台变成空页且无法自查。
 async function getProducts(env) {
   const rows = await d1ProductList(env);
   if (Array.isArray(rows) && rows.length) return rows;
@@ -69,6 +71,8 @@ async function getProducts(env) {
 // - D1 写失败即整个写操作失败（抛错由调用方转 500），禁止只落 KV 造成单边；
 // - KV 副本回写为 best-effort，失败不影响结果（读已走 D1，副本只服务于降级）；
 // - 无 D1 绑定时（本地/未迁移环境）退回 KV 单写，行为与阶段 1 一致。
+// KV 兜底读只在 D1 无该键（含尚未 migrate 的键）或 D1 查询异常返回 null 时触发；
+// 空串/空对象等「D1 里真实存过的空值」视为命中，不再回落 KV，避免被陈旧副本覆盖。
 async function getDoc(env, key) {
   const hit = await d1GetDoc(env, key);
   if (hit !== null && hit !== undefined) return hit;
@@ -963,11 +967,10 @@ async function getOrders(env) {
   return out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
 }
 
+// 阶段 3：订单写路径最后收口。实现下沉到 d1.js 的 d1PersistOrder：
+// D1 唯一主写 + KV 副本；D1 报错即失败由调用方 500，绝不单边写 KV（否则后台读不到这次变更）。
 async function saveOrder(env, order) {
-  await env.KV.put(`orders:${order.id}`, JSON.stringify(order));
-  // 影子双写 D1：订单是并发冲突最敏感的数据（重号覆盖=静默丢单），
-  // D1 主键冲突会直接报错而非静默覆盖，阶段 1 改用 INSERT 语义后彻底消除该风险。
-  await d1SaveOrder(env, order);
+  return await d1PersistOrder(env, order);
 }
 
 // 客户档案：按手机号聚合（无独立写接口，下单/后台变更时 upsert）
@@ -1002,17 +1005,15 @@ async function aggregateCustomer(env, phone, orders) {
 async function recomputeOneCustomer(env, phone) {
   const p = String(phone || '').trim();
   if (!p) return null;
-  let agg = null;
-  // 纯重算仍是「读—算—写」，并发下单时会互相写回较旧的聚合结果。
-  // 因此写完再核一次订单集合，若期间有新订单就再算一轮，让记录尽快收敛到真实值。
-  const idsOf = async () => (await getOrders(env)).map((o) => String(o.id)).sort().join(',');
-  for (let round = 0; round < 2; round += 1) {
-    const before = await idsOf();
-    agg = await aggregateCustomer(env, p, await getOrders(env));
-    if (!agg) return null;
-    await env.KV.put(`customers:${p}`, JSON.stringify(agg));
-    const after = await idsOf();
-    if (after === before) return agg;
+  // 阶段 3：客户聚合真源是 D1 视图 v_customer_stats，订单落库即实时生效，不再回写 KV。
+  // 旧实现为了「让记录收敛」做两轮全量订单扫描（每次下单多拉两遍订单表），
+  // 在 D1 时代已无意义，直接去掉，只保留本地无 D1 时的 KV 兜底记录。
+  const agg = await aggregateCustomer(env, p, await getOrders(env));
+  if (!agg) return null;
+  if (!env.DB) {
+    try {
+      await env.KV.put(`customers:${p}`, JSON.stringify(agg));
+    } catch (_) { /* 兜底缓存写失败不影响下单 */ }
   }
   return agg;
 }
@@ -1868,13 +1869,15 @@ async function handleApiImpl(request, env, url) {
     if (user.role !== 'admin') return forbidden();
     if (!env.DB) return json({ error: 'd1_not_bound', message: 'D1 binding DB 未配置' }, 503);
     // 分批搬迁：KV 全量 -> D1（products / orders / order_items / kv_doc）
-    // 幂等可重入：靠 migration_state 游标续跑，中途失败重调即继续
+    // 阶段 3 收口后仅供「D1 重建 / 灾难恢复」：迁移已完成时默认被拒（KV 已是降级副本，
+    // 重跑会把陈旧副本反向覆盖真源），必须显式 ?force=1。
     if (path === '/api/admin/d1/migrate' && method === 'POST') {
       const limit = Number(url.searchParams.get('limit') || 100);
-      const r = await migrateBatch(env, limit);
-      return jsonNoCache({ ok: true, ...r });
+      const force = url.searchParams.get('force') === '1';
+      const r = await migrateBatch(env, limit, force);
+      return jsonNoCache({ ok: !r.skipped, ...r });
     }
-    // 一致性核对：KV 与 D1 计数对比 + 抽样主键命中检查 + 影子写脏标记
+    // 一致性核对：KV 有而 D1 无才算异常（KV 已是副本，D1 有 KV 无属正常）
     if (path === '/api/admin/d1/verify' && method === 'GET') {
       const r = await verifyConsistency(env, Number(url.searchParams.get('sample') || 5));
       return jsonNoCache({ ok: true, ...r });
@@ -1938,8 +1941,10 @@ async function handleApiImpl(request, env, url) {
           status_note: patch.statusNote,
           updated_at: patch.updatedAt,
         };
-        // KV 侧降级为副本：只回写，不再走 saveOrder（否则会再对 D1 做一次 DELETE+INSERT 明细）
-        await env.KV.put(`orders:${order.id}`, JSON.stringify(merged));
+        // KV 侧降级为副本：只回写，不再对 D1 做第二次明细重写；副本失败不影响已生效的 D1 结果
+        try {
+          await env.KV.put(`orders:${order.id}`, JSON.stringify(merged));
+        } catch (_) { /* 副本回写失败忽略，后台读走 D1 */ }
         // 状态流转会改变订单是否计入客户消费（尤其取消），必须同步重算客户聚合
         await upsertCustomer(env, merged);
         return json({ ok: true, order: withOrderTotals(merged) });
@@ -1947,7 +1952,11 @@ async function handleApiImpl(request, env, url) {
       if (cas.reason === 'conflict') {
         return json({ error: 'conflict', message: '订单状态刚被他人更新，请刷新后重试' }, 409);
       }
-      // D1 不可用（无 binding / 报错）：沿用 KV 读改写并做一次重读兜底校验
+      // D1 绑定存在但读写报错：不做单边 KV 写（读路径在 D1 看不到这次流转，等于丢更新），直接失败可重试。
+      if (cas.reason === 'error') {
+        return json({ error: 'server_error', message: '订单状态保存失败，请稍后重试' }, 500);
+      }
+      // 仅 D1 未绑定（本地降级环境）才走 KV 读改写：此时 KV 就是唯一真源
       const fresh = await env.KV.get(`orders:${om[1]}`, 'json');
       if (!fresh) return notFound();
       if (String(fresh.status) !== String(order.status) || Number(fresh.version || 1) !== Number(order.version || 1)) {
@@ -1958,7 +1967,10 @@ async function handleApiImpl(request, env, url) {
       order.tracking_no = patch.trackingNo;
       order.status_note = patch.statusNote;
       order.updated_at = patch.updatedAt;
-      await saveOrder(env, order);
+      const saved = await saveOrder(env, order);
+      if (!saved.ok) {
+        return json({ error: 'server_error', message: '订单状态保存失败，请稍后重试' }, 500);
+      }
       await upsertCustomer(env, order);
       return json({ ok: true, order: withOrderTotals(order) });
     }
