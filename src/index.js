@@ -43,6 +43,10 @@ import {
   d1OrderUpdateStatus,
   d1InsertOrder,
   d1CustomerList,
+  d1GetDoc,
+  d1PutDoc,
+  d1DeleteDoc,
+  d1BrandProfiles,
   migrateBatch,
   verifyConsistency,
 } from './d1.js';
@@ -59,9 +63,30 @@ async function getProducts(env) {
   return [];
 }
 
+// 配置类小文档（site:hero / site:price / site:qr / config:categories / roles / users / brand:profile:*）
+// 阶段 2：写路径 = KV 主写 + D1 kv_doc 影子写；读路径 = D1 优先，缺失或 D1 不可用回退 KV。
+// 读必须能降级：kv_doc 里没有这条（迁移漏扫、首次部署）时，绝不能把配置读成默认值。
+async function getDoc(env, key) {
+  const hit = await d1GetDoc(env, key);
+  if (hit !== null && hit !== undefined) return hit;
+  return await env.KV.get(key, 'json');
+}
+
+async function putDoc(env, key, value) {
+  const v = typeof value === 'string' ? value : JSON.stringify(value);
+  await env.KV.put(key, v);
+  // 影子写失败只记 dirty，不阻塞后台操作——KV 仍是可读副本
+  await d1PutDoc(env, key, v);
+}
+
+async function delDoc(env, key) {
+  await env.KV.delete(key);
+  await d1DeleteDoc(env, key);
+}
+
 // 配置分类：管理员维护的分类名列表（KV config:categories），缺省使用 CATEGORY_ORDER
 async function getConfigCategories(env) {
-  const raw = await env.KV.get('config:categories', 'json');
+  const raw = await getDoc(env, 'config:categories');
   if (Array.isArray(raw) && raw.length > 0) {
     return [...new Set(raw.map((x) => String(x).trim()).filter(Boolean))];
   }
@@ -69,7 +94,7 @@ async function getConfigCategories(env) {
 }
 
 async function getCategories(env) {
-  const raw = await env.KV.get('categories', 'json');
+  const raw = await getDoc(env, 'categories');
   if (raw) return raw;
   return [];
 }
@@ -162,7 +187,7 @@ async function getRoles(env) {
 
 async function saveRoles(env, roles) {
   const custom = Object.values(roles).filter((r) => !r.builtin);
-  await env.KV.put('roles', JSON.stringify(custom));
+  await putDoc(env, 'roles', custom);
 }
 
 // 角色权限解析：'*' 表示全部权限
@@ -191,7 +216,7 @@ async function getUsers(env) {
 }
 
 async function saveUsers(env, users) {
-  await env.KV.put('users', JSON.stringify(users));
+  await putDoc(env, 'users', users);
 }
 
 function randomToken() {
@@ -570,7 +595,7 @@ const DEFAULT_HERO = {
 };
 
 async function getHero(env) {
-  const raw = await env.KV.get('site:hero', 'json');
+  const raw = await getDoc(env, 'site:hero');
   if (raw && raw.title) return raw;
   return DEFAULT_HERO;
 }
@@ -583,7 +608,7 @@ async function saveHero(env, hero) {
   };
   if (!h.title) h.title = DEFAULT_HERO.title;
   if (!h.eyebrow) h.eyebrow = DEFAULT_HERO.eyebrow;
-  await env.KV.put('site:hero', JSON.stringify(h));
+  await putDoc(env, 'site:hero', h);
   return h;
 }
 
@@ -591,7 +616,7 @@ async function saveHero(env, hero) {
 const DEFAULT_PRICE = { enabled: true, margin: 10 };
 
 async function getPrice(env) {
-  const raw = await env.KV.get('site:price', 'json');
+  const raw = await getDoc(env, 'site:price');
   if (raw && typeof raw.margin === 'number') {
     return { enabled: !!raw.enabled, margin: raw.margin };
   }
@@ -603,7 +628,7 @@ async function savePrice(env, raw) {
   if (!Number.isFinite(margin)) margin = DEFAULT_PRICE.margin;
   margin = Math.min(500, Math.max(0, Math.round(margin * 10) / 10));
   const p = { enabled: raw.enabled !== false, margin };
-  await env.KV.put('site:price', JSON.stringify(p));
+  await putDoc(env, 'site:price', p);
   return p;
 }
 
@@ -660,7 +685,7 @@ const DEFAULT_QR = {
 };
 
 async function getQr(env) {
-  const raw = await env.KV.get('site:qr', 'json');
+  const raw = await getDoc(env, 'site:qr');
   if (raw && (raw.url || raw.quoteImage)) {
     return {
       url: String(raw.url || DEFAULT_QR.url).trim() || DEFAULT_QR.url,
@@ -681,7 +706,7 @@ async function saveQr(env, raw) {
   };
   if (!q.url) q.url = DEFAULT_QR.url;
   if (!q.quoteImage) q.quoteImage = DEFAULT_QR.quoteImage;
-  await env.KV.put('site:qr', JSON.stringify(q));
+  await putDoc(env, 'site:qr', q);
   return q;
 }
 
@@ -723,7 +748,8 @@ async function markProductDeleted(env, id) {
   const set = await getDeletedProductIds(env);
   set.add(String(id));
   // 保留最近 500 条即可覆盖重建窗口，避免墓碑无限增长
-  await env.KV.put('meta:deletedProducts', JSON.stringify(Array.from(set).slice(-500)));
+  // 墓碑集合同时影子写 D1：阶段 3 切读后仍需原地可用
+  await putDoc(env, 'meta:deletedProducts', Array.from(set).slice(-500));
 }
 
 // extraIds：本次刚写入的单条商品 id。KV.list 是弱一致读——写入后立即 list 可能读不到新 key，
@@ -1042,13 +1068,40 @@ function brandProfileKeyFromListName(name) {
 
 async function getBrandProfile(env, key) {
   if (!key) return null;
-  const hit = await env.KV.get(brandProfileKvKey(key), 'json');
+  const hit = await getDoc(env, brandProfileKvKey(key));
   if (hit) return hit;
   // 兼容历史写入的原始（非编码）key
-  return await env.KV.get(`${BRAND_PROFILE_PREFIX}${key}`, 'json');
+  return await getDoc(env, `${BRAND_PROFILE_PREFIX}${key}`);
 }
 
 async function getBrandProfiles(env) {
+  const sortFn = (a, b) => String(a.key || '').localeCompare(String(b.key || ''), 'zh');
+  const d1Rows = await d1BrandProfiles(env, BRAND_PROFILE_PREFIX);
+
+  // 阶段 2：品牌档案以 D1 kv_doc 为准（一次 SELECT 取全量，替代原来的 N 次 get）。
+  // 仍保留一次 KV.list 做反向自愈：KV 里有、D1 缺行的档案（影子写漏写、迁移漏扫）
+  // 直接从 KV 读回并补写 D1 后并入结果——否则切读 D1 的瞬间，这些档案就会从后台列表里消失。
+  if (Array.isArray(d1Rows)) {
+    const byKey = new Map();
+    for (const p of d1Rows) {
+      const key = String(p.key || '').trim();
+      if (key) byKey.set(key, { ...p, key });
+    }
+    const list = await env.KV.list({ prefix: BRAND_PROFILE_PREFIX });
+    for (const k of list.keys) {
+      const key = brandProfileKeyFromListName(k.name);
+      if (!key || byKey.has(key)) continue;
+      // getBrandProfile 内部已是「D1 优先、缺失回退 KV」，这里拿到的必然是可用的那份
+      const p = (await getBrandProfile(env, key)) || (await env.KV.get(k.name, 'json'));
+      if (!p) continue;
+      const fixed = { ...p, key: p.key || key };
+      byKey.set(key, fixed);
+      await d1PutDoc(env, brandProfileKvKey(fixed.key), JSON.stringify(fixed));
+    }
+    return [...byKey.values()].sort(sortFn);
+  }
+
+  // D1 不可用：完全回退 KV 原逻辑
   const list = await env.KV.list({ prefix: BRAND_PROFILE_PREFIX });
   const seen = new Set();
   const out = [];
@@ -1060,7 +1113,7 @@ async function getBrandProfiles(env) {
     seen.add(key);
     out.push({ ...p, key: p.key || key });
   }
-  return out.sort((a, b) => String(a.key || '').localeCompare(String(b.key || ''), 'zh'));
+  return out.sort(sortFn);
 }
 
 async function saveBrandProfile(env, profile) {
@@ -1073,18 +1126,18 @@ async function saveBrandProfile(env, profile) {
     next.created_at = (prev && prev.created_at) || now;
   }
   next.updated_at = now;
-  await env.KV.put(brandProfileKvKey(next.key), JSON.stringify(next));
+  await putDoc(env, brandProfileKvKey(next.key), next);
   const legacy = `${BRAND_PROFILE_PREFIX}${next.key}`;
   if (legacy !== brandProfileKvKey(next.key) && (await env.KV.get(legacy))) {
-    await env.KV.delete(legacy);
+    await delDoc(env, legacy);
   }
   return next;
 }
 
 async function deleteBrandProfile(env, key) {
-  await env.KV.delete(brandProfileKvKey(key));
+  await delDoc(env, brandProfileKvKey(key));
   const legacy = `${BRAND_PROFILE_PREFIX}${key}`;
-  if (legacy !== brandProfileKvKey(key)) await env.KV.delete(legacy);
+  if (legacy !== brandProfileKvKey(key)) await delDoc(env, legacy);
 }
 
 async function handleApi(request, env, url) {
@@ -1401,7 +1454,7 @@ async function handleApi(request, env, url) {
       if (name.length > 20) return json({ error: 'bad_request', message: '分类名称过长（≤20字）' }, 400);
       if (configured.includes(name)) return json({ error: 'duplicated', message: '分类已存在' }, 400);
       const next = [...configured, name];
-      await env.KV.put('config:categories', JSON.stringify(next));
+      await putDoc(env, 'config:categories', next);
       return jsonNoCache({ ok: true, categories: next });
     }
     if (method === 'PUT') {
@@ -1420,7 +1473,7 @@ async function handleApi(request, env, url) {
       if (!isConfigured && changed.length === 0) return json({ error: 'not_found', message: '分类不存在' }, 404);
       let next = isConfigured ? configured.map((c) => (c === old ? name : c)) : configured;
       if (!next.includes(name)) next = [...next, name];
-      await env.KV.put('config:categories', JSON.stringify(next));
+      await putDoc(env, 'config:categories', next);
       let renamed = 0;
       if (changed.length) {
         for (const p of changed) p.category = name;
@@ -1441,7 +1494,7 @@ async function handleApi(request, env, url) {
       if (isConfigured) {
         // 配置分类：仅移除配置（保持原设计，产品分类保留并自动出现在自动发现区）
         const next = configured.filter((c) => c !== name);
-        await env.KV.put('config:categories', JSON.stringify(next));
+        await putDoc(env, 'config:categories', next);
         return jsonNoCache({ ok: true, categories: next, removed: 0 });
       }
       // 自动发现分类（extra）：同步清理产品分类，避免删除后重新聚合出现
