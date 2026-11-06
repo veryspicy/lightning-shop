@@ -39,6 +39,7 @@ import {
   d1ProductList,
   d1OrderList,
   d1OrderGet,
+  d1OrderUpdateStatus,
   d1CustomerList,
   migrateBatch,
   verifyConsistency,
@@ -1740,7 +1741,10 @@ async function handleApi(request, env, url) {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
       if (!await can(env, user, 'orders')) return forbidden();
-      const order = await env.KV.get(`orders:${om[1]}`, 'json');
+      // 先按 D1 读（阶段 1 已切），拿到来源标记：只有确认该单在 D1 里才走 CAS，
+      // 否则历史未双写单会因 UPDATE 命中 0 行被误判为版本冲突。
+      const d1Order = await d1OrderGet(env, om[1]);
+      const order = d1Order || (await env.KV.get(`orders:${om[1]}`, 'json'));
       if (!order) return notFound();
       const body = await readJson(request);
       const next = String(body?.status || '').trim();
@@ -1751,19 +1755,53 @@ async function handleApi(request, env, url) {
       if (!ORDER_STATUS[next] || !ORDER_STATUS[order.status].next.includes(next)) {
         return json({ error: 'bad_request', message: `状态不允许从「${ORDER_STATUS[order.status].label}」流转到该状态` }, 400);
       }
-      // KV 无 CAS：写前重读一次，缩小读改写窗口，避免把他人已提交的流转覆盖掉
+      const patch = {
+        status: next,
+        version: Number(order.version || 1) + 1,
+        trackingNo: body?.tracking_no !== undefined
+          ? String(body.tracking_no).trim().slice(0, 100)
+          : (order.tracking_no || ''),
+        statusNote: body?.status_note !== undefined
+          ? String(body.status_note).trim().slice(0, 200)
+          : (order.status_note || ''),
+        updatedAt: new Date().toISOString(),
+      };
+      // 阶段 2：状态流转改由 D1 条件更新（UPDATE ... WHERE version = 旧值）完成，
+      // D1 单库单线程写 + 条件更新即真原子 CAS，彻底消除 KV 时代「重读—写」仍可能覆盖他人流转的窗口。
+      // 命中 0 行说明期间已有人改过（或 D1 无此单），按冲突处理；D1 不可用时退回 KV 读改写。
+      const cas = d1Order
+        ? await d1OrderUpdateStatus(env, order.id, patch)
+        : { ok: false, reason: 'no_db' };
+      if (cas.ok) {
+        const merged = {
+          ...order,
+          status: patch.status,
+          version: patch.version,
+          tracking_no: patch.trackingNo,
+          status_note: patch.statusNote,
+          updated_at: patch.updatedAt,
+        };
+        // KV 侧降级为副本：只回写，不再走 saveOrder（否则会再对 D1 做一次 DELETE+INSERT 明细）
+        await env.KV.put(`orders:${order.id}`, JSON.stringify(merged));
+        // 状态流转会改变订单是否计入客户消费（尤其取消），必须同步重算客户聚合
+        await upsertCustomer(env, merged);
+        return json({ ok: true, order: withOrderTotals(merged) });
+      }
+      if (cas.reason === 'conflict') {
+        return json({ error: 'conflict', message: '订单状态刚被他人更新，请刷新后重试' }, 409);
+      }
+      // D1 不可用（无 binding / 报错）：沿用 KV 读改写并做一次重读兜底校验
       const fresh = await env.KV.get(`orders:${om[1]}`, 'json');
       if (!fresh) return notFound();
       if (String(fresh.status) !== String(order.status) || Number(fresh.version || 1) !== Number(order.version || 1)) {
         return json({ error: 'conflict', message: '订单状态刚被他人更新，请刷新后重试' }, 409);
       }
-      order.status = next;
-      order.version = Number(order.version || 1) + 1;
-      if (body?.tracking_no !== undefined) order.tracking_no = String(body.tracking_no).trim().slice(0, 100);
-      if (body?.status_note !== undefined) order.status_note = String(body.status_note).trim().slice(0, 200);
-      order.updated_at = new Date().toISOString();
+      order.status = patch.status;
+      order.version = patch.version;
+      order.tracking_no = patch.trackingNo;
+      order.status_note = patch.statusNote;
+      order.updated_at = patch.updatedAt;
       await saveOrder(env, order);
-      // 状态流转会改变订单是否计入客户消费（尤其取消），必须同步重算客户聚合
       await upsertCustomer(env, order);
       return json({ ok: true, order: withOrderTotals(order) });
     }
