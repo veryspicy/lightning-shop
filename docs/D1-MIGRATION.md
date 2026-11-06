@@ -61,6 +61,7 @@ wrangler d1 execute lightning-shop-db --remote --file=migrations/0001_init.sql -
 wrangler deploy
 
 # 3) 分批搬迁存量（重复调用直到 has_more=false）
+#    注意：阶段 3 收尾后该端点默认 410，须先临时设 ALLOW_LEGACY_D1_ADMIN=1 再调用
 curl -X POST -H "x-admin-token: <token>" https://<domain>/api/admin/d1/migrate?limit=100
 
 # 4) 核对
@@ -176,7 +177,7 @@ KV 时代下单是「`genOrderId` 用 `KV.get` 探重 → `saveOrder` 写 KV」�
 
 - 配置类小文档（`site:*` / `config:categories` / `roles` / `users` / 品牌档案）已随阶段 3 第一刀切 D1 主写，读侧 `d1GetDoc` / `d1BrandProfiles` 已就绪，剩余只是把 KV 兜底分支标为「仅 no_db」。
 - 会话（`sessions:*`）继续留 KV：TTL 语义天然匹配，且不参与任何列表聚合。需要强一致会话时再迁。
-- `POST /api/admin/d1/migrate` / `GET /api/admin/d1/verify` 已带完成保护，短期保留作灾难恢复与诊断入口；历史 KV 数据确认无需再回灌后可下线。
+- ~~`POST /api/admin/d1/migrate` / `GET /api/admin/d1/verify` 短期保留作灾难恢复与诊断入口~~ → **已下线（PR #38）**，见文末「阶段 3 收尾」。
 
 ### 阶段 3：写路径收口（KV 退为纯副本）
 
@@ -235,6 +236,15 @@ KV 时代下单是「`genOrderId` 用 `KV.get` 探重 → `saveOrder` 写 KV」�
 数据清理：本次 3 条 + 历史 4 条验证订单（`D261106083095043AB3` / `D26110609171F96D659` / `D26110609456F13E61BC08A` / `D2611060945C3DDC67DEE54` / `D261106120393C6D60E528A` / `D2611061204818304D015E6` / `D261106121232E6A32068E7`）按 id 精确删除：`order_items` 7 行 + `orders` 7 行，KV 副本 `orders:*` 7 键与 4 个测试号 `customers:*` 一并清除，删前快照见 `temp/order-cleanup-backup.json`。清理后后台订单/客户均为空、商品仍 56 条。
 
 > 坑：`wrangler kv key delete` 在 binding 同时配置 `id` 与 `preview_id` 时必须显式加 `--preview false` 才是生产命名空间，否则直接报错退出（早期 `key list` 也是同一类坑）。
+
+### 阶段 3 收尾：legacy D1 管理端点下线（PR #38）
+
+迁移完结后 `POST /api/admin/d1/migrate` 与 `GET /api/admin/d1/verify` 默认关闭：管理员鉴权通过后仍统一返回 `410 endpoint_retired`。
+
+- 理由：`migrate?force=1` 能用 KV 陈旧副本反向覆盖 D1 真源，一个误操作就把真库写旧；`verify` 的「KV 有 D1 无」判断在 KV 退为副本后也失去诊断意义。
+- 保留应急能力：临时设置环境变量 `ALLOW_LEGACY_D1_ADMIN=1` 即可恢复两个端点（不再常驻生产），用完立刻撤销。
+- 本地验证：不设变量 → `verify`/`migrate` 均 410；设 `--var ALLOW_LEGACY_D1_ADMIN:1` → `verify` 200（`ok=true`、`kv_drift.abnormal=false`）、`migrate` 200 但 `skipped=true, reason=already_completed`。
+- 生产操作改为离线执行：`wrangler versions deploy` 回滚 + `wrangler d1 time-travel` / 每日 R2 备份恢复，不再走 Worker 内的搬迁接口。
 
 ## 5. 避坑清单
 
