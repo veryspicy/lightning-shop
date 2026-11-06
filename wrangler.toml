@@ -22,6 +22,14 @@ binding = "R2"
 bucket_name = "lightning-shop-images"
 preview_bucket_name = "lightning-shop-images"
 
+# D1：主数据库（0 费用档：5GB 存储 / 500 万行读每天 / 10 万行写每天）
+# 阶段 0 为影子双写，KV 仍是读源；阶段 1 起 D1 成为权威源，KV 退化为缓存。
+[[d1_databases]]
+binding = "DB"
+database_name = "lightning-shop-db"
+database_id = "2103c08c-7b00-4eae-b29a-a9c7852986c4"
+migrations_dir = "migrations"
+
 # 环境变量（部署时替换）
 [vars]
 SITE_NAME = "Lightning Shop"
