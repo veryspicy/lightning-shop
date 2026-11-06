@@ -930,14 +930,19 @@ async function handleApi(request, env, url) {
     }
     const username = String(body.username).trim();
     const password = String(body.password);
-    // 账号闸同样走双闸：内存桶 5 次/300 秒（单 isolate 精确）+ RL_LOGIN_ACCT 5 次/60 秒（按 PoP 计数、跨 isolate 生效）
-    const acctLimit = await rateLimitGuard(env, 'login-acct', `${ip}|${username.toLowerCase()}`, 5, 300, 'RL_LOGIN_ACCT');
+    // 账号闸只按用户名为键，不含 IP：口径是「保护账号」而非「限制来源」。
+    // 若把 IP 混进 key，攻击方换 IP 即可让每次请求落在新桶里，闸形同虚设。
+    // 内存桶 5 次/300 秒（单 isolate 精确）+ RL_LOGIN_ACCT 5 次/60 秒（跨 isolate 生效），两闸取严。
+    const acctKey = username.toLowerCase();
+    const acctLimit = await rateLimitGuard(env, 'login-acct', acctKey, 5, 300, 'RL_LOGIN_ACCT');
     if (!acctLimit.ok) return tooManyRequests(acctLimit.retryAfter, '该账号尝试过于频繁，请稍后再试');
     const users = await getUsers(env);
     const migrated = await ensureAdminUser(env, users, username, password);
     let user = migrated || users.find((u) => u.username === username && u.status !== 'disabled');
     if (!user) return unauthorized('用户名或密码错误');
     if (!await verifyPassword(password, user)) return unauthorized('用户名或密码错误');
+    // 登录成功即清掉该账号的失败计数，避免本人多次输错后被自己锁在门外
+    RATE_BUCKETS.delete(`login-acct:${acctKey}`);
     // 存量单轮 SHA-256 口令：验证通过后立即升级为 PBKDF2，旧哈希不再落库
     if (isLegacyHash(user.passwordHash)) {
       user.passwordHash = await hashPassword(password, user.salt);
