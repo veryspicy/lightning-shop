@@ -1,10 +1,12 @@
 /**
- * D1 数据层（阶段 0：影子双写 + 迁移 + 一致性核对）
+ * D1 数据层（阶段 3：D1 为唯一主库，KV 退为降级副本）
  *
  * 设计原则
- * 1. D1 为权威库，KV 退化为读缓存（阶段 1 再切换读路径）。
- * 2. 所有写函数都自己捕获异常：D1 抖动绝不能影响主流程（下单/改价必须先成功）。
- * 3. 影子写失败会打 migration_state 上的 dirty 标记，由 /api/admin/d1/verify 暴露。
+ * 1. D1 是权威库；KV 只是副本/降级通道，读路径不再依赖它。
+ * 2. 写函数区分两类失败：`no_db`（未绑定 → 允许 KV 单写降级）与 `error`（D1 报错 →
+ *    调用方必须失败），绝不出现「只写 KV」的单边写——读走 D1，单写 KV 等于丢更新。
+ * 3. 写失败会打 migration_state 上的 dirty 标记，由 /api/admin/d1/verify 暴露。
+ *    阶段 3 起它只是**故障样本记录**，不再驱动任何补偿（补偿逻辑已随主写切换下线）。
  */
 
 const DIRTY_KEY = 'd1_dirty';
@@ -68,9 +70,13 @@ export async function d1DeleteProduct(env, id) {
   }
 }
 
-/** 订单 upsert（影子写）：orders + order_items 全量重写明细行。 */
-export async function d1SaveOrder(env, order) {
-  if (!env.DB || !order || !order.id) return false;
+/**
+ * 订单 upsert 内核：orders + order_items 全量重写明细行（事务批次）。
+ * 返回 { ok, reason } —— reason 取值 ok / no_db / error，调用方据此决定降级还是失败。
+ * 阶段 3 起订单主写走这里：D1 报错不再被静默吞掉（否则后台读到旧状态、等于丢更新）。
+ */
+export async function d1UpsertOrder(env, order) {
+  if (!env.DB || !order || !order.id) return { ok: false, reason: 'no_db' };
   const items = Array.isArray(order.items) ? order.items : [];
   try {
     const stmts = [
@@ -107,11 +113,31 @@ export async function d1SaveOrder(env, order) {
       ));
     });
     await env.DB.batch(stmts);
-    return true;
+    return { ok: true, reason: 'ok' };
   } catch (e) {
     await markDirty(env, `order:${order.id} ${e && e.message}`);
-    return false;
+    return { ok: false, reason: 'error', error: String(e && e.message ? e.message : e).slice(0, 200) };
   }
+}
+
+/**
+ * 订单持久化（阶段 3 收口后的唯一写入口）：D1 主写，成功后 KV 回写副本。
+ * - D1 未绑定（本地无 binding）→ KV 单写，属合法降级，KV 此时即真源；
+ * - D1 报错 → 返回 { ok:false }，调用方必须 500，禁止「只写 KV」的单边写
+ *   （读路径走 D1，单写 KV 等于后台读不到这次变更）。
+ * 返回 { ok, source:'d1'|'kv', reason }；副本回写失败不影响 ok。
+ */
+export async function d1PersistOrder(env, order) {
+  const r = await d1UpsertOrder(env, order);
+  if (r.reason === 'no_db') {
+    await env.KV.put(`orders:${order.id}`, JSON.stringify(order));
+    return { ok: true, source: 'kv' };
+  }
+  if (!r.ok) return { ok: false, source: 'd1', reason: r.reason };
+  try {
+    await env.KV.put(`orders:${order.id}`, JSON.stringify(order));
+  } catch (_) { /* 副本回写失败不影响主流程，后台读走 D1 */ }
+  return { ok: true, source: 'd1' };
 }
 
 /** 配置类小文档写 KV 镜像（hero/categories/brands/users/roles/config）。 */
@@ -144,12 +170,41 @@ export async function d1DeleteDoc(env, key) {
 /* ================= 迁移：KV -> D1 ================= */
 
 const MIGRATE_CURSOR = 'kv_migrate_cursor';
+const MIGRATE_DONE = 'kv_migrate_done';
+
+/**
+ * 迁移是否已完成（阶段 3 收口保护）。
+ * 阶段 3 起 KV 只是 D1 的降级副本，陈旧副本重跑迁移会反向覆盖真源
+ * （软删商品复活、订单状态回退）。因此只要历史迁移跑过（有 done 标记，
+ * 或 D1 里已有商品+文档两类迁移产物），默认拒绝再跑，必须显式 force。
+ */
+async function migrationAlreadyDone(env) {
+  const done = await env.DB.prepare('SELECT value FROM migration_state WHERE key = ?')
+    .bind(MIGRATE_DONE).first();
+  if (done && String(done.value || '')) return true;
+  try {
+    const p = await env.DB.prepare('SELECT COUNT(*) AS c FROM products').first();
+    const d = await env.DB.prepare('SELECT COUNT(*) AS c FROM kv_doc').first();
+    const hasRows = Number(p && p.c ? p.c : 0) > 0 && Number(d && d.c ? d.c : 0) > 0;
+    if (hasRows) {
+      await env.DB.prepare(
+        'INSERT INTO migration_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?',
+      ).bind(MIGRATE_DONE, nowIso(), nowIso()).run();
+      return true;
+    }
+  } catch (_) { /* 计数失败按未完成处理，避免误锁死 */ }
+  return false;
+}
 
 /**
  * 分批把 KV 全量搬到 D1。可重复执行（幂等）：每次从游标继续，直到 has_more = false。
- * 返回 { products, orders, docs, has_more, cursor }
+ * 阶段 3 后仅供「D1 重建/灾难恢复」使用：默认拒绝重跑，需 force = true。
+ * 返回 { skipped, reason } 或 { products, orders, docs, has_more, cursor }
  */
-export async function migrateBatch(env, limit = 100) {
+export async function migrateBatch(env, limit = 100, force = false) {
+  if (!force && await migrationAlreadyDone(env)) {
+    return { skipped: true, reason: 'already_completed', hint: '迁移已完成，KV 仅为降级副本；如需重建 D1 请显式 ?force=1' };
+  }
   const bucket = Math.max(10, Math.min(500, Number(limit) || 100));
   const state = await env.DB.prepare('SELECT value FROM migration_state WHERE key = ?')
     .bind(MIGRATE_CURSOR).first();
@@ -172,7 +227,7 @@ export async function migrateBatch(env, limit = 100) {
       if (p && p.id && await d1SaveProduct(env, p)) products += 1;
     } else if (name.startsWith('orders:')) {
       const o = await env.KV.get(name, 'json');
-      if (o && o.id && await d1SaveOrder(env, o)) orders += 1;
+      if (o && o.id && (await d1UpsertOrder(env, o)).ok) orders += 1;
     } else if (name.startsWith('customers:')) {
       // 客户不再落表：由 v_customer_stats 视图实时聚合
       continue;
@@ -186,11 +241,21 @@ export async function migrateBatch(env, limit = 100) {
   await env.DB.prepare(
     'INSERT INTO migration_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?',
   ).bind(MIGRATE_CURSOR, next, next).run();
+  if (page.list_complete) {
+    // 跑完即落完成标记：后续再调默认被拒，避免陈旧 KV 副本覆盖 D1 真源
+    await env.DB.prepare(
+      'INSERT INTO migration_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?',
+    ).bind(MIGRATE_DONE, nowIso(), nowIso()).run();
+  }
 
   return { scanned, products, orders, docs, has_more: !page.list_complete, cursor: next };
 }
 
-/** KV 与 D1 的计数/抽样核对，用于判定影子双写是否可信。 */
+/**
+ * 一致性核对（只读诊断，阶段 3 后语义已变）：
+ * D1 是唯一真源，KV 只是降级副本 —— 因此「D1 有、KV 没有」属正常，不参与判定；
+ * 只有「KV 有、D1 没有」才可疑（副本写失败 / 历史单未迁移），计入 abnormal。
+ */
 export async function verifyConsistency(env, sample = 5) {
   const kvProductsKey = await env.KV.get('products', 'json');
   const kvProducts = Array.isArray(kvProductsKey) ? kvProductsKey : [];
@@ -226,6 +291,11 @@ export async function verifyConsistency(env, sample = 5) {
       order_items: d1Items ? d1Items.c : 0,
     },
     sample: { products: sampleIds, missing, orders: sampleOrders, missing_orders: missingOrders },
+    kv_drift: {
+      products_missing_in_d1: missing.length,
+      orders_missing_in_d1: missingOrders.length,
+      abnormal: missing.length + missingOrders.length > 0,
+    },
     ok: missing.length === 0 && missingOrders.length === 0,
     last_dirty: dirty ? dirty.value : null,
   };

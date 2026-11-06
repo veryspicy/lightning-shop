@@ -174,8 +174,34 @@ KV 时代下单是「`genOrderId` 用 `KV.get` 探重 → `saveOrder` 写 KV」�
 
 **后续待做**
 
-- 商品写路径：`products:{id}` 存在性检查、`rebuildProductsIndex`（KV 全量 list + 重建索引）改由 D1 查询直接生成索引。
-- 配置类小文档（`site:*` / `config:categories` / `roles` / `users` / 品牌档案）挂 `d1PutDoc` 影子写后再切读，`d1GetDoc` / `d1BrandProfiles` 已就绪。
+- 配置类小文档（`site:*` / `config:categories` / `roles` / `users` / 品牌档案）已随阶段 3 第一刀切 D1 主写，读侧 `d1GetDoc` / `d1BrandProfiles` 已就绪，剩余只是把 KV 兜底分支标为「仅 no_db」。
+- 会话（`sessions:*`）继续留 KV：TTL 语义天然匹配，且不参与任何列表聚合。需要强一致会话时再迁。
+- `POST /api/admin/d1/migrate` / `GET /api/admin/d1/verify` 已带完成保护，短期保留作灾难恢复与诊断入口；历史 KV 数据确认无需再回灌后可下线。
+
+### 阶段 3：写路径收口（KV 退为纯副本）
+
+阶段 2 只切了订单的「创建 / 状态流转」。其余写路径仍是「KV 主写 + D1 影子写」，D1 时代读路径已全走 D1，这些残留会直接表现为**后台读不到刚保存的内容**。
+
+**第一刀：文档写（已合并 PR #31）**
+
+`putDoc` / `delDoc` 改为 D1 主写，成功后才回写 KV 副本；D1 报错即抛 `doc_write_failed`，由 `handleApi` 顶层统一转 500。`no_db` 时退回 KV 单写。
+
+**第二刀：商品写（已合并 PR #32）**
+
+`saveProduct` D1 主写、删除以 D1 软删为主，`rebuildProductsIndex` 以 D1 为真源生成索引（不再从 KV 反补）。
+
+**第三刀：订单侧残留清理（本次 PR）**
+
+- **`saveOrder` 拆到数据层**：新增 `d1PersistOrder(env, order)`，语义收敛为「D1 主写 + KV 副本」：`no_db` → KV 单写（此时 KV 即真源）；D1 报错 → `{ ok:false }`，调用方必须 500，**不再有任何一条路径只写 KV**。`index.js` 的 `saveOrder` 变为一行代理，`d1SaveOrder` 布尔包装删除（迁移批次直接用 `d1UpsertOrder`）。
+- **客户聚合不再回写 KV**：`recomputeOneCustomer` 原先为了「让记录收敛」做两轮全量订单扫描（每次下单多拉两遍订单表，D1 按扫描行计费），现在统计真源是视图 `v_customer_stats`，订单落库即实时生效。删除两轮扫描，KV 兜底记录仅在 `no_db` 时写。
+- **状态流转的副本回写加隔离**：CAS 成功后 `KV.put` 包 try/catch，副本写失败不影响已生效的 D1 结果（原来失败会把一次成功的流转变成 500）。
+- **迁移批次加完成保护**：`migrateBatch` 落 `migration_state` 的 `MIGRATE_DONE` 标记，重跑默认拒绝（`reason=already_completed`），必须显式 `?force=1`。理由很直接：KV 已是副本，用它反向覆盖 D1 只会把旧数据写回真源。
+- **一致性核对语义调整**：`verifyConsistency` 中「KV 有、D1 无」才算异常，`D1 有、KV 无` 属正常（副本可能写失败，读走 D1）。
+
+验证（本地 `wrangler dev --local`，独立 state 目录，migrations 先 apply）：
+
+- 纯函数级：D1 正常 → `source=d1` 且 KV 一份副本；D1 抛错 → `ok:false` 且 KV **零写入**；`no_db` → `source=kv`；KV 副本抛错 → 主流程仍 `ok`。
+- 端到端：登录 → 建 2 商品（成本价 40/60） → 下单（展示价 44/66，金额 154） → 后台列表/详情（明细含 `base_price`） → `pending→paid→shipped`（版本 1→2→3，旧版本号 409，非法流转 400） → 客户聚合 1 单 154 → 另一号码下单后取消，客户金额回落 0 → `migrate` 被拒（`already_completed`） → `verify` 计数一致且无缺失键。
 
 ## 5. 避坑清单
 
