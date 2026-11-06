@@ -64,8 +64,11 @@ async function getProducts(env) {
 }
 
 // 配置类小文档（site:hero / site:price / site:qr / config:categories / roles / users / brand:profile:*）
-// 阶段 2：写路径 = KV 主写 + D1 kv_doc 影子写；读路径 = D1 优先，缺失或 D1 不可用回退 KV。
-// 读必须能降级：kv_doc 里没有这条（迁移漏扫、首次部署）时，绝不能把配置读成默认值。
+// 读路径：D1 优先，缺失或 D1 不可用回退 KV（kv_doc 缺失时必须能读回旧值，不能读成默认值）。
+// 阶段 3：写路径 = D1 主写 + KV 副本回写。
+// - D1 写失败即整个写操作失败（抛错由调用方转 500），禁止只落 KV 造成单边；
+// - KV 副本回写为 best-effort，失败不影响结果（读已走 D1，副本只服务于降级）；
+// - 无 D1 绑定时（本地/未迁移环境）退回 KV 单写，行为与阶段 1 一致。
 async function getDoc(env, key) {
   const hit = await d1GetDoc(env, key);
   if (hit !== null && hit !== undefined) return hit;
@@ -74,14 +77,31 @@ async function getDoc(env, key) {
 
 async function putDoc(env, key, value) {
   const v = typeof value === 'string' ? value : JSON.stringify(value);
-  await env.KV.put(key, v);
-  // 影子写失败只记 dirty，不阻塞后台操作——KV 仍是可读副本
-  await d1PutDoc(env, key, v);
+  if (!env.DB) {
+    await env.KV.put(key, v);
+    return;
+  }
+  const ok = await d1PutDoc(env, key, v);
+  if (!ok) throw new Error(`doc_write_failed:${key}`);
+  try {
+    await env.KV.put(key, v);
+  } catch (e) {
+    // 副本回写失败不影响正确性，D1 已是唯一权威源
+  }
 }
 
 async function delDoc(env, key) {
-  await env.KV.delete(key);
-  await d1DeleteDoc(env, key);
+  if (!env.DB) {
+    await env.KV.delete(key);
+    return;
+  }
+  const ok = await d1DeleteDoc(env, key);
+  if (!ok) throw new Error(`doc_delete_failed:${key}`);
+  try {
+    await env.KV.delete(key);
+  } catch (e) {
+    // 同上
+  }
 }
 
 // 配置分类：管理员维护的分类名列表（KV config:categories），缺省使用 CATEGORY_ORDER
@@ -1140,7 +1160,18 @@ async function deleteBrandProfile(env, key) {
   if (legacy !== brandProfileKvKey(key)) await delDoc(env, legacy);
 }
 
+// 顶层兜底：D1 主写失败等异常一律转统一 500 JSON。
+// 不兜底时 Workers 会把异常堆栈直接回给客户端（泄露内部路径与实现细节）。
 async function handleApi(request, env, url) {
+  try {
+    return await handleApiImpl(request, env, url);
+  } catch (e) {
+    console.error('api_error', url.pathname, e && e.message);
+    return json({ error: 'server_error', message: '服务暂时不可用，请稍后重试' }, 500);
+  }
+}
+
+async function handleApiImpl(request, env, url) {
   const path = url.pathname;
   const method = request.method;
   const products = await getProducts(env);
