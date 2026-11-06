@@ -294,6 +294,71 @@ async function rateLimitGuard(env, scope, key, limit, windowSec, bindingName) {
   return local;
 }
 
+/* 账号维度登录闸：Durable Object 单实例，负责「同一账号累计 N 次即拦」。
+ * 为什么不用现成的两层：内存桶随 isolate 重启清零、多 isolate 各记各的；
+ * 原生 Rate Limiting binding 实测未累计计数（连续 7 次错误登录无拦截）。
+ * DO 单实例串行处理、计数落 storage，跨 isolate、跨 PoP 都一致。
+ */
+export class LoginThrottle {
+  constructor(state) {
+    this.state = state;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    const now = Date.now();
+    if (url.pathname === '/reset') {
+      await this.state.storage.delete('rec');
+      return json({ ok: true, count: 0 });
+    }
+    const body = await request.json().catch(() => ({}));
+    const limit = Number(body.limit) || 5;
+    const windowMs = Number(body.windowMs) || 300000;
+    let rec = await this.state.storage.get('rec');
+    if (!rec || rec.reset <= now) rec = { count: 0, reset: now + windowMs };
+    rec.count += 1;
+    await this.state.storage.put('rec', rec);
+    const ok = rec.count <= limit;
+    return json({
+      ok,
+      count: rec.count,
+      retryAfter: ok ? 0 : Math.max(1, Math.ceil((rec.reset - now) / 1000)),
+    });
+  }
+}
+
+/* 账号闸统一入口：内存桶（同 isolate 零延迟）+ DO（跨 isolate 准确），取严。 */
+async function accountThrottle(env, key, limit, windowSec) {
+  const local = rateLimit('login-acct', key, limit, windowSec);
+  if (!local.ok) return local;
+  const ns = env.LOGIN_THROTTLE;
+  if (!ns || typeof ns.idFromName !== 'function') return local;
+  try {
+    const stub = ns.get(ns.idFromName(key));
+    const res = await stub.fetch('https://throttle/check', {
+      method: 'POST',
+      body: JSON.stringify({ limit, windowMs: windowSec * 1000 }),
+    });
+    const r = await res.json();
+    if (r && r.ok === false) return { ok: false, remaining: 0, retryAfter: r.retryAfter || windowSec };
+  } catch {
+    // DO 不可用不阻断业务：内存桶仍在挡单点突发
+  }
+  return local;
+}
+
+async function resetAccountThrottle(env, key) {
+  RATE_BUCKETS.delete(`login-acct:${key}`);
+  const ns = env.LOGIN_THROTTLE;
+  if (!ns || typeof ns.idFromName !== 'function') return;
+  try {
+    const stub = ns.get(ns.idFromName(key));
+    await stub.fetch('https://throttle/reset', { method: 'POST' });
+  } catch {
+    // 清零失败不影响本次登录
+  }
+}
+
 function tooManyRequests(retryAfter, message = '请求过于频繁，请稍后再试') {
   return new Response(JSON.stringify({ error: 'rate_limited', message }), {
     status: 429,
@@ -932,9 +997,8 @@ async function handleApi(request, env, url) {
     const password = String(body.password);
     // 账号闸只按用户名为键，不含 IP：口径是「保护账号」而非「限制来源」。
     // 若把 IP 混进 key，攻击方换 IP 即可让每次请求落在新桶里，闸形同虚设。
-    // 内存桶 5 次/300 秒（单 isolate 精确）+ RL_LOGIN_ACCT 5 次/60 秒（跨 isolate 生效），两闸取严。
     const acctKey = username.toLowerCase();
-    const acctLimit = await rateLimitGuard(env, 'login-acct', acctKey, 5, 300, 'RL_LOGIN_ACCT');
+    const acctLimit = await accountThrottle(env, acctKey, 5, 300);
     if (!acctLimit.ok) return tooManyRequests(acctLimit.retryAfter, '该账号尝试过于频繁，请稍后再试');
     const users = await getUsers(env);
     const migrated = await ensureAdminUser(env, users, username, password);
@@ -942,7 +1006,7 @@ async function handleApi(request, env, url) {
     if (!user) return unauthorized('用户名或密码错误');
     if (!await verifyPassword(password, user)) return unauthorized('用户名或密码错误');
     // 登录成功即清掉该账号的失败计数，避免本人多次输错后被自己锁在门外
-    RATE_BUCKETS.delete(`login-acct:${acctKey}`);
+    await resetAccountThrottle(env, acctKey);
     // 存量单轮 SHA-256 口令：验证通过后立即升级为 PBKDF2，旧哈希不再落库
     if (isLegacyHash(user.passwordHash)) {
       user.passwordHash = await hashPassword(password, user.salt);
