@@ -40,6 +40,7 @@ import {
   d1OrderList,
   d1OrderGet,
   d1OrderUpdateStatus,
+  d1InsertOrder,
   d1CustomerList,
   migrateBatch,
   verifyConsistency,
@@ -787,20 +788,35 @@ function genOrderIdTs(d) {
   return `${pad(d.getFullYear() % 100)}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}`;
 }
 
-// 订单号必须唯一：KV 无事务无 CAS，重复 id 会直接覆盖已有订单（静默丢单）。
-// 并发场景下「先查后写」并不能真正防撞（两个请求可能同时查到空），故随机空间必须足够大：
-// 4 字节 = 2^32 空间，同分钟 50 单的碰撞概率约 3e-7；查重只作为兜底。
-async function genOrderId(env) {
+// 订单号必须唯一：阶段 2 起订单真源在 D1，重号会被 orders.id 主键直接拒绝、由创建逻辑换号重试，
+// 不再出现 KV 时代「重复 id 静默覆盖已有订单」的丢单风险。
+// 既然唯一性由库兜底，生成侧只需把随机空间做大：6 字节 = 2^48，同分钟碰撞概率可忽略。
+function genOrderId() {
   const ts = genOrderIdTs(new Date());
-  for (let i = 0; i < 3; i += 1) {
-    const bytes = new Uint8Array(4);
-    crypto.getRandomValues(bytes);
-    const rnd = [...bytes].map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join('');
-    const id = `D${ts}${rnd}`;
-    if (!(await env.KV.get(`orders:${id}`))) return id;
-  }
-  const rnd = [...crypto.getRandomValues(new Uint8Array(4))].map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join('');
+  const rnd = [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join('');
   return `D${ts}${rnd}`;
+}
+
+// 阶段 2：订单创建走 D1 主写（纯 INSERT，主键冲突即换号重试），KV 降级为副本回写。
+// D1 未绑定（本地无 binding）时退回 KV 单写，保持可降级；D1 报错则直接失败，
+// 绝不做「只写 KV」的单边写入——否则读路径在 D1 看不到单，等于后台丢单。
+async function createOrder(env, order) {
+  for (let i = 0; i < 5; i += 1) {
+    order.id = genOrderId();
+    const r = await d1InsertOrder(env, order);
+    if (r.ok) {
+      try {
+        await env.KV.put(`orders:${order.id}`, JSON.stringify(order));
+      } catch (_) { /* 副本回写失败不影响下单，后台读走 D1 */ }
+      return { ok: true, source: 'd1' };
+    }
+    if (r.reason === 'no_db') {
+      await env.KV.put(`orders:${order.id}`, JSON.stringify(order));
+      return { ok: true, source: 'kv' };
+    }
+    if (r.reason !== 'conflict') return { ok: false, reason: r.reason };
+  }
+  return { ok: false, reason: 'conflict' };
 }
 
 function sanitizeOrder(raw) {
@@ -863,10 +879,11 @@ async function saveOrder(env, order) {
 // 客户档案：按手机号聚合（无独立写接口，下单/后台变更时 upsert）
 // 幂等重算：以已落库订单独占为准重新聚合，天然幂等。旧实现用 += 增量累加，
 // 并发下单必然丢更新，且错误会永久沉淀在 customers 记录里。
-async function aggregateCustomer(env, phone, keys) {
+// 订单集合来源改为 getOrders()（D1 优先、KV 兜底）：KV 侧已是副本且 list 弱一致，
+// 继续按 KV 聚合会在刚下单时漏掉新单，导致客户消费额偏小。
+async function aggregateCustomer(env, phone, orders) {
   let agg = null;
-  for (const name of keys) {
-    const o = await env.KV.get(name, 'json');
+  for (const o of orders) {
     if (!o || String(o.customer_phone || '').trim() !== phone) continue;
     const t = orderTotals(o);
     if (!agg) {
@@ -894,13 +911,14 @@ async function recomputeOneCustomer(env, phone) {
   let agg = null;
   // 纯重算仍是「读—算—写」，并发下单时会互相写回较旧的聚合结果。
   // 因此写完再核一次订单集合，若期间有新订单就再算一轮，让记录尽快收敛到真实值。
+  const idsOf = async () => (await getOrders(env)).map((o) => String(o.id)).sort().join(',');
   for (let round = 0; round < 2; round += 1) {
-    const before = (await env.KV.list({ prefix: 'orders:' })).keys.map((k) => k.name).sort();
-    agg = await aggregateCustomer(env, p, before);
+    const before = await idsOf();
+    agg = await aggregateCustomer(env, p, await getOrders(env));
     if (!agg) return null;
     await env.KV.put(`customers:${p}`, JSON.stringify(agg));
-    const after = (await env.KV.list({ prefix: 'orders:' })).keys.map((k) => k.name).sort();
-    if (after.join(',') === before.join(',')) return agg;
+    const after = await idsOf();
+    if (after === before) return agg;
   }
   return agg;
 }
@@ -1654,12 +1672,19 @@ async function handleApi(request, env, url) {
     if (order.total_qty > 50000) {
       return json({ error: 'bad_request', message: '单笔数量超出上限，请分批下单或联系业务员' }, 400);
     }
-    order.id = await genOrderId(env);
     order.status = 'pending';
     order.version = 1;
     order.created_at = new Date().toISOString();
     order.updated_at = order.created_at;
-    await saveOrder(env, order);
+    // 阶段 2：D1 主写，主键冲突自动换号重试；KV 仅副本回写
+    const created = await createOrder(env, order);
+    if (!created.ok) {
+      const conflict = created.reason === 'conflict';
+      return json({
+        error: conflict ? 'unavailable' : 'server_error',
+        message: conflict ? '订单号生成冲突，请重试' : '下单写入失败，请稍后重试',
+      }, conflict ? 503 : 500);
+    }
     await upsertCustomer(env, order);
     // 响应走公开投影：下单接口匿名可写，绝不能把 base_price（成本价）回吐给调用方
     return json({ ok: true, order: publicOrder(withOrderTotals(order)) }, 201);
