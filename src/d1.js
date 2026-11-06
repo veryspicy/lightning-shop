@@ -129,6 +129,18 @@ export async function d1PutDoc(env, key, value) {
   }
 }
 
+/** 配置类小文档删除（品牌档案下线等场景，KV 与 D1 必须同删，否则会被读路径复活）。 */
+export async function d1DeleteDoc(env, key) {
+  if (!env.DB || !key) return false;
+  try {
+    await env.DB.prepare('DELETE FROM kv_doc WHERE k = ?').bind(String(key)).run();
+    return true;
+  } catch (e) {
+    await markDirty(env, `doc-del:${key} ${e && e.message}`);
+    return false;
+  }
+}
+
 /* ================= 迁移：KV -> D1 ================= */
 
 const MIGRATE_CURSOR = 'kv_migrate_cursor';
