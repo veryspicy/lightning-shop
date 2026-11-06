@@ -705,15 +705,29 @@ async function markProductDeleted(env, id) {
   await env.KV.put('meta:deletedProducts', JSON.stringify(Array.from(set).slice(-500)));
 }
 
-async function rebuildProductsIndex(env) {
+// extraIds：本次刚写入的单条商品 id。KV.list 是弱一致读——写入后立即 list 可能读不到新 key，
+// 若索引只以 list 为准，新增/导入的商品会从索引里整体丢失，表现为「后台新增成功、前台一直看不到，
+// 直到下一次重建才凭空出现」。对已知 id 用 KV.get 强一致读补进来，可直接消除这个窗口。
+async function rebuildProductsIndex(env, extraIds = []) {
   const raw = await env.KV.get('products', 'json');
   const fromIndex = Array.isArray(raw) ? raw : [];
   const deleted = await getDeletedProductIds(env);
   const byId = new Map();
-  const list = await env.KV.list({ prefix: 'products:' });
-  for (const k of list.keys) {
-    const id = k.name.slice('products:'.length);
-    const p = await env.KV.get(k.name, 'json');
+  // KV.list 单页上限 1000，必须翻页，否则商品过千后重建会把后面的商品整批丢掉
+  let cursor;
+  do {
+    const page = await env.KV.list({ prefix: 'products:', cursor });
+    for (const k of page.keys) {
+      const id = k.name.slice('products:'.length);
+      const p = await env.KV.get(k.name, 'json');
+      if (p && typeof p === 'object') byId.set(p.id || id, { ...p, id: p.id || id });
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  for (const rawId of extraIds) {
+    const id = String(rawId || '').trim();
+    if (!id || deleted.has(id) || byId.has(id)) continue;
+    const p = await env.KV.get(`products:${id}`, 'json');
     if (p && typeof p === 'object') byId.set(p.id || id, { ...p, id: p.id || id });
   }
   // 兼容历史数据：索引里有、单条缺失的商品先补写单条，避免重建时把商品弄丢
@@ -1315,7 +1329,7 @@ async function handleApi(request, env, url) {
       if (changed.length) {
         for (const p of changed) p.category = name;
         for (const p of changed) await env.KV.put(`products:${p.id}`, JSON.stringify(p));
-        await rebuildProductsIndex(env);
+        await rebuildProductsIndex(env, changed.map((p) => p.id));
         renamed = changed.length;
       }
       return jsonNoCache({ ok: true, categories: next, renamed });
@@ -1457,7 +1471,7 @@ async function handleApi(request, env, url) {
       for (const item of changed) {
         await env.KV.put(`products:${item.id}`, JSON.stringify(item));
       }
-      await rebuildProductsIndex(env);
+      await rebuildProductsIndex(env, changed.map((p) => p.id));
     }
     return json({ ok: true, updated });
   }
@@ -1539,7 +1553,8 @@ async function handleApi(request, env, url) {
       for (const u of updated) await env.KV.put(`products:${u.merged.id}`, JSON.stringify(u.merged));
     }
     // 单条写完后统一重建索引：导入与后台编辑并发时不会相互覆盖
-    const latest = (imported.length || updated.length) ? await rebuildProductsIndex(env) : products;
+    const touched = [...imported, ...updated.map((u) => u.merged)].map((x) => x.id);
+    const latest = (imported.length || updated.length) ? await rebuildProductsIndex(env, touched) : products;
     return json({ ok: true, imported: imported.length, updated: updated.length, errors, total: latest.length });
   }
 
@@ -1795,7 +1810,7 @@ async function handleApi(request, env, url) {
         if (user.role === 'supplier') raw.brand = user.supplierBrand;
         const merged = { ...latest[idx], ...sanitizeProduct(raw) };
         await saveProduct(env, merged);
-        await rebuildProductsIndex(env);
+        await rebuildProductsIndex(env, [merged.id]);
         return json({ ok: true, product: merged });
       }
 
@@ -1861,7 +1876,7 @@ async function handleApi(request, env, url) {
       }
       const item = { id, seq, ...sanitizeProduct(raw) };
       await saveProduct(env, item);
-      await rebuildProductsIndex(env);
+      await rebuildProductsIndex(env, [item.id]);
       return json({ ok: true, product: item }, 201);
     }
     return notFound();
