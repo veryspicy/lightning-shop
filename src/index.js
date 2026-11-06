@@ -38,6 +38,7 @@ import {
   d1SaveOrder,
   d1ProductList,
   d1OrderList,
+  d1OrderGet,
   d1CustomerList,
   migrateBatch,
   verifyConsistency,
@@ -1773,7 +1774,8 @@ async function handleApi(request, env, url) {
       const user = await authUser(request, env);
       if (!user) return unauthorized();
       if (!await can(env, user, 'orders')) return forbidden();
-      const order = await env.KV.get(`orders:${om[1]}`, 'json');
+      // 阶段 1：单条订单也读 D1；D1 查无或异常（含尚未双写的历史单）时回退 KV
+      const order = (await d1OrderGet(env, om[1])) || (await env.KV.get(`orders:${om[1]}`, 'json'));
       return order ? jsonNoCache({ ok: true, order: withOrderTotals(order) }) : notFound();
     }
   }

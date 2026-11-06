@@ -271,6 +271,25 @@ export async function d1BrandProfiles(env, prefix) {
   }
 }
 
+/** 单条订单读取（后台订单详情/状态页用）。返回 null 表示查无此单或 D1 不可用，由调用方回退 KV。 */
+export async function d1OrderGet(env, id) {
+  if (!env.DB || !id) return null;
+  try {
+    const row = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(String(id)).first();
+    if (!row) return null;
+    const rs = await env.DB.prepare(
+      'SELECT * FROM order_items WHERE order_id = ? ORDER BY line_no',
+    ).bind(String(id)).all();
+    const items = (rs.results || []).map((it) => ({
+      id: it.product_id, name: it.name, spec: it.spec, price: it.price,
+      base_price: it.base_price || '', moq: it.moq, qty: it.qty, image: it.image,
+    }));
+    return { ...row, items };
+  } catch (_) {
+    return null;
+  }
+}
+
 /** 客户列表：一条 GROUP BY 取代 KV 时代「全扫订单 + 回写聚合」。 */
 export async function d1CustomerList(env) {
   const rs = await env.DB.prepare(`
@@ -299,6 +318,8 @@ export async function d1OrderList(env, status) {
     if (!byOrder.has(it.order_id)) byOrder.set(it.order_id, []);
     byOrder.get(it.order_id).push({
       id: it.product_id, name: it.name, spec: it.spec, price: it.price,
+      // base_price 是后台成本列/成本合计的唯一来源，漏了后台就整体显示为空
+      base_price: it.base_price || '',
       moq: it.moq, qty: it.qty, image: it.image,
     });
   }
