@@ -80,3 +80,14 @@ namespace_id = "1004"
   [ratelimits.simple]
   limit = 5
   period = 60
+
+# 账号维度登录闸的确定性实现：Durable Object 单实例串行、计数持久化。
+# 内存桶随 isolate 重启清零，原生 Rate Limiting binding 在实测中未真正累计计数
+# （连续 7 次错误登录毫无拦截），故把「同账号累计 N 次即拦」交给 DO 兜底。
+[[durable_objects.bindings]]
+name = "LOGIN_THROTTLE"
+class_name = "LoginThrottle"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LoginThrottle"]
