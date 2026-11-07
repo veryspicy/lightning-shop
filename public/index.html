@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
@@ -13,7 +13,7 @@
   <meta property="og:description" content="农牧特产批发，源头厂家直供。低GI杂粮、黄柿子火锅底料等产地品牌货盘，B2B 批发 + 零售一件代发。" />
   <meta property="og:image" content="https://lightning-shop.gora.dpdns.org/wechat-qr.jpg" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23059669'/%3E%3Cpath d='M13.5 4L5 14h5.5L9.5 20l8.5-10h-5.5L13.5 4z' fill='white'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/styles.css?v=20261106" />
+  <link rel="stylesheet" href="/styles.css?v=20261107b" />
 </head>
 <body>
   <header class="site-header">
@@ -178,7 +178,7 @@
         <button type="button" class="contact-close" aria-label="关闭">✕</button>
       </div>
       <div class="receipt-scroll" id="receipt-body"></div>
-      <p class="receipt-hint">收据已存在本机，可随时重新打开保存；清缓存或换设备会丢失，<b>建议现在就保存图片</b>。查单需手机号 + 订单号。</p>
+      <p class="receipt-hint">收据已存在本机，可随时重新打开保存；清缓存或换设备会丢失，<b>建议现在就保存图片</b>。扫收据上的二维码可直达本订单详情。</p>
       <div class="receipt-actions">
         <button type="button" class="btn btn-primary" data-action="receipt-save">保存图片</button>
         <button type="button" class="btn btn-outline" data-action="receipt-print">打印 / 存 PDF</button>
@@ -187,7 +187,25 @@
     </div>
   </div>
 
+  <!-- 扫描收据二维码后的手机号补全弹层：补全成功才展示该订单详情 -->
+  <div class="contact-mask" id="phone-gate-mask" hidden>
+    <div class="contact-panel phone-gate-panel" role="dialog" aria-modal="true" aria-label="查看订单详情">
+      <div class="contact-head">
+        <b>查看订单详情</b>
+        <button type="button" class="contact-close" data-action="phone-gate-close" aria-label="关闭">✕</button>
+      </div>
+      <p class="phone-gate-order">订单号：<b id="phone-gate-no">—</b></p>
+      <p class="phone-gate-tip">为保护订单隐私，请输入下单时填写的手机号完成验证；验证通过即展示本单明细与物流信息。</p>
+      <label class="form-field"><span>手机号 *</span><input type="tel" id="phone-gate-input" maxlength="11" inputmode="numeric" placeholder="下单时填写的手机号" autocomplete="off" /></label>
+      <p class="phone-gate-error" id="phone-gate-error" hidden></p>
+      <div class="phone-gate-actions">
+        <button type="button" class="btn btn-primary" data-action="phone-gate-submit">确认并查看</button>
+        <button type="button" class="btn btn-outline" data-action="phone-gate-close">取消</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/qrcode.min.js?v=20261104" defer></script>
-  <script src="/app.js?v=20261106" defer></script>
+  <script src="/app.js?v=20261107b" defer></script>
 </body>
 </html>
