@@ -58,7 +58,7 @@ jobs:
           gunzip -c "verify-${STAMP}.sql.gz" > "verify-${STAMP}.sql"
           echo "解压后大小: $(wc -c < "verify-${STAMP}.sql") 字节"
 
-          for T in products orders customers categories; do
+          for T in kv_doc products orders order_items migration_state; do
             grep -q "CREATE TABLE[^;]*\b${T}\b" "verify-${STAMP}.sql" \
               || { echo "::error::备份缺少核心表 ${T}"; exit 1; }
           done
