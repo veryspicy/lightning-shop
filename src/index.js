@@ -26,8 +26,8 @@
  *   PUT  /api/products/:id        -> 更新产品（需 x-admin-token）
  *   DELETE /api/products/:id      -> 删除产品（需 x-admin-token）
  *   POST /api/upload              -> 图片上传 base64 -> R2（需 x-admin-token）
- *   POST /api/admin/d1/migrate    -> KV 数据分批搬迁到 D1（幂等，需 x-admin-token）
- *   GET  /api/admin/d1/verify     -> KV 与 D1 一致性核对（需 x-admin-token）
+ *   POST /api/admin/d1/migrate    -> [已下线] KV 数据分批搬迁到 D1；需 ALLOW_LEGACY_D1_ADMIN=1 才可用
+ *   GET  /api/admin/d1/verify     -> [已下线] KV 与 D1 一致性核对；需 ALLOW_LEGACY_D1_ADMIN=1 才可用
  *   GET  /img/*                   -> R2 图片代理
  *   其余                           -> 静态资源（public/）
  */
@@ -53,13 +53,27 @@ import {
 
 const CATEGORY_ORDER = ['低GI杂粮', '营养粮油', '黄柿子火锅底料', '野生苦菜', '坚果玉米', '羊杂碎'];
 
+// D1 空结果的统一处置口径（商品/订单/客户三处列表读共用）。
+// 默认信任 D1：空数组是「真的没有数据」这一有效结果，不回退 KV 副本。
+// 旧实现以 `rows.length` 判定，把合法空结果当成「D1 没数据」静默回落 KV，
+// 表现就是后台删单/删商品不生效、C 端与后台继续展示 KV 副本里的旧数据。
+// 灾难恢复（误清库）需要临时读回副本时，显式置 ALLOW_KV_FALLBACK_ON_EMPTY=1，用完即撤；
+// 开关每次生效都打 warn，避免"悄悄回落"再次变成无人察觉的默认行为。
+function kvFallbackOnEmptyAllowed(env, dataset) {
+  if (String(env.ALLOW_KV_FALLBACK_ON_EMPTY || '') === '1') {
+    console.warn('d1_empty_fallback_kv', dataset);
+    return true;
+  }
+  console.warn('d1_empty_authoritative', dataset);
+  return false;
+}
+
 // 阶段 3：商品读路径以 D1 为唯一真源。
-// KV 分支只在两种情况下生效：D1 未绑定（本地/未迁移环境）或 d1ProductList 返回空/异常。
-// 注意判空用的是「返回空数组」而非「抛异常」——D1 里商品被全部下架软删时也必须回退 KV，
-// 否则一次误清空会让前台变成空页且无法自查。
+// KV 分支只在三种情况下生效：D1 未绑定（本地/未迁移环境）、D1 查询异常（返回 null），
+// 或显式开启 ALLOW_KV_FALLBACK_ON_EMPTY=1。D1 返回空数组属有效结果，默认不回退。
 async function getProducts(env) {
   const rows = await d1ProductList(env);
-  if (Array.isArray(rows) && rows.length) return rows;
+  if (Array.isArray(rows) && (rows.length > 0 || !kvFallbackOnEmptyAllowed(env, 'products'))) return rows;
   const raw = await env.KV.get('products', 'json');
   if (raw) return raw;
   return [];
@@ -956,8 +970,14 @@ function withOrderTotals(order) {
 async function getOrders(env) {
   try {
     const rows = await d1OrderList(env);
-    if (Array.isArray(rows) && rows.length) return rows.map(withOrderTotals);
-  } catch (_) { /* 回退 KV */ }
+    // 空数组 = D1 里确实没有订单，属有效结果，默认不回退 KV（见 kvFallbackOnEmptyAllowed）。
+    if (Array.isArray(rows) && (rows.length > 0 || !kvFallbackOnEmptyAllowed(env, 'orders'))) {
+      return rows.map(withOrderTotals);
+    }
+  } catch (e) {
+    // D1 查询真失败（无绑定 / 表缺失 / SQL 异常）才回落 KV，且必须留痕，不再静默吞掉。
+    console.error('d1_read_fallback_kv', 'orders', e && e.message);
+  }
   const list = await env.KV.list({ prefix: 'orders:' });
   const out = [];
   for (const k of list.keys) {
@@ -1055,8 +1075,11 @@ async function recomputeCustomers(env) {
 async function getCustomers(env) {
   try {
     const rows = await d1CustomerList(env);
-    if (Array.isArray(rows) && rows.length) return rows;
-  } catch (_) { /* 回退 KV */ }
+    // 视图为空 = 确实没有客户，属有效结果，默认不回退 KV（见 kvFallbackOnEmptyAllowed）。
+    if (Array.isArray(rows) && (rows.length > 0 || !kvFallbackOnEmptyAllowed(env, 'customers'))) return rows;
+  } catch (e) {
+    console.error('d1_read_fallback_kv', 'customers', e && e.message);
+  }
   const list = await env.KV.list({ prefix: 'customers:' });
   const out = [];
   for (const k of list.keys) {
@@ -1868,6 +1891,15 @@ async function handleApiImpl(request, env, url) {
     if (!user) return unauthorized();
     if (user.role !== 'admin') return forbidden();
     if (!env.DB) return json({ error: 'd1_not_bound', message: 'D1 binding DB 未配置' }, 503);
+    // 阶段 3 收口：迁移已完结，这两个端点默认下线。
+    // migrate 能用 KV 陈旧副本反向覆盖 D1 真源，常开入口本身就是风险；
+    // 灾难恢复场景临时设置 ALLOW_LEGACY_D1_ADMIN=1 重新开启，用完即撤。
+    if (String(env.ALLOW_LEGACY_D1_ADMIN || '') !== '1') {
+      return jsonNoCache({
+        error: 'endpoint_retired',
+        message: '该端点已下线；如需灾难恢复，请临时设置 ALLOW_LEGACY_D1_ADMIN=1',
+      }, 410);
+    }
     // 分批搬迁：KV 全量 -> D1（products / orders / order_items / kv_doc）
     // 阶段 3 收口后仅供「D1 重建 / 灾难恢复」：迁移已完成时默认被拒（KV 已是降级副本，
     // 重跑会把陈旧副本反向覆盖真源），必须显式 ?force=1。

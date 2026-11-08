@@ -1,0 +1,61 @@
+name: Backup D1
+
+on:
+  schedule:
+    # UTC 18:00 = 北京时间次日 02:00，避开业务高峰
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: backup-d1
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: 导出 D1 并归档到 R2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: 导出 D1（结构 + 数据）
+        run: |
+          set -e
+          STAMP="$(date -u +%Y-%m-%d)"
+          npx wrangler d1 export lightning-shop-db --remote --output "d1-${STAMP}.sql"
+          gzip -9 "d1-${STAMP}.sql"
+          ls -lh "d1-${STAMP}.sql.gz"
+          echo "STAMP=${STAMP}" >> "$GITHUB_ENV"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: 归档到 R2（d1-backup/ 前缀，保留 10 天内的 action artifact）
+        run: |
+          set -e
+          npx wrangler r2 object put "lightning-shop-images/d1-backup/d1-${STAMP}.sql.gz" \
+            --file "d1-${STAMP}.sql.gz" --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Artifact 兜底（保留 10 天）
+        uses: actions/upload-artifact@v4
+        with:
+          name: d1-backup-${{ env.STAMP }}
+          path: d1-*.sql.gz
+          retention-days: 10
+          if-no-files-found: error
+
+      - name: 输出回滚提示
+        run: |
+          echo "::notice::D1 备份已归档到 R2 前缀 d1-backup/；也可以用 Cloudflare D1 Time Travel（30 天窗口）按时间点恢复"
