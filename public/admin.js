@@ -979,6 +979,9 @@ function openRoleEditor(key) {
 function renderPermCheckboxes(selected) {
   const wrap = $('r-perms');
   const hasAll = selected.includes('*');
+  // 记录「全部权限」态：该态下只有一个 disabled 且无 value 的复选框，
+  // 若保存时按勾选项收集会得到空数组，等于把管理员角色权限清空（自锁）。
+  wrap.dataset.allPerm = hasAll ? '1' : '0';
   if (hasAll) {
     wrap.innerHTML = '<div class="role-perm-item"><input type="checkbox" checked disabled /><div><b>全部权限</b><span>该角色拥有所有菜单与接口访问权限（内置管理员）</span></div></div>';
     $('r-key').disabled = true;
@@ -1010,8 +1013,9 @@ async function saveRole() {
   if (!/^[a-z0-9_]{2,20}$/.test(key)) return toast('角色标识需 2-20 位小写字母/数字/下划线', true);
   if (!name) return toast('角色名称必填', true);
   let permissions;
+  const permsWrap = $('r-perms');
   const allBox = document.querySelector('#r-perms input[value="*"]');
-  if (allBox && allBox.checked) {
+  if ((allBox && allBox.checked) || (permsWrap && permsWrap.dataset.allPerm === '1')) {
     permissions = ['*'];
   } else {
     permissions = Array.from(document.querySelectorAll('#r-perms input[type="checkbox"]:checked')).map((el) => el.value);
