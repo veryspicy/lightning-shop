@@ -1028,12 +1028,20 @@ function showView(name) {
   window.scrollTo(0, 0);
 }
 function parseHash() {
-  const h = (location.hash || '').replace(/^#\/?/, '');
+  const raw = (location.hash || '').replace(/^#\/?/, '');
+  /* 支持 #/orders?no=XXX（收据二维码落地），query 段单独解析 */
+  const qAt = raw.indexOf('?');
+  const h = qAt >= 0 ? raw.slice(0, qAt) : raw;
   const seg = h.split('/')[0];
   const param = h.split('/')[1] || '';
+  const query = qAt >= 0 ? new URLSearchParams(raw.slice(qAt + 1)) : null;
   if (seg === 'p' && param) { showView('detail'); loadDetail(decodeURIComponent(param)); return; }
   if (seg === 'cart') { showView('cart'); renderCart(); return; }
-  if (seg === 'orders') { showView('orders'); renderOrders(); return; }
+  if (seg === 'orders') {
+    showView('orders');
+    renderOrders(query && query.get('no') ? String(query.get('no')).trim() : '');
+    return;
+  }
   if (seg === 'b' && param) { showView('brand'); loadBrand(decodeURIComponent(param)); return; }
   showView('products');
 }
@@ -1167,21 +1175,49 @@ function renderCart() {
     </div>
     <div class="checkout-form panel-params">
       <h2>提交订单</h2>
+      <p class="query-notice">下单不收款：提交后请按订单金额微信转账，后台确认后发货。下单成功后订单号会自动保存在本机，凭手机号 + 订单号可随时查单。</p>
       <label class="form-field"><span>公司/个人名称 *</span><input type="text" id="co-name" maxlength="40" placeholder="如：上海 XX 贸易有限公司 / 王小明" autocomplete="off" /></label>
       <label class="form-field"><span>手机号 *</span><input type="tel" id="co-phone" maxlength="11" placeholder="11 位手机号，用于查单" autocomplete="off" /></label>
-      <label class="form-field"><span>地址备注</span><textarea id="co-remark" rows="2" maxlength="200" placeholder="收货地址、物流要求等（选填）"></textarea></label>
+      <h3 class="form-subhead">收货地址</h3>
+      <div class="order-query-row">
+        <label class="form-field"><span>收货人 *</span><input type="text" id="co-receiver" maxlength="40" placeholder="默认同公司/个人名称" autocomplete="off" /></label>
+        <label class="form-field"><span>收货手机号 *</span><input type="tel" id="co-receiver-phone" maxlength="11" placeholder="默认同下单手机号" autocomplete="off" /></label>
+      </div>
+      <div class="order-query-row">
+        <label class="form-field"><span>省份 *</span><input type="text" id="co-province" maxlength="30" placeholder="如：江苏省" autocomplete="off" /></label>
+        <label class="form-field"><span>城市 *</span><input type="text" id="co-city" maxlength="30" placeholder="如：苏州市" autocomplete="off" /></label>
+      </div>
+      <div class="order-query-row">
+        <label class="form-field"><span>区/县</span><input type="text" id="co-district" maxlength="30" placeholder="如：姑苏区" autocomplete="off" /></label>
+        <label class="form-field"><span>邮编</span><input type="text" id="co-postal" maxlength="6" placeholder="选填，6 位数字" autocomplete="off" /></label>
+      </div>
+      <label class="form-field"><span>详细地址 *</span><textarea id="co-address" rows="2" maxlength="200" placeholder="街道、门牌号、楼栋、仓库收货要求等"></textarea></label>
+      <label class="form-field"><span>备注</span><textarea id="co-remark" rows="2" maxlength="200" placeholder="物流要求、开票信息等（选填）"></textarea></label>
       <div class="checkout-actions">
         <button type="button" class="btn btn-primary" id="co-submit" data-action="submit-order">提交订单</button>
       </div>
-      <p class="checkout-tip">下单不收款：提交后请按订单金额微信转账，后台确认后发货。</p>
     </div>`;
 }
 async function submitOrder() {
   const name = document.getElementById('co-name').value.trim();
   const phone = document.getElementById('co-phone').value.trim();
   const remark = document.getElementById('co-remark').value.trim();
+  // 收货人/收货电话留空时默认与公司名、下单手机号一致（多数批发客户两者相同）
+  const receiverName = (document.getElementById('co-receiver').value.trim() || name);
+  const receiverPhone = (document.getElementById('co-receiver-phone').value.trim() || phone);
+  const province = document.getElementById('co-province').value.trim();
+  const city = document.getElementById('co-city').value.trim();
+  const district = document.getElementById('co-district').value.trim();
+  const address = document.getElementById('co-address').value.trim();
+  const postalCode = document.getElementById('co-postal').value.trim();
   if (!name) return toastTip('请填写公司/个人名称', true);
   if (!/^1\d{10}$/.test(phone)) return toastTip('请填写正确的手机号', true);
+  if (!province) return toastTip('请填写收货省份', true);
+  if (!city) return toastTip('请填写收货城市', true);
+  if (!receiverName) return toastTip('请填写收货人', true);
+  if (!/^1\d{10}$/.test(receiverPhone)) return toastTip('请填写正确的收货手机号', true);
+  if (address.length < 5) return toastTip('请填写详细收货地址（不少于 5 个字）', true);
+  if (postalCode && !/^\d{6}$/.test(postalCode)) return toastTip('邮编格式不正确', true);
   const cart = getCart();
   if (!cart.length) return toastTip('购物车为空', true);
   const btn = document.getElementById('co-submit');
@@ -1191,7 +1227,19 @@ async function submitOrder() {
     const res = await fetch('/api/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ customer_name: name, customer_phone: phone, remark, items: cart }),
+      body: JSON.stringify({
+        customer_name: name,
+        customer_phone: phone,
+        remark,
+        receiver_name: receiverName,
+        receiver_phone: receiverPhone,
+        province,
+        city,
+        district,
+        address,
+        postal_code: postalCode,
+        items: cart,
+      }),
     });
     const data = await res.json();
     if (!res.ok || !data.ok) {
@@ -1202,7 +1250,13 @@ async function submitOrder() {
     }
     setCart([]);
     localStorage.setItem('ls_query_phone', phone);
+    rememberMyOrder(data.order, phone);
+    pendingOrderSuccess = data.order;
+    /* 下单即落一份收据快照并立刻弹出，替代「只记订单号」的留存方式 */
+    const receipt = buildReceipt(data.order, phone);
+    saveReceiptSnapshot(receipt);
     toastTip(`下单成功：${data.order.id}`);
+    openReceipt(receipt);
     setTimeout(() => { location.hash = '#/orders'; }, 600);
   } catch (err) {
     toastTip('网络异常，请重试', true);
@@ -1245,6 +1299,9 @@ function orderCardHtml(o) {
     <div class="order-card-summary">${escapeHtml(o.customer_name)} · ${escapeHtml(o.customer_phone)} · ${totalQty} 件商品</div>
     <div class="order-card-body" hidden>
       <div class="order-lines">${(o.items || []).map(orderItemHtml).join('')}</div>
+      ${(o.province || o.address)
+    ? `<p class="order-addr">收货：${escapeHtml([o.receiver_name, o.receiver_phone, o.province, o.city, o.district, o.address, o.postal_code].filter(Boolean).join(' '))}</p>`
+    : ''}
       ${o.remark ? `<p class="order-remark">备注：${escapeHtml(o.remark)}</p>` : ''}
       ${o.tracking_no ? `<p class="order-tracking">物流单号：${escapeHtml(o.tracking_no)}</p>` : ''}
       ${o.status_note ? `<p class="order-note">${escapeHtml(o.status_note)}</p>` : ''}
@@ -1252,47 +1309,711 @@ function orderCardHtml(o) {
     </div>
     <div class="order-card-foot">
       <button type="button" class="btn btn-outline btn-sm" data-action="order-toggle">查看明细</button>
+      <button type="button" class="btn btn-outline btn-sm" data-action="open-receipt" data-order-id="${escapeHtml(o.id)}">收据</button>
     </div>
   </div>`;
 }
-function renderOrders() {
+let queryModeCache = null;
+let queryTurnstileToken = '';
+let pendingOrderSuccess = null;
+const MY_ORDERS_KEY = 'ls_my_orders';
+const MY_ORDERS_MAX = 10;
+function loadMyOrders() {
+  try {
+    const list = JSON.parse(localStorage.getItem(MY_ORDERS_KEY) || '[]');
+    return Array.isArray(list) ? list.filter((x) => x && x.id) : [];
+  } catch (e) {
+    return [];
+  }
+}
+/* 下单成功即在本机留档订单号：用户忘记订单号时可直接点选回填 */
+function rememberMyOrder(order, phoneOverride) {
+  if (!order || !order.id) return;
+  const list = loadMyOrders().filter((x) => x.id !== order.id);
+  list.unshift({ id: order.id, phone: phoneOverride || order.customer_phone || '', ts: order.created_at || new Date().toISOString() });
+  try {
+    localStorage.setItem(MY_ORDERS_KEY, JSON.stringify(list.slice(0, MY_ORDERS_MAX)));
+  } catch (e) { /* 隐私模式/配额满时忽略，不影响下单 */ }
+}
+async function fetchQueryMode(force) {
+  if (queryModeCache && !force) return queryModeCache;
+  try {
+    const res = await fetch('/api/orders/query/mode');
+    if (res.ok) queryModeCache = await res.json();
+  } catch (e) { /* 接口不可用时回落订单号双因子 */ }
+  if (!queryModeCache) queryModeCache = { mode: 'scope', sms: false, ttl: 300, turnstile_site_key: '' };
+  return queryModeCache;
+}
+function mountQueryTurnstile(siteKey) {
+  const slot = document.getElementById('q-turnstile');
+  if (!slot) return;
+  queryTurnstileToken = '';
+  const render = () => {
+    if (!window.turnstile) return;
+    window.turnstile.render(slot, {
+      sitekey: siteKey,
+      callback: (token) => { queryTurnstileToken = token; },
+      'expired-callback': () => { queryTurnstileToken = ''; },
+      'error-callback': () => { queryTurnstileToken = ''; },
+    });
+  };
+  if (window.turnstile) return render();
+  if (document.getElementById('cf-turnstile-script')) return;
+  const s = document.createElement('script');
+  s.id = 'cf-turnstile-script';
+  s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+  s.async = true;
+  s.defer = true;
+  s.onload = render;
+  document.head.appendChild(s);
+}
+function startCodeCountdown(btn, ttl) {
+  if (!btn) return;
+  let left = Math.min(60, ttl || 60);
+  btn.disabled = true;
+  btn.textContent = `${left}s 后重发`;
+  const timer = setInterval(() => {
+    left -= 1;
+    if (left <= 0) {
+      clearInterval(timer);
+      btn.disabled = false;
+      btn.textContent = '获取验证码';
+      return;
+    }
+    btn.textContent = `${left}s 后重发`;
+  }, 1000);
+}
+async function sendQueryCode() {
+  const phone = document.getElementById('q-phone').value.trim();
+  if (!/^1\d{10}$/.test(phone)) return setQueryError('请填写正确的手机号');
+  const btn = document.getElementById('q-send');
+  if (btn && btn.disabled) return;
+  try {
+    const res = await fetch('/api/orders/query/code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) return setQueryError((data && data.message) || '验证码发送失败');
+    toastTip('验证码已发送，5 分钟内有效');
+    startCodeCountdown(btn, data.ttl);
+  } catch (err) {
+    toastTip('网络异常，请重试', true);
+  }
+}
+function fallbackCopyText(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch (e) { toastTip('复制失败，请手动长按选择订单号', true); }
+  document.body.removeChild(ta);
+}
+function copyOrderId(id) {
+  if (!id) return;
+  const done = () => toastTip('订单号已复制：' + id);
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(id).then(done).catch(() => fallbackCopyText(id, done));
+  } else {
+    fallbackCopyText(id, done);
+  }
+}
+/* 查单页的报错一律显示在表单顶部（底部提示用户容易漏看） */
+function setQueryError(msg) {
+  const box = document.getElementById('q-error');
+  if (!box) return toastTip(msg, true);
+  box.textContent = msg;
+  box.hidden = false;
+  if (box.scrollIntoView) box.scrollIntoView({ block: 'nearest' });
+}
+function clearQueryError() {
+  const box = document.getElementById('q-error');
+  if (box) { box.hidden = true; box.textContent = ''; }
+}
+async function renderOrders(scanNo) {
   const el = views.orders;
+  const scanOrderNo = String(scanNo || '').trim();
   const savedPhone = localStorage.getItem('ls_query_phone') || '';
+  el.innerHTML = '<div class="view-loading">加载中…</div>';
+  const mode = await fetchQueryMode();
+  const justOrder = pendingOrderSuccess;
+  pendingOrderSuccess = null;
+  const myOrders = loadMyOrders().filter((o) => !savedPhone || o.phone === savedPhone).slice(0, 5);
+  const recentHtml = !mode.sms && myOrders.length
+    ? `<div class="recent-chips">
+        <p class="recent-chips-title">本机最近下单（点击填入上方订单号）</p>
+        ${myOrders.map((o) => `<button type="button" class="recent-chip" data-action="fill-order" data-order-id="${escapeHtml(o.id)}">${escapeHtml(o.id)}</button>`).join('')}
+      </div>`
+    : '';
   el.innerHTML = `
     <div class="view-head"><h1>查单</h1></div>
+    ${justOrder ? `<div class="order-success">
+      <h2>下单成功，收据已生成</h2>
+      <p>订单号：<span class="order-success-no">${escapeHtml(justOrder.id)}</span></p>
+      <div class="order-success-actions">
+        <button type="button" class="btn btn-primary btn-sm" data-action="open-receipt" data-order-id="${escapeHtml(justOrder.id)}">保存收据</button>
+        <button type="button" class="btn btn-outline btn-sm" data-action="copy-order" data-order-id="${escapeHtml(justOrder.id)}">复制订单号</button>
+      </div>
+      <p class="checkout-tip">收据含订单号与明细，建议立即「保存图片」；清缓存或换设备后本机收据会丢失，凭收据可随时对账与查单。</p>
+    </div>` : ''}
     <div class="order-query panel-params">
+      ${scanOrderNo ? `<p class="scan-notice">已识别收据二维码，订单号 <b>${escapeHtml(scanOrderNo)}</b>；补全下单手机号即可查看该订单详情。</p>` : ''}
+      <p class="query-notice">${mode.sms
+    ? '查单需短信验证码，5 分钟内有效，最多尝试 3 次；只需手机号，无需订单号。'
+    : '查单需同时提供手机号和订单号（订单号含随机段，无法被猜测，用于保护订单隐私）。下单成功后订单号会自动保存在本机，忘记时可点选下方记录填入。'}</p>
+      <p class="query-notice is-err" id="q-error" hidden></p>
       <div class="order-query-row">
         <label class="form-field"><span>手机号 *</span><input type="tel" id="q-phone" maxlength="11" placeholder="下单时填写的手机号" autocomplete="off" value="${escapeHtml(savedPhone)}" /></label>
-        <label class="form-field"><span>订单号（选填）</span><input type="text" id="q-order" maxlength="20" placeholder="留空则显示该手机号全部订单" autocomplete="off" /></label>
+        ${mode.sms
+    ? '<label class="form-field"><span>短信验证码 *</span><input type="text" id="q-code" maxlength="6" inputmode="numeric" placeholder="6 位数字" autocomplete="one-time-code" /></label>'
+    : '<label class="form-field"><span>订单号 *</span><input type="text" id="q-order" maxlength="20" placeholder="下单成功页显示的订单号" autocomplete="off" /></label>'}
       </div>
+      ${recentHtml}
+      ${mode.sms ? '<div class="checkout-actions"><button type="button" class="btn btn-outline btn-sm" id="q-send" data-action="send-query-code">获取验证码</button></div>' : ''}
+      ${mode.turnstile_site_key ? '<div id="q-turnstile" class="turnstile-slot"></div>' : ''}
       <div class="checkout-actions"><button type="button" class="btn btn-primary" data-action="query-orders">查询</button></div>
+      ${mode.sms ? '' : `<div class="query-forgot">
+        <button type="button" class="query-forgot-btn" data-action="forgot-order-toggle">忘记订单号？</button>
+        <div class="query-forgot-body" id="q-forgot" hidden>
+          <ol>
+            <li>本机记录：下单成功后订单号会自动保存在本机，点上方「本机最近下单」即可填入；</li>
+            <li>客服找回：联系客服并提供下单手机号、大致金额与收货人，客服按手机号核对订单后告知订单号；</li>
+            <li>清缓存、换设备或隐私模式下本机记录会丢失，下单成功时请顺手截图保存。</li>
+          </ol>
+          <button type="button" class="btn btn-outline btn-sm" data-action="open-contact">联系客服找回订单号</button>
+        </div>
+      </div>`}
     </div>
     <div id="order-results"></div>`;
+  if (mode.turnstile_site_key) mountQueryTurnstile(mode.turnstile_site_key);
+  /* 扫码落地：预填订单号并直接弹手机号补全，补全成功才展示订单详情 */
+  if (scanOrderNo) {
+    const orderInput = document.getElementById('q-order');
+    if (orderInput) orderInput.value = scanOrderNo;
+    openPhoneGate(scanOrderNo);
+    return;
+  }
   if (savedPhone) document.getElementById('q-phone').select();
 }
 async function queryOrdersNow() {
+  const mode = await fetchQueryMode();
   const phone = document.getElementById('q-phone').value.trim();
-  const orderId = document.getElementById('q-order').value.trim();
-  if (!/^1\d{10}$/.test(phone)) return toastTip('请填写正确的手机号', true);
+  if (!/^1\d{10}$/.test(phone)) return setQueryError('请填写正确的手机号');
+  const payload = { phone };
+  if (mode.sms) {
+    const code = (document.getElementById('q-code').value || '').trim();
+    if (!/^\d{6}$/.test(code)) return setQueryError('请填写 6 位短信验证码');
+    payload.code = code;
+  } else {
+    const orderId = (document.getElementById('q-order').value || '').trim();
+    if (!orderId) return setQueryError('请填写订单号；忘记订单号可点下方「忘记订单号？」查看找回方式');
+    payload.order_id = orderId;
+    if (queryTurnstileToken) payload.turnstile_token = queryTurnstileToken;
+  }
+  clearQueryError();
+  await runOrderQuery(payload, '', mode.sms ? '该手机号暂无订单，下单后即可查询' : '未找到该订单，请核对订单号与手机号');
+}
+/* 查单请求统一出口：表单查询与「扫码补全手机号」共用 */
+async function runOrderQuery(payload, focusId, emptyText) {
   const box = document.getElementById('order-results');
+  if (!box) return { ok: false, message: '查询区域未就绪' };
   box.innerHTML = '<div class="view-loading">查询中…</div>';
   try {
     const res = await fetch('/api/orders/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, order_id: orderId || '' }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
-    if (!res.ok || !data.ok) { box.innerHTML = '<div class="view-empty">查询失败，请稍后重试</div>'; return; }
-    if (!data.orders.length) {
-      box.innerHTML = `<div class="view-empty">${orderId ? '未找到该订单，请核对订单号与手机号' : '该手机号暂无订单，下单后即可查询'}</div>`;
-      return;
+    if (!res.ok || !data.ok) {
+      const msg = (data && data.message) || '查询失败，请稍后重试';
+      box.innerHTML = `<div class="view-empty">${escapeHtml(msg)}</div>`;
+      return { ok: false, message: msg };
     }
-    box.innerHTML = `<div class="order-list">${data.orders.map(orderCardHtml).join('')}</div>`;
+    const orders = Array.isArray(data.orders) ? data.orders : [];
+    /* 扫码落地必须命中该订单号，避免把同手机号的其他订单当成本单 */
+    const target = focusId ? orders.find((o) => o && o.id === focusId) : null;
+    if (focusId ? !target : !orders.length) {
+      const msg = focusId ? '手机号与订单不匹配，请填写下单时使用的手机号' : (emptyText || '未找到该订单，请核对订单号与手机号');
+      box.innerHTML = `<div class="view-empty">${escapeHtml(msg)}</div>`;
+      return { ok: false, message: msg };
+    }
+    const list = target ? [target] : orders;
+    box.innerHTML = `<div class="order-list">${list.map(orderCardHtml).join('')}</div>`;
+    /* 缓存实时订单，供「收据」按钮在本机无快照时现场生成 */
+    list.forEach((o) => { if (o && o.id) orderCache.set(o.id, o); });
+    if (target) expandOrderCard(target.id);
+    return { ok: true, order: target || orders[0] };
   } catch (err) {
     box.innerHTML = '<div class="view-empty">网络异常，请重试</div>';
+    return { ok: false, message: '网络异常，请重试' };
   }
 }
+function expandOrderCard(id) {
+  const safe = String(id || '').replace(/["\\]/g, '');
+  const card = document.querySelector(`.order-card[data-id="${safe}"]`);
+  if (!card) return;
+  const body = card.querySelector('.order-card-body');
+  const btn = card.querySelector('[data-action="order-toggle"]');
+  if (body) body.hidden = false;
+  if (btn) btn.textContent = '收起明细';
+  if (card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+/* 收据二维码落地页：扫码进入查单页后，只需补全下单手机号即可看到该订单详情 */
+let phoneGateOrderNo = '';
+function setGateError(msg) {
+  const el = document.getElementById('phone-gate-error');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+function openPhoneGate(orderNo) {
+  const mask = document.getElementById('phone-gate-mask');
+  if (!mask || !orderNo) return;
+  phoneGateOrderNo = orderNo;
+  const noEl = document.getElementById('phone-gate-no');
+  if (noEl) noEl.textContent = orderNo;
+  const input = document.getElementById('phone-gate-input');
+  const saved = localStorage.getItem('ls_query_phone') || '';
+  if (input) input.value = /^1\d{10}$/.test(saved) ? saved : '';
+  setGateError('');
+  mask.hidden = false;
+  document.body.style.overflow = 'hidden';
+  if (input && !input.value) setTimeout(() => input.focus(), 60);
+}
+function closePhoneGate() {
+  const mask = document.getElementById('phone-gate-mask');
+  if (!mask || mask.hidden) return;
+  mask.hidden = true;
+  document.body.style.overflow = '';
+}
+async function submitPhoneGate() {
+  const orderNo = phoneGateOrderNo;
+  if (!orderNo) return setGateError('缺少订单号，请重新扫码或到查单页手动查询');
+  const input = document.getElementById('phone-gate-input');
+  const phone = input ? input.value.trim() : '';
+  if (!/^1\d{10}$/.test(phone)) return setGateError('请填写下单时使用的 11 位手机号');
+  const btn = document.querySelector('[data-action="phone-gate-submit"]');
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  setGateError('');
+  /* 站点切到短信档时二维码不再适用双因子：引导到表单发码查询 */
+  const mode = await fetchQueryMode();
+  if (mode.sms) {
+    if (btn) btn.disabled = false;
+    closePhoneGate();
+    const qPhone = document.getElementById('q-phone');
+    if (qPhone) { qPhone.value = phone; qPhone.focus(); }
+    toastTip('本站查单需短信验证码，请点「获取验证码」后查询', true);
+    return;
+  }
+  const r = await runOrderQuery({ phone, order_id: orderNo }, orderNo);
+  if (btn) btn.disabled = false;
+  if (!r.ok) return setGateError(r.message || '验证失败，请重试');
+  try { localStorage.setItem('ls_query_phone', phone); } catch (e) { /* 隐私模式忽略 */ }
+  const qPhone = document.getElementById('q-phone');
+  if (qPhone) qPhone.value = phone;
+  closePhoneGate();
+  toastTip('验证通过，已定位到该订单');
+}
+
+/* ================================================================
+ * 下单收据（电子小票）
+ * 下单成功即生成快照凭证：用户不必依赖记忆订单号，凭收据即可对账与查单。
+ * 数据取自下单响应或查单结果（服务端投影价），前端只排版、不加工金额。
+ * ================================================================ */
+const RECEIPTS_KEY = 'ls_order_receipts';
+const RECEIPTS_MAX = 20;
+const RECEIPT_SHOP = { name: 'Lightning Shop', sub: '农牧特产批发 · 源头厂家直供', site: 'lightning-shop.gora.dpdns.org' };
+const RECEIPT_W = 720;
+const RECEIPT_PAD = 30;
+const FONT_SANS = '"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif';
+const FONT_MONO = 'ui-monospace,Consolas,"Courier New",monospace';
+const orderCache = new Map();
+let currentReceipt = null;
+/* 二维码内容：落到查单页并带上订单号，扫码后只需补全下单手机号即可看详情 */
+function receiptOrderUrl(id) {
+  const base = `${location.origin || ''}${location.pathname.replace(/[^/]*$/, '')}`;
+  return `${base}#/orders?no=${encodeURIComponent(id || '')}`;
+}
+/* 复用站内已引入的 qrcode.min.js（全局 QRCode），返回 canvas 供弹层与 PNG 共用 */
+function receiptQrCanvas(text, px) {
+  if (!text || typeof QRCode === 'undefined') return null;
+  try {
+    const holder = document.createElement('div');
+    new QRCode(holder, {
+      text,
+      width: px,
+      height: px,
+      colorDark: '#0f172a',
+      colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+    return holder.querySelector('canvas') || null;
+  } catch (e) {
+    return null;
+  }
+}
+function renderReceiptQr(r) {
+  const box = document.getElementById('receipt-qr');
+  if (!box) return;
+  box.innerHTML = '';
+  const url = (r && r.order_url) || receiptOrderUrl(r && r.id);
+  const canvas = receiptQrCanvas(url, 320);
+  if (canvas) {
+    box.classList.remove('is-text');
+    /* qrcode.min.js 在支持 DataURI 时会把 canvas 置为 display:none 改用 img，
+       弹层这里复用同一个 canvas（像素内容不受 display 影响），必须显式恢复显示 */
+    canvas.style.display = 'block';
+    box.appendChild(canvas);
+    return;
+  }
+  /* 二维码生成失败时降级显示链接，长按/复制仍可访问 */
+  box.classList.add('is-text');
+  box.textContent = url;
+}
+function loadReceipts() {
+  try {
+    const obj = JSON.parse(localStorage.getItem(RECEIPTS_KEY) || '{}');
+    return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {};
+  } catch (e) {
+    return {};
+  }
+}
+/* 只保留最近 RECEIPTS_MAX 张快照；隐私模式/配额满写失败也不影响下单主流程 */
+function saveReceiptSnapshot(r) {
+  if (!r || !r.id) return;
+  const all = loadReceipts();
+  all[r.id] = r;
+  const ids = Object.keys(all).sort((a, b) => String((all[b] && all[b].snapshot_at) || '').localeCompare(String((all[a] && all[a].snapshot_at) || '')));
+  const kept = {};
+  ids.slice(0, RECEIPTS_MAX).forEach((id) => { kept[id] = all[id]; });
+  try {
+    localStorage.setItem(RECEIPTS_KEY, JSON.stringify(kept));
+  } catch (e) { /* 忽略：弹层里仍可当场保存图片 */ }
+}
+function findReceipt(id) {
+  if (!id) return null;
+  return loadReceipts()[id] || null;
+}
+/* 已脱敏串含 * 时原样返回，避免二次脱敏 */
+function maskPhoneText(p) {
+  const s = String(p || '');
+  return /^1\d{10}$/.test(s) ? `${s.slice(0, 3)}****${s.slice(7)}` : s;
+}
+function moneyText(v) {
+  const n = Number(v);
+  if (!n || Number.isNaN(n)) return '人工核算';
+  return `¥${(Math.round(n * 100) / 100).toFixed(2)}`;
+}
+/* 行金额：价目是字符串（可能是「¥12/袋」「议价」），能解析出数字才算小计 */
+function lineAmountText(price, qty) {
+  const m = String(price || '').match(/\d+(?:\.\d+)?/);
+  const n = Math.max(1, parseInt(qty, 10) || 1);
+  if (!m) return String(price || '议价');
+  return `¥${(Math.round(Number(m[0]) * n * 100) / 100).toFixed(2)}`;
+}
+function buildReceipt(order, phoneOverride) {
+  const o = order || {};
+  const items = Array.isArray(o.items) ? o.items : [];
+  return {
+    id: String(o.id || ''),
+    status: String(o.status || 'pending'),
+    created_at: o.created_at || new Date().toISOString(),
+    snapshot_at: new Date().toISOString(),
+    customer_name: String(o.customer_name || ''),
+    customer_phone: String(phoneOverride || o.customer_phone || ''),
+    receiver_name: String(o.receiver_name || ''),
+    receiver_phone: String(o.receiver_phone || ''),
+    province: String(o.province || ''),
+    city: String(o.city || ''),
+    district: String(o.district || ''),
+    address: String(o.address || ''),
+    postal_code: String(o.postal_code || ''),
+    remark: String(o.remark || ''),
+    tracking_no: String(o.tracking_no || ''),
+    items: items.map((it) => ({
+      name: String(it.name || ''),
+      spec: String(it.spec || ''),
+      qty: parseInt(it.qty, 10) || 1,
+      price: displayPrice(it.price),
+    })),
+    total_qty: Number(o.total_qty) || items.reduce((s, it) => s + (parseInt(it.qty, 10) || 1), 0),
+    total_amount: Number(o.total_amount) || 0,
+    /* 二维码落地地址随快照一起存，便于小票图片离屏重绘 */
+    order_url: receiptOrderUrl(String(o.id || '')),
+    shop: RECEIPT_SHOP,
+  };
+}
+function receiptAddress(r) {
+  return [r.province, r.city, r.district, r.address].filter(Boolean).join(' ');
+}
+function receiptHtml(r) {
+  const rows = r.items.map((it) => `<div class="rp-line">
+      <span class="rp-line-name">${escapeHtml(it.name)}${it.spec ? `<i>${escapeHtml(it.spec)}</i>` : ''}</span>
+      <span class="rp-line-qty">× ${it.qty}</span>
+      <span class="rp-line-amt">${escapeHtml(lineAmountText(it.price, it.qty))}</span>
+    </div>`).join('');
+  return `<div class="receipt-paper">
+    <div class="rp-head">
+      <p class="rp-shop">${escapeHtml(r.shop.name)}</p>
+      <p class="rp-sub">${escapeHtml(r.shop.sub)}</p>
+      <p class="rp-title">订单收据</p>
+    </div>
+    <div class="rp-cut"></div>
+    <div class="rp-meta">
+      <p><span>订单号</span><b class="rp-no">${escapeHtml(r.id)}</b></p>
+      <p><span>下单时间</span><b>${fmtTime(r.created_at)}</b></p>
+      <p><span>订单状态</span><b>${escapeHtml(ORDER_STATUS_LABEL[r.status] || r.status || '—')}</b></p>
+    </div>
+    <div class="rp-cut"></div>
+    <div class="rp-block">
+      <p><span>下单方</span><b>${escapeHtml(r.customer_name || '—')}</b></p>
+      <p><span>手机号</span><b>${escapeHtml(maskPhoneText(r.customer_phone) || '—')}</b></p>
+      <p><span>收货人</span><b>${escapeHtml(r.receiver_name || r.customer_name || '—')}${r.receiver_phone ? ' ' + escapeHtml(maskPhoneText(r.receiver_phone)) : ''}</b></p>
+      <p><span>收货地址</span><b>${escapeHtml(receiptAddress(r) || '—')}</b></p>
+    </div>
+    <div class="rp-cut"></div>
+    <div class="rp-items">
+      <div class="rp-line rp-line-head"><span class="rp-line-name">品名</span><span class="rp-line-qty">数量</span><span class="rp-line-amt">金额</span></div>
+      ${rows || '<div class="rp-line"><span class="rp-line-name">（无明细）</span></div>'}
+    </div>
+    <div class="rp-cut"></div>
+    <div class="rp-total">
+      <p><span>合计件数</span><b>${r.total_qty} 件</b></p>
+      <p class="rp-amount"><span>合计金额</span><b>${moneyText(r.total_amount)}</b></p>
+    </div>
+    ${r.remark ? `<p class="rp-remark">备注：${escapeHtml(r.remark)}</p>` : ''}
+    <div class="rp-cut"></div>
+    <div class="rp-qr">
+      <div class="rp-qr-code" id="receipt-qr" aria-label="订单二维码"></div>
+      <p class="rp-qr-tip">扫码查看订单详情</p>
+      <p class="rp-qr-sub">扫码后输入下单手机号，即可查看本单明细</p>
+    </div>
+    <div class="rp-cut"></div>
+    <p class="rp-foot">本收据为下单凭证，请妥善保存</p>
+    <p class="rp-foot">凭手机号 + 订单号也可查单；客服可凭下单手机号协助找回订单号</p>
+    <p class="rp-foot rp-foot-site">${escapeHtml(r.shop.site)}</p>
+    <p class="rp-foot rp-stamp">生成时间 ${fmtTime(r.snapshot_at)}</p>
+  </div>`;
+}
+function openReceipt(r) {
+  const mask = document.getElementById('receipt-mask');
+  const body = document.getElementById('receipt-body');
+  if (!mask || !body || !r || !r.id) return;
+  currentReceipt = r;
+  body.innerHTML = receiptHtml(r);
+  renderReceiptQr(r);
+  mask.hidden = false;
+  document.body.style.overflow = 'hidden';
+  const scroll = body.parentElement;
+  if (scroll) scroll.scrollTop = 0;
+}
+function closeReceipt() {
+  const mask = document.getElementById('receipt-mask');
+  if (!mask || mask.hidden) return;
+  mask.hidden = true;
+  document.body.style.overflow = '';
+}
+/* 打开某订单的收据：优先本机快照（保留下单时价目），退回实时查单数据 */
+function openReceiptByOrderId(id) {
+  const snap = findReceipt(id);
+  if (snap) return openReceipt(snap);
+  const live = orderCache.get(id);
+  if (live) return openReceipt(buildReceipt(live));
+  toastTip('本机没有该订单收据，请先查询到订单后再打开', true);
+}
+/* 把收据画成 PNG：纯 canvas 绘制，不引第三方库，离线下也能存图 */
+function paintReceiptCanvas(r) {
+  const W = RECEIPT_W;
+  const PAD = RECEIPT_PAD;
+  const MW = W - PAD * 2;
+  const DPR = 2;
+  const probe = document.createElement('canvas').getContext('2d');
+  const ops = [];
+  const pxOf = (font) => Number((String(font).match(/(\d+(?:\.\d+)?)px/) || [0, 16])[1]);
+  const measure = (t, f) => { probe.font = f; return probe.measureText(t).width; };
+  const wrap = (t, f) => {
+    const out = [];
+    let cur = '';
+    String(t == null ? '' : t).split('').forEach((ch) => {
+      if (cur && measure(cur + ch, f) > MW) { out.push(cur); cur = ch; } else cur += ch;
+    });
+    out.push(cur);
+    return out;
+  };
+  const pushText = (t, font, color, opt) => {
+    const o = opt || {};
+    wrap(t, font).forEach((row, i) => {
+      ops.push({ kind: 'text', text: row, font, color, align: o.align || 'left', gap: i === 0 ? (o.gap || 0) : 0 });
+    });
+  };
+  const pushRow = (left, right, font, color, gap) => {
+    const rows = wrap(left, font);
+    rows.forEach((row, i) => {
+      ops.push({ kind: 'text', text: row, font, color, align: 'left', gap: i === 0 ? (gap || 0) : 0, right: i === rows.length - 1 ? right : '' });
+    });
+  };
+  const rule = () => ops.push({ kind: 'rule', gap: 14 });
+  pushText(r.shop.name, `700 32px ${FONT_SANS}`, '#0f172a', { align: 'center' });
+  pushText(r.shop.sub, `16px ${FONT_SANS}`, '#64748b', { align: 'center', gap: 8 });
+  pushText('订单收据', `18px ${FONT_SANS}`, '#334155', { align: 'center', gap: 12 });
+  rule();
+  pushRow('订单号', r.id, `700 22px ${FONT_MONO}`, '#0f172a', 0);
+  pushText(`下单时间：${fmtTime(r.created_at)}`, `16px ${FONT_SANS}`, '#334155', { gap: 10 });
+  pushText(`订单状态：${ORDER_STATUS_LABEL[r.status] || r.status || '—'}`, `16px ${FONT_SANS}`, '#334155', { gap: 6 });
+  rule();
+  pushText(`下单方：${r.customer_name || '—'}`, `16px ${FONT_SANS}`, '#334155', { gap: 0 });
+  pushText(`手机号：${maskPhoneText(r.customer_phone) || '—'}`, `16px ${FONT_SANS}`, '#334155', { gap: 6 });
+  pushText(`收货人：${(r.receiver_name || r.customer_name || '—')}${r.receiver_phone ? ' ' + maskPhoneText(r.receiver_phone) : ''}`, `16px ${FONT_SANS}`, '#334155', { gap: 6 });
+  pushText(`收货地址：${receiptAddress(r) || '—'}`, `16px ${FONT_SANS}`, '#334155', { gap: 6 });
+  rule();
+  pushRow('品名（规格 × 数量）', '金额', `700 15px ${FONT_SANS}`, '#0f172a', 0);
+  r.items.forEach((it) => {
+    pushRow(`${it.name}${it.spec ? '  ' + it.spec : ''} × ${it.qty}`, lineAmountText(it.price, it.qty), `16px ${FONT_SANS}`, '#334155', 10);
+  });
+  if (!r.items.length) pushText('（无明细）', `16px ${FONT_SANS}`, '#64748b', { gap: 10 });
+  rule();
+  pushText(`合计件数：${r.total_qty} 件`, `16px ${FONT_SANS}`, '#334155', { gap: 0 });
+  pushRow('合计金额', moneyText(r.total_amount), `700 26px ${FONT_SANS}`, '#0f172a', 12);
+  if (r.remark) pushText(`备注：${r.remark}`, `16px ${FONT_SANS}`, '#475569', { gap: 12 });
+  rule();
+  /* 收据图片同样带二维码：264px 源图绘到 132 逻辑宽，DPR2 下正好一像素一模块，清晰可扫 */
+  ops.push({ kind: 'qr', gap: 12, size: 132, canvas: receiptQrCanvas(r.order_url || receiptOrderUrl(r.id), 264) });
+  pushText('扫码查看订单详情', `15px ${FONT_SANS}`, '#0f172a', { align: 'center', gap: 12 });
+  pushText('扫码后输入下单手机号即可查看本单明细', `13px ${FONT_SANS}`, '#64748b', { align: 'center', gap: 4 });
+  rule();
+  pushText('本收据为下单凭证，请妥善保存', `15px ${FONT_SANS}`, '#334155', { align: 'center', gap: 0 });
+  pushText('凭手机号 + 订单号也可查单；客服可凭下单手机号协助找回订单号', `14px ${FONT_SANS}`, '#64748b', { align: 'center', gap: 6 });
+  pushText(r.shop.site, `14px ${FONT_SANS}`, '#94a3b8', { align: 'center', gap: 6 });
+  pushText(`生成时间 ${fmtTime(r.snapshot_at)}`, `13px ${FONT_SANS}`, '#94a3b8', { align: 'center', gap: 6 });
+  /* 先按指令集算总高，再定画布尺寸（改尺寸会重置 ctx，故绘制放第二轮） */
+  let height = PAD;
+  ops.forEach((op) => {
+    height += op.gap || 0;
+    height += op.kind === 'rule' ? 14 : (op.kind === 'qr' ? op.size : pxOf(op.font) * 1.6);
+  });
+  height = Math.ceil(height + PAD);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(W * DPR);
+  canvas.height = Math.ceil(height * DPR);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(DPR, DPR);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, height);
+  ctx.textBaseline = 'top';
+  let y = PAD;
+  ops.forEach((op) => {
+    y += op.gap || 0;
+    if (op.kind === 'rule') {
+      ctx.save();
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.moveTo(PAD, y + 6);
+      ctx.lineTo(W - PAD, y + 6);
+      ctx.stroke();
+      ctx.restore();
+      y += 14;
+      return;
+    }
+    if (op.kind === 'qr') {
+      const x = (W - op.size) / 2;
+      if (op.canvas) {
+        ctx.drawImage(op.canvas, x, y, op.size, op.size);
+      } else {
+        ctx.save();
+        ctx.strokeStyle = '#cbd5e1';
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(x, y, op.size, op.size);
+        ctx.restore();
+        ctx.font = `12px ${FONT_SANS}`;
+        ctx.fillStyle = '#94a3b8';
+        ctx.textAlign = 'center';
+        ctx.fillText('二维码生成失败', W / 2, y + op.size / 2);
+      }
+      y += op.size;
+      return;
+    }
+    ctx.font = op.font;
+    ctx.fillStyle = op.color;
+    ctx.textAlign = op.align || 'left';
+    const x = op.align === 'center' ? W / 2 : (op.align === 'right' ? W - PAD : PAD);
+    ctx.fillText(op.text, x, y);
+    if (op.right) {
+      ctx.textAlign = 'right';
+      ctx.fillText(op.right, W - PAD, y);
+    }
+    y += pxOf(op.font) * 1.6;
+  });
+  return canvas;
+}
+function saveReceiptImage() {
+  const r = currentReceipt;
+  if (!r) return;
+  try {
+    const canvas = paintReceiptCanvas(r);
+    if (canvas.toBlob) {
+      canvas.toBlob((blob) => {
+        if (!blob) return toastTip('生成收据图片失败，可改用「打印 / 存 PDF」', true);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `订单收据_${r.id || 'unknown'}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        toastTip('收据图片已保存：订单收据_' + r.id + '.png');
+      }, 'image/png');
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = `订单收据_${r.id || 'unknown'}.png`;
+    a.click();
+  } catch (e) {
+    toastTip('生成收据图片失败，可改用「打印 / 存 PDF」', true);
+  }
+}
+function printReceipt() {
+  if (!currentReceipt) return;
+  window.print();
+}
+(function bindReceiptLayer() {
+  const mask = document.getElementById('receipt-mask');
+  if (!mask) return;
+  mask.addEventListener('click', (e) => {
+    if (e.target === mask || e.target.closest('.contact-close')) closeReceipt();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !mask.hidden) closeReceipt();
+  });
+})();
+
+(function bindPhoneGateLayer() {
+  const mask = document.getElementById('phone-gate-mask');
+  if (!mask) return;
+  mask.addEventListener('click', (e) => {
+    if (e.target === mask) closePhoneGate();
+  });
+  const input = document.getElementById('phone-gate-input');
+  if (input) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitPhoneGate();
+      }
+    });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !mask.hidden) closePhoneGate();
+  });
+})();
 
 /* ================================================================
  * 品牌页
@@ -1368,8 +2089,39 @@ document.addEventListener('click', (e) => {
     renderCart();
   } else if (action === 'submit-order') {
     submitOrder();
+  } else if (action === 'fill-order') {
+    const input = document.getElementById('q-order');
+    if (input) {
+      input.value = btn.dataset.orderId || '';
+      input.focus();
+    }
+    clearQueryError();
+  } else if (action === 'forgot-order-toggle') {
+    const body = document.getElementById('q-forgot');
+    if (!body) return;
+    body.hidden = !body.hidden;
+    btn.setAttribute('aria-expanded', String(!body.hidden));
+  } else if (action === 'open-contact') {
+    const contactBtn = document.getElementById('contact-open');
+    if (contactBtn) contactBtn.click();
+  } else if (action === 'copy-order') {
+    copyOrderId(btn.dataset.orderId || '');
+  } else if (action === 'open-receipt') {
+    openReceiptByOrderId(btn.dataset.orderId || '');
+  } else if (action === 'receipt-save') {
+    saveReceiptImage();
+  } else if (action === 'receipt-print') {
+    printReceipt();
+  } else if (action === 'receipt-close') {
+    closeReceipt();
+  } else if (action === 'phone-gate-submit') {
+    submitPhoneGate();
+  } else if (action === 'phone-gate-close') {
+    closePhoneGate();
   } else if (action === 'query-orders') {
     queryOrdersNow();
+  } else if (action === 'send-query-code') {
+    sendQueryCode();
   } else if (action === 'order-toggle') {
     const card = btn.closest('.order-card');
     if (!card) return;
