@@ -458,7 +458,16 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 @media (max-width: 768px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 16px; }
   .b2b-inner { grid-template-columns: 1fr; gap: 28px; }
-  .header-inner { height: 60px; }
+  /* 页头：窄屏按钮图标化（隐藏文字，保留 aria-label），消除 390px 下横向溢出 */
+  .header-inner { height: 60px; gap: 12px; min-width: 0; }
+  .header-actions { gap: 6px; flex: 0 1 auto; min-width: 0; }
+  /* 按钮尺寸/图标化规则统一放在本文件末尾的窄屏覆盖块（须位于基础规则之后） */
+  .cart-badge {
+    position: absolute; top: -5px; right: -4px;
+    margin-left: 0; min-width: 16px; height: 16px;
+    padding: 0 4px; font-size: 10px;
+    border: 1.5px solid #fff;
+  }
   .main-nav { display: none; }
   .filter-panel { padding: 12px 10px; gap: 10px; }
   .filter-row { gap: 8px; }
@@ -489,6 +498,21 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
   }
   /* 触控目标：chip 加大，减少误触 */
   .chip { padding: 10px 15px; font-size: 15px; }
+}
+
+@media (max-width: 400px) {
+  .header-inner { gap: 8px; }
+  .brand { gap: 7px; font-size: 15px; min-width: 0; }
+  .brand-mark { font-size: 17px; }
+  .brand-name { white-space: nowrap; }
+  .header-actions { gap: 4px; }
+}
+
+@media (max-width: 340px) {
+  .header-inner { gap: 6px; }
+  .brand { font-size: 13px; gap: 5px; }
+  .brand-mark { font-size: 15px; }
+  .header-actions { gap: 3px; }
 }
 
 @media (max-width: 375px) {
@@ -609,6 +633,30 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .header-contact-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .header-contact-btn svg { width: 15px; height: 15px; }
 
+/* ---------- 窄屏页头图标化覆盖 ----------
+   必须位于上面基础规则之后，且特异性提升到 .header-actions 下，
+   否则基础规则的 padding 会覆盖窄屏的 padding:0，把按钮撑宽并压掉图标 */
+@media (max-width: 768px) {
+  .header-actions .header-contact-btn {
+    position: relative;
+    width: 38px; height: 38px;
+    padding: 0; gap: 0;
+    justify-content: center;
+    flex: 0 0 auto;
+    min-width: 0;
+  }
+  .header-actions .header-contact-btn > span:not(.cart-badge) { display: none; }
+  .header-actions .header-contact-btn svg { width: 18px; height: 18px; flex: 0 0 auto; }
+}
+@media (max-width: 400px) {
+  .header-actions .header-contact-btn { width: 34px; height: 34px; }
+  .header-actions .header-contact-btn svg { width: 17px; height: 17px; }
+}
+@media (max-width: 340px) {
+  .header-actions .header-contact-btn { width: 32px; height: 32px; }
+  .header-actions .header-contact-btn svg { width: 16px; height: 16px; }
+}
+
 /* ---------- 联系方式面板（报价二维码 + 商城二维码） ---------- */
 .contact-mask {
   position: fixed; inset: 0; z-index: 990;
@@ -680,7 +728,6 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 
 @media (max-width: 768px) {
   .contact-body { grid-template-columns: 1fr; }
-  .header-contact-btn { padding: 8px 13px; font-size: 13px; }
 }
 /* ===== 新增：视图容器 / 详情页 / 购物车 / 查单 / 品牌页 ===== */
 .view { padding-top: 8px; }
