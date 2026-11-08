@@ -51,19 +51,29 @@ jobs:
           grep -q 'binding = "KV"' wrangler.toml
           echo "wrangler.toml 关键 binding 齐全"
 
-      - name: 迁移可在空库顺序执行
+      - name: 迁移可在空库顺序执行（走部署同一套 d1-migrate.mjs）
         run: |
           set -e
-          # 在干净 persist 目录里从 0001 顺序跑，确保 migration 没有被改坏或漏依赖
-          for f in $(ls migrations/*.sql | sort); do
-            echo "== $f"
-            npx wrangler d1 execute lightning-shop-db --local \
-              --persist-to .wrangler/ci-state --file "$f" >/dev/null
-          done
+          # 用与 deploy.yml 相同的执行器在干净 persist 目录里从 0001 顺序跑，
+          # 既验证 migration 本身没被改坏、也验证迁移器在空库上能正常执行
+          rm -rf .wrangler/ci-state
+          export D1_WRANGLER_EXTRA_ARGS="--persist-to .wrangler/ci-state"
+          node scripts/d1-migrate.mjs --local
           npx wrangler d1 execute lightning-shop-db --local --persist-to .wrangler/ci-state \
             --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name" --json \
             | grep -q '"orders"'
-          echo "迁移顺序执行通过"
+
+          # 幂等：再跑一次必须全部跳过（不重复执行、不写重复账本）
+          OUT="$(node scripts/d1-migrate.mjs --local)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "执行 0 / 基线 0 / 跳过 $(( $(ls migrations/*.sql | wc -l) )) "
+
+          # 账本必须覆盖全部迁移文件
+          npx wrangler d1 execute lightning-shop-db --local --persist-to .wrangler/ci-state \
+            --command "SELECT COUNT(*) AS c FROM _d1_migrations" --json \
+            | tee /tmp/ledger.json
+          grep -q "\"c\": $(ls migrations/*.sql | wc -l)" /tmp/ledger.json
+          echo "迁移顺序执行与幂等校验通过"
 
       - name: 禁止把本地密钥文件提交进仓库
         run: |

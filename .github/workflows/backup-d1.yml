@@ -48,7 +48,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
 
-      - name: 归档回读校验（R2 对象可下载 + gzip 可解 + 数据非空）
+      - name: 归档回读校验（R2 对象可下载 + gzip 可解 + 表结构与数据完整）
         run: |
           set -euo pipefail
           KEY="lightning-shop-images/d1-backup/d1-${STAMP}.sql.gz"
@@ -57,27 +57,8 @@ jobs:
           gzip -t "verify-${STAMP}.sql.gz"
           gunzip -c "verify-${STAMP}.sql.gz" > "verify-${STAMP}.sql"
           echo "解压后大小: $(wc -c < "verify-${STAMP}.sql") 字节"
-
-          for T in kv_doc products orders order_items migration_state; do
-            grep -q "CREATE TABLE[^;]*\b${T}\b" "verify-${STAMP}.sql" \
-              || { echo "::error::备份缺少核心表 ${T}"; exit 1; }
-          done
-
-          ROWS=$(grep -c 'INSERT INTO "products"' "verify-${STAMP}.sql" || true)
-          echo "备份内 products 数据行: ${ROWS}"
-          if [ "${ROWS}" -le 0 ]; then
-            echo "::error::备份内 products 无数据行，快照不可用"
-            exit 1
-          fi
-
-          ONLINE=$(curl -fsS https://lightning-shop.gora.dpdns.org/api/products \
-            | grep -o '"id"' | wc -l | tr -d ' ')
-          echo "线上 products 条数: ${ONLINE}"
-          if [ "${ROWS}" != "${ONLINE}" ]; then
-            echo "::warning::备份行数(${ROWS}) 与线上条数(${ONLINE}) 不一致，请人工核对是否导出截断"
-          else
-            echo "::notice::备份与线上 products 条数一致（${ROWS}）"
-          fi
+          # 断言集合按远程真实表清单动态生成（新增表自动纳入，无需改本文件）
+          node scripts/d1-backup-verify.mjs "verify-${STAMP}.sql"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}

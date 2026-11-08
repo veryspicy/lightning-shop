@@ -1,4 +1,6 @@
 -- 0002_order_items_base_price.sql — order_items 补 base_price（出厂价快照）
+-- d1-baseline-when: SELECT 1 FROM pragma_table_info('order_items') WHERE name='base_price'
+--   ↑ 供 scripts/d1-migrate.mjs 判断「存量库已具备该迁移的结构」：成立则登记为基线不重放。
 --
 -- 背景：阶段 1 读路径切 D1 后，后台订单页的成本列（public/admin.js 的 it.base_price）
 --       与成本合计都要读这条快照。0001 建表时漏了该列，KV 时代它只存在于订单 JSON 里，
