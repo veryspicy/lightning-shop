@@ -53,13 +53,27 @@ import {
 
 const CATEGORY_ORDER = ['低GI杂粮', '营养粮油', '黄柿子火锅底料', '野生苦菜', '坚果玉米', '羊杂碎'];
 
+// D1 空结果的统一处置口径（商品/订单/客户三处列表读共用）。
+// 默认信任 D1：空数组是「真的没有数据」这一有效结果，不回退 KV 副本。
+// 旧实现以 `rows.length` 判定，把合法空结果当成「D1 没数据」静默回落 KV，
+// 表现就是后台删单/删商品不生效、C 端与后台继续展示 KV 副本里的旧数据。
+// 灾难恢复（误清库）需要临时读回副本时，显式置 ALLOW_KV_FALLBACK_ON_EMPTY=1，用完即撤；
+// 开关每次生效都打 warn，避免"悄悄回落"再次变成无人察觉的默认行为。
+function kvFallbackOnEmptyAllowed(env, dataset) {
+  if (String(env.ALLOW_KV_FALLBACK_ON_EMPTY || '') === '1') {
+    console.warn('d1_empty_fallback_kv', dataset);
+    return true;
+  }
+  console.warn('d1_empty_authoritative', dataset);
+  return false;
+}
+
 // 阶段 3：商品读路径以 D1 为唯一真源。
-// KV 分支只在两种情况下生效：D1 未绑定（本地/未迁移环境）或 d1ProductList 返回空/异常。
-// 注意判空用的是「返回空数组」而非「抛异常」——D1 里商品被全部下架软删时也必须回退 KV，
-// 否则一次误清空会让前台变成空页且无法自查。
+// KV 分支只在三种情况下生效：D1 未绑定（本地/未迁移环境）、D1 查询异常（返回 null），
+// 或显式开启 ALLOW_KV_FALLBACK_ON_EMPTY=1。D1 返回空数组属有效结果，默认不回退。
 async function getProducts(env) {
   const rows = await d1ProductList(env);
-  if (Array.isArray(rows) && rows.length) return rows;
+  if (Array.isArray(rows) && (rows.length > 0 || !kvFallbackOnEmptyAllowed(env, 'products'))) return rows;
   const raw = await env.KV.get('products', 'json');
   if (raw) return raw;
   return [];
@@ -956,8 +970,14 @@ function withOrderTotals(order) {
 async function getOrders(env) {
   try {
     const rows = await d1OrderList(env);
-    if (Array.isArray(rows) && rows.length) return rows.map(withOrderTotals);
-  } catch (_) { /* 回退 KV */ }
+    // 空数组 = D1 里确实没有订单，属有效结果，默认不回退 KV（见 kvFallbackOnEmptyAllowed）。
+    if (Array.isArray(rows) && (rows.length > 0 || !kvFallbackOnEmptyAllowed(env, 'orders'))) {
+      return rows.map(withOrderTotals);
+    }
+  } catch (e) {
+    // D1 查询真失败（无绑定 / 表缺失 / SQL 异常）才回落 KV，且必须留痕，不再静默吞掉。
+    console.error('d1_read_fallback_kv', 'orders', e && e.message);
+  }
   const list = await env.KV.list({ prefix: 'orders:' });
   const out = [];
   for (const k of list.keys) {
@@ -1055,8 +1075,11 @@ async function recomputeCustomers(env) {
 async function getCustomers(env) {
   try {
     const rows = await d1CustomerList(env);
-    if (Array.isArray(rows) && rows.length) return rows;
-  } catch (_) { /* 回退 KV */ }
+    // 视图为空 = 确实没有客户，属有效结果，默认不回退 KV（见 kvFallbackOnEmptyAllowed）。
+    if (Array.isArray(rows) && (rows.length > 0 || !kvFallbackOnEmptyAllowed(env, 'customers'))) return rows;
+  } catch (e) {
+    console.error('d1_read_fallback_kv', 'customers', e && e.message);
+  }
   const list = await env.KV.list({ prefix: 'customers:' });
   const out = [];
   for (const k of list.keys) {

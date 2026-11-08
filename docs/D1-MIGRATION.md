@@ -246,6 +246,17 @@ KV 时代下单是「`genOrderId` 用 `KV.get` 探重 → `saveOrder` 写 KV」�
 - 本地验证：不设变量 → `verify`/`migrate` 均 410；设 `--var ALLOW_LEGACY_D1_ADMIN:1` → `verify` 200（`ok=true`、`kv_drift.abnormal=false`）、`migrate` 200 但 `skipped=true, reason=already_completed`。
 - 生产操作改为离线执行：`wrangler versions deploy` 回滚 + `wrangler d1 time-travel` / 每日 R2 备份恢复，不再走 Worker 内的搬迁接口。
 
+### 阶段 3 收尾：读路径「空结果」口径统一
+
+商品 / 订单 / 客户三条列表读路径统一为「D1 空数组即真源结果」，不再回落 KV 副本：
+
+- 旧语义：`if (Array.isArray(rows) && rows.length) return rows;` —— D1 返回 0 行被当成「D1 没数据」，静默改读 KV 副本。
+- 后果：后台删光商品 / 删单后，C 端与后台仍展示 KV 副本里的旧数据，表现为「删除不生效、数据复活」；`getOrders()` 的 `catch (_)` 还会把 D1 真异常一并吞掉，线上无任何告警。
+- 新语义：`rows` 为数组（含空）即返回；仅三种情况回落 KV —— D1 未绑定、D1 查询异常、显式开启 `ALLOW_KV_FALLBACK_ON_EMPTY=1`。
+- 可观测性：空结果命中打 `d1_empty_authoritative <dataset>`，回落 KV 打 `d1_read_fallback_kv <dataset> <message>`（或开关态 `d1_empty_fallback_kv`），日志可直接区分「真没数据」与「D1 读失败」。
+- 应急：误清库需要临时读回 KV 副本时，置 `ALLOW_KV_FALLBACK_ON_EMPTY=1` 重新部署，用完即撤；常开会让「删不干净」的老毛病回归。
+- 本地验证：不设变量 → 清空本地 D1 `products` 后前台商品列表为空（不再被 KV 旧货顶回）；设 `--var ALLOW_KV_FALLBACK_ON_EMPTY:1` → 同一操作可看到 KV 副本内容回流，日志为 `d1_empty_fallback_kv`。
+
 ## 5. 避坑清单
 
 - **D1 读副本是最终一致**：会话/读己之写场景必须 `withSession("first-primary")`，否则刚写的订单可能查不到。
