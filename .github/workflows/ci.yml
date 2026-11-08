@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: 质量门槛
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: 语法检查（node --check）
+        run: |
+          set -e
+          fail=0
+          for f in src/*.js public/*.js scripts/*.mjs; do
+            [ -e "$f" ] || continue
+            if node --check "$f"; then
+              echo "OK   $f"
+            else
+              echo "FAIL $f"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: 配置完整性（wrangler.toml 必须声明主入口与 D1 绑定）
+        run: |
+          set -e
+          grep -q '^main = "src/index.js"' wrangler.toml
+          grep -q 'binding = "DB"' wrangler.toml
+          grep -q 'binding = "KV"' wrangler.toml
+          echo "wrangler.toml 关键 binding 齐全"
+
+      - name: 迁移可在空库顺序执行
+        run: |
+          set -e
+          # 在干净 persist 目录里从 0001 顺序跑，确保 migration 没有被改坏或漏依赖
+          for f in $(ls migrations/*.sql | sort); do
+            echo "== $f"
+            npx wrangler d1 execute lightning-shop-db --local \
+              --persist-to .wrangler/ci-state --file "$f" >/dev/null
+          done
+          npx wrangler d1 execute lightning-shop-db --local --persist-to .wrangler/ci-state \
+            --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name" --json \
+            | grep -q '"orders"'
+          echo "迁移顺序执行通过"
+
+      - name: 禁止把本地密钥文件提交进仓库
+        run: |
+          set -e
+          if git ls-files --error-unmatch .dev.vars >/dev/null 2>&1; then
+            echo "::error::.dev.vars 被纳入了 Git 跟踪，必须从索引移除"
+            exit 1
+          fi
+          echo "未跟踪 .dev.vars"
