@@ -54,7 +54,7 @@ jobs:
       - name: 迁移可在空库顺序执行（走部署同一套 d1-migrate.mjs）
         run: |
           set -e
-          # 用与 deploy.yml 相同的执行器在干净 persist 目录里从 0001 顺序跑，
+          # 用与发布同一条命令（Workers Builds 部署命令里的 d1-migrate.mjs）在干净 persist 目录里从 0001 顺序跑，
           # 既验证 migration 本身没被改坏、也验证迁移器在空库上能正常执行
           rm -rf .wrangler/ci-state
           export D1_WRANGLER_EXTRA_ARGS="--persist-to .wrangler/ci-state"
@@ -83,3 +83,9 @@ jobs:
             exit 1
           fi
           echo "未跟踪 .dev.vars"
+
+      - name: 发布入口守卫（Actions 不得执行部署或写生产）
+        run: |
+          # 发布由 Cloudflare Workers Builds 负责（Worker → 设置 → 构建：生产分支构建 + 预览构建）；
+          # GitHub Actions 只做校验、审核、检查。任何把部署命令塞回 workflow 的改动都会在这里失败。
+          node scripts/check-no-deploy.mjs

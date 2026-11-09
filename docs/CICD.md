@@ -1,77 +1,90 @@
-# GitHub Actions CICD 部署固化
+# CI/CD 分工：Cloudflare Workers Builds 发布 + GitHub Actions 只做校验
 
-Lightning-shop 已启用 GitHub Actions 自动化部署：**push 到 `main` 即自动构建并部署到 Cloudflare Workers + KV + R2**，全程无需手动 wrangler 操作。
+Lightning-shop 的**发布链路在 Cloudflare 侧**，GitHub Actions **不再部署**。
 
-## 1. 触发方式
+| 职责 | 归属 | 触发 |
+|---|---|---|
+| 生产发布（含 D1 迁移） | Cloudflare Workers Builds | 推送到生产分支 |
+| 预览部署（每个功能分支独立 URL） | Cloudflare Workers Builds（Worker Previews） | 推送到非生产分支 |
+| 校验、审核、检查（语法/配置/迁移幂等/密钥边界/发布入口守卫） | GitHub Actions `ci.yml` | PR 到 dev/main、push dev |
+| 生产只读冒烟（缓存头、登录限流） | GitHub Actions `verify-prod.yml` | 手动 |
+| D1 每日备份归档到 R2 | GitHub Actions `backup-d1.yml` | 每日定时 / 手动 |
 
-- `git push origin main`：推送即部署（含文档、配置变更）
-- GitHub 网页 Actions 页 → Run workflow：手动触发
+## 1. Cloudflare 侧配置（Worker → 设置 → 构建）
 
-## 2. 流水线步骤（.github/workflows/deploy.yml）
+### 1.1 生产（Production）
 
-| 步骤 | 动作 |
+| 字段 | 值 |
 |---|---|
-| checkout | 拉取仓库代码 |
-| setup-node | Node 20 + npm 依赖缓存 |
-| npm ci | 安装依赖（package-lock.json） |
-| secret put | 注入 `ADMIN_PASSWORD` 到 Cloudflare Worker |
-| seed + kv:bulk put | 生成 KV 种子数据并写入生产命名空间（`--preview false`） |
-| upload:images | 上传产品图到 R2 bucket |
-| deploy | `wrangler deploy` 上线 |
+| Git 存储库 | `veryspicy/lightning-shop` |
+| 生产分支 | `main`（发布闸门：dev → PR → main） |
+| 构建命令 | `npm ci` |
+| 部署命令 | `node scripts/d1-migrate.mjs --remote && npx wrangler deploy` |
+| 根目录 | `/` |
+| 构建监视路径 | 包括 `*`；排除 `node_modules/**`、`.git/` |
+| API 令牌 | `cf-mail build token`（需含 D1 编辑、Workers 脚本编辑、KV 编辑、R2 编辑） |
 
-## 3. 前置配置（一次性）
+部署命令把 **D1 迁移放在 `wrangler deploy` 之前**：先按 `migrations/*.sql` 顺序幂等迁移（账本 `_d1_migrations`），迁移失败即中止，不会出现"新代码上线但库里没有新表/新列"。
 
-### 3.1 GitHub Secrets（仓库 Settings → Secrets and variables → Actions）
+### 1.2 预览（Preview，即"预览基础"标签页）
 
-| Secret 名 | 值来源 |
+| 字段 | 值 |
 |---|---|
-| `CF_API_TOKEN` | Cloudflare API Token（见 3.2） |
-| `CF_ACCOUNT_ID` | Cloudflare 账号 ID（Dashboard 右下角，本账号 `422dd0994559b384a1a0e568cd0c677c`） |
-| `ADMIN_PASSWORD` | 供应链管理后台密码（生产强密码） |
+| 预览分支构建 | 开启 |
+| 构建命令 | `npm ci` |
+| 预览命令 | `npx wrangler preview`（Wrangler v4 的 Worker Previews，勿改 `versions upload`） |
 
-### 3.2 Cloudflare API Token 权限
+启用后，向非生产分支推送会生成 Preview URL（Worker → Previews，也会尝试在 PR 上回帖），用于合并前验证；预览不提升为生产部署。
 
-创建位置：My Profile → API Tokens → Create Token（模板 Edit Cloudflare Workers 后补充）：
+## 2. GitHub Actions 只做校验
 
-| 权限 | 级别 |
-|---|---|
-| Account → Cloudflare Workers Scripts | Edit |
-| Account → Cloudflare Workers KV Storage | Edit |
-| Account → Cloudflare Workers R2 Storage | Edit |
-| Account → Account Settings | Read |
+`ci.yml` 的检查项：
 
-### 3.3 本地仓库代理（中国大陆网络）
+1. `node --check` 语法检查（`src/`、`public/`、`scripts/`）
+2. `wrangler.toml` 关键 binding 完整性（`main`、`DB`、`KV`）
+3. `d1-migrate.mjs --local` 空库顺序执行 + 二次执行幂等 + 账本覆盖全部迁移文件
+4. `.dev.vars` 未被 Git 跟踪
+5. **发布入口守卫** `scripts/check-no-deploy.mjs`：workflow 中一旦出现 `wrangler deploy`、`versions upload`、`secret put`、`d1 execute --remote`、`kv bulk put --remote`、`r2 object put`（`d1-backup/` 归档除外）、`upload-r2.mjs`、`sync-prod-to-seed.mjs` 等发布或写生产动作即失败，防止两套 CI/CD 双写生产
 
-本仓库已配置 git 代理（写入仓库级 `.git/config`，仅影响本仓库）：
+`.github/workflows/deploy.yml` 已删除。部署动作只允许出现在 Cloudflare Workers Builds 配置里。
+
+## 3. 数据初始化（不再是自动发布的一部分）
+
+首次部署或换新环境时，以下动作**手动**执行（本地或 Cloudflare 侧），不经 GitHub Actions：
 
 ```bash
-git config http.proxy http://127.0.0.1:10809
+npm run seed                                         # 生成 data/kv-bulk.json
+npx wrangler kv bulk put data/kv-bulk.json --binding=KV --remote
+npm run upload:images                                # assets/images → R2
+npx wrangler secret put ADMIN_PASSWORD               # 后台密码
 ```
 
-代理端口变化时需同步修改；无需代理的环境可移除：
+生产 KV 已有数据时不要重复 `bulk put`（会覆盖同 key）；R2 图片是幂等覆盖写。
+
+## 4. 日常发布流程
 
 ```bash
-git config --unset http.proxy
+# 1) 功能分支开发，推送即触发 Workers Builds 预览构建
+git push origin feature/xxx
+
+# 2) 通过 PR 合并到 dev，GitHub Actions 跑校验
+
+# 3) 合并 dev → main 触发生产构建：d1-migrate → wrangler deploy
+git push origin main
 ```
 
-## 4. 日常提交流程
-
-```bash
-git add -A
-git commit -m "feat: ..."
-git push origin main   # 自动触发部署
-```
-
-推送后到 https://github.com/veryspicy/lightning-shop/actions 查看运行状态，绿色对勾即部署成功，可访问 https://lightning-shop.headache.workers.dev 验证。
+查看结果：Cloudflare → Workers & Pages → lightning-shop → Deployments（Build history / Previews），构建日志保留 90 天。
 
 ## 5. 常见问题
 
-- **KV 数据未更新**：确认 `wrangler kv:bulk put --binding=KV --preview false` 带 `--preview false`（toml 同时配置 id/preview_id 时必须显式指定）
-- **Secret 变更**：修改 GitHub 仓库 Secret `ADMIN_PASSWORD` 后重新 push 即可同步到 Cloudflare
-- **部署失败**：先看 Actions 日志，常见为 API Token 权限不足或 KV/R2 资源未创建
+- **构建失败在 `npm ci`**：确认 `package-lock.json` 已提交且与 `package.json` 一致
+- **构建失败在迁移**：`d1-migrate.mjs` 会拒绝执行"已上线迁移文件被改过"的情况，需新增迁移文件而非改旧文件
+- **预览构建失败**：预览基础页签的构建命令必须也是 `npm ci`，否则缺依赖
+- **部署成功但线上没变**：确认推送落在生产分支，且 Deployments 里该次构建状态为成功
+- **令牌权限不足**：D1 迁移要求令牌含 D1 编辑权限
 
 ## 6. 敏感信息边界
 
-- `.dev.vars`、`temp/`、日志、`node_modules/` 已由 `.gitignore` 排除，禁止提交
-- `ADMIN_PASSWORD` 仅存在于 GitHub Secrets 与 Cloudflare Secrets，**禁止**写入任何代码、配置或文档
-- `wrangler.toml` 含真实 KV/R2 资源 ID，属资源标识符非凭据；若仓库设为 Private 可进一步收敛
+- `.dev.vars`、`temp/`、日志、`node_modules/` 已由 `.gitignore` 排除
+- `ADMIN_PASSWORD` 只存在于 Cloudflare Secrets，构建环境不注入、不入库
+- `wrangler.toml` 含 KV/R2/D1 资源 ID，属资源标识符非凭据
