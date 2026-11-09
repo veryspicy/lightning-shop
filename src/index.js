@@ -1579,7 +1579,7 @@ async function handleApiImpl(request, env, url) {
   if (path === '/api/auth/me') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (method === 'GET') return json({ ok: true, user: await publicUserWithPerms(env, user) });
+    if (method === 'GET') return jsonNoCache({ ok: true, user: await publicUserWithPerms(env, user) });
     if (method === 'PUT') {
       const body = await readJson(request);
       if (!body) return json({ error: 'bad_request' }, 400);
