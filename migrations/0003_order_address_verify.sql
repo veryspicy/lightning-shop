@@ -1,4 +1,6 @@
 -- 0003_order_address_verify.sql
+-- d1-baseline-when: SELECT 1 FROM sqlite_master WHERE type='table' AND name='verify_code'
+--   ↑ 供 scripts/d1-migrate.mjs 判断「存量库已具备该迁移的结构」：成立则登记为基线不重放。
 -- 两件事：
 --   1) 订单结构化收货地址：原来地址只能塞进 remark（≤200 字自由文本），
 --      后台无法按地区筛选、发货时容易漏字段。改为独立列，remark 退回「备注」本位。

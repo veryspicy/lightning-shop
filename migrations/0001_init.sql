@@ -1,4 +1,6 @@
 -- 0001_init.sql — Lightning-shop D1 初始结构
+-- d1-baseline-when: SELECT 1 FROM sqlite_master WHERE type='table' AND name='products'
+--   ↑ 供 scripts/d1-migrate.mjs 判断「存量库已具备该迁移的结构」：成立则登记为基线不重放。
 -- 目标：把 KV 的「整表 JSON + 全扫聚合」换成关系表，消除并发覆盖与全表遍历。
 -- 兼容策略：kv_doc 表无损镜像全部 KV 键（配置类小文档保留键值形态），
 --           products / orders / order_items 由 kv_doc 派生，供关系查询使用。

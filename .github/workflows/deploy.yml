@@ -21,6 +21,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Apply D1 migrations
+        run: node scripts/d1-migrate.mjs --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
       - name: Sync prod data to seed (pre-deploy)
         run: |
           SYNC_OUT="$(node scripts/sync-prod-to-seed.mjs --base-url https://lightning-shop.gora.dpdns.org)"
