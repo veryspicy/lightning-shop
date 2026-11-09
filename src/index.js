@@ -212,6 +212,33 @@ const PERM_DEFS = {
   brands: { label: '品牌档案', desc: '维护品牌介绍与资质' },
 };
 
+// 权限键归一：存量 KV/D1 自定义角色里可能存着历史带后缀的旧键（products:write / users:manage ...），
+// 与 PERM_DEFS 键不一致会导致「后台菜单可见但接口一律 403」。统一映射到 PERM_DEFS 键后再比对。
+const PERM_ALIASES = {
+  'users:manage': 'users',
+  'roles:manage': 'roles',
+  'categories:write': 'categories',
+  'products:write': 'products',
+  upload: 'products',
+};
+function normPerm(p) {
+  const k = String(p === undefined || p === null ? '' : p).trim();
+  return PERM_ALIASES[k] || k;
+}
+
+// 权限清洗：只保留 PERM_DEFS 里定义的键；'*' 仅限内置管理员，避免任何角色都能把自己提权成超管。
+function sanitizePermissions(roleKey, list) {
+  if (roleKey === 'admin') return ['*'];
+  const arr = Array.isArray(list) ? list : [];
+  const out = [];
+  for (const raw of arr) {
+    const p = normPerm(raw);
+    if (p === '*' || !PERM_DEFS[p]) continue;
+    if (!out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
 // 内置角色（不可删除；权限可在角色管理中调整）
 const BUILTIN_ROLES = {
   admin: { key: 'admin', name: '管理员', builtin: true, permissions: ['*'] },
@@ -219,20 +246,40 @@ const BUILTIN_ROLES = {
   supplier: { key: 'supplier', name: '供应商', builtin: true, permissions: ['dashboard', 'products'] },
 };
 
-// 角色表 = 内置角色 + KV 自定义角色（KV roles 存自定义角色数组）
+// 角色表 = 内置角色 + 存储里的自定义角色 + 内置角色覆盖（roles 文档，D1 为权威源）
+// 注意：内置角色的权限/名称同样需要落库，否则「角色管理里改了内置角色权限 → 保存成功但刷新即回退」。
 async function getRoles(env) {
   const map = {};
   for (const k of Object.keys(BUILTIN_ROLES)) map[k] = { ...BUILTIN_ROLES[k], permissions: [...BUILTIN_ROLES[k].permissions] };
-  const raw = await env.KV.get('roles', 'json');
+  const raw = await getDoc(env, 'roles');
   if (Array.isArray(raw)) {
-    for (const r of raw) if (r && r.key) map[r.key] = { key: r.key, name: r.name, builtin: false, permissions: Array.isArray(r.permissions) ? r.permissions : [] };
+    for (const r of raw) {
+      if (!r || !r.key) continue;
+      const key = String(r.key);
+      const name = String(r.name || '').trim();
+      if (BUILTIN_ROLES[key]) {
+        // 内置角色只覆盖名称与权限，key / builtin 标志保持不变
+        if (name) map[key].name = name;
+        map[key].permissions = sanitizePermissions(key, r.permissions);
+        map[key].builtin = true;
+      } else {
+        map[key] = { key, name: name || key, builtin: false, permissions: sanitizePermissions(key, r.permissions) };
+      }
+    }
   }
   return map;
 }
 
 async function saveRoles(env, roles) {
-  const custom = Object.values(roles).filter((r) => !r.builtin);
-  await putDoc(env, 'roles', custom);
+  const doc = Object.values(roles)
+    .filter((r) => r && r.key)
+    .map((r) => ({
+      key: r.key,
+      name: r.name,
+      builtin: !!BUILTIN_ROLES[r.key],
+      permissions: sanitizePermissions(r.key, r.permissions),
+    }));
+  await putDoc(env, 'roles', doc);
 }
 
 // 角色权限解析：'*' 表示全部权限
@@ -534,19 +581,6 @@ async function authUser(request, env) {
   return user;
 }
 
-// 权限键归一：存量 KV 自定义角色里可能存着历史带后缀的旧键（products:write / users:manage ...），
-// 与 PERM_DEFS 键不一致会导致「后台菜单可见但接口一律 403」。统一映射到 PERM_DEFS 键后再比对。
-const PERM_ALIASES = {
-  'users:manage': 'users',
-  'roles:manage': 'roles',
-  'categories:write': 'categories',
-  'products:write': 'products',
-  upload: 'products',
-};
-function normPerm(p) {
-  const k = String(p === undefined || p === null ? '' : p).trim();
-  return PERM_ALIASES[k] || k;
-}
 // 旧版 site:write 为聚合键，同时管首页/价格/二维码；拆分为 hero/price/qr 后需兼容存量角色
 const SITE_PERMS = ['hero', 'price', 'qr'];
 
@@ -1718,7 +1752,7 @@ async function handleApiImpl(request, env, url) {
       if (!/^[a-z0-9_]{2,20}$/.test(key)) return json({ error: 'bad_request', message: '角色标识需 2-20 位小写字母/数字/下划线' }, 400);
       if (!name) return json({ error: 'bad_request', message: '角色名称必填' }, 400);
       if (map[key]) return json({ error: 'duplicated', message: '角色标识已存在' }, 400);
-      const permissions = (Array.isArray(body?.permissions) ? body.permissions : []).filter((p) => PERM_DEFS[p]);
+      const permissions = sanitizePermissions(key, body?.permissions);
       map[key] = { key, name, builtin: false, permissions };
       await saveRoles(env, map);
       return json({ ok: true, role: { key, name, builtin: false, permissions, userCount: 0 } }, 201);
@@ -1746,8 +1780,7 @@ async function handleApiImpl(request, env, url) {
       }
       if (body.permissions !== undefined) {
         if (!Array.isArray(body.permissions)) return json({ error: 'bad_request', message: 'permissions 必须是数组' }, 400);
-        const perms = body.permissions.filter((p) => PERM_DEFS[p] || p === '*');
-        role.permissions = perms;
+        role.permissions = sanitizePermissions(key, body.permissions);
       }
       if (role.builtin) {
         // 内置角色允许调权限，但保持原 key / builtin 标志
