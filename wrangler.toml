@@ -99,3 +99,64 @@ class_name = "LoginThrottle"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["LoginThrottle"]
+
+# ─────────────────────────────────────────────────────────────────────
+# Previews：Cloudflare Workers Builds 预览环境专用配置
+# `npx wrangler preview` 强制要求本块；资源与生产隔离，避免预览构建
+# 读写生产数据。R2 因账号 OAuth 未授予 workers_r2 权限无法新建桶，
+# 预览复用生产图片桶 lightning-shop-images（仅承载图片对象）。
+# ─────────────────────────────────────────────────────────────────────
+[previews.vars]
+SITE_NAME = "Lightning Shop (Preview)"
+CONTACT_WECHAT = "lightning-shop"
+
+[[previews.kv_namespaces]]
+binding = "KV"
+id = "783fadf57dce4ee0a035ffd9d88ae80b"
+
+[[previews.d1_databases]]
+binding = "DB"
+database_name = "lightning-shop-db-preview"
+database_id = "1fd147c0-b748-4b5d-9918-bbbb415e47b5"
+migrations_dir = "migrations"
+
+[[previews.r2_buckets]]
+binding = "R2"
+bucket_name = "lightning-shop-images"
+
+# 预览用独立的 rate limit 命名空间段（2001-2004），不与生产 1001-1004 共用计数。
+[[previews.ratelimits]]
+name = "RL_LOGIN"
+namespace_id = "2001"
+
+  [previews.ratelimits.simple]
+  limit = 30
+  period = 60
+
+[[previews.ratelimits]]
+name = "RL_ORDER"
+namespace_id = "2002"
+
+  [previews.ratelimits.simple]
+  limit = 20
+  period = 60
+
+[[previews.ratelimits]]
+name = "RL_QUERY"
+namespace_id = "2003"
+
+  [previews.ratelimits.simple]
+  limit = 30
+  period = 60
+
+[[previews.ratelimits]]
+name = "RL_LOGIN_ACCT"
+namespace_id = "2004"
+
+  [previews.ratelimits.simple]
+  limit = 5
+  period = 60
+
+[[previews.durable_objects.bindings]]
+name = "LOGIN_THROTTLE"
+class_name = "LoginThrottle"
