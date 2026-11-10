@@ -109,6 +109,9 @@ new_sqlite_classes = ["LoginThrottle"]
 [previews.vars]
 SITE_NAME = "Lightning Shop (Preview)"
 CONTACT_WECHAT = "lightning-shop"
+# PREVIEW=1：预览环境豁免「workers.dev 301 主站化」，让预览 URL 可独立冒烟，
+# 不被重定向到生产域。生产环境不设该变量，主站化行为不变。
+PREVIEW = "1"
 
 [[previews.kv_namespaces]]
 binding = "KV"
