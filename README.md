@@ -67,8 +67,13 @@ npm run dev
 
 ### 6. 部署上线
 
+发布由 **Cloudflare Workers Builds** 自动完成（Worker → 设置 → 构建），GitHub Actions 只做校验，不部署。详见 [docs/CICD.md](docs/CICD.md)。
+
+手动应急发布（仅在本机排查时用，正常不要绕过 Builds）：
+
 ```bash
-npm run deploy
+node scripts/d1-migrate.mjs --remote   # 先迁移
+npm run deploy                          # 再上线
 ```
 
 ## 管理后台密码配置
