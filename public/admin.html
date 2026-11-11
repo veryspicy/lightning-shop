@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
@@ -108,9 +108,15 @@
     .dash-card span { font-size: .78rem; color: #8aa; font-weight: 600; }
     .dash-card .dash-sub { margin-top: 2px; font-size: .72rem; color: #aab; font-weight: 400; }
     .dash-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    /* 复购三张卡自成一行，避免在四列网格里右侧留空 */
+    .dash-grid-3 { grid-template-columns: repeat(3, 1fr); }
     .chart-card { background: #fff; border: 1px solid #e5ede7; border-radius: 12px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
     .chart-card h3 { margin: 0 0 10px; font-size: .9rem; color: #234; }
     .chart-card canvas { max-height: 250px; }
+.dash-section-head { display: flex; align-items: center; justify-content: space-between; margin: 22px 0 12px; padding-top: 6px; border-top: 1px dashed #e5ede7; }
+.dash-section-head h3 { margin: 0; font-size: .95rem; color: #234; }
+.dash-range { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem; color: #7a8a85; font-weight: 600; }
+.dash-range select { padding: 4px 8px; border: 1px solid #d7e4db; border-radius: 8px; font-size: .78rem; color: #234; background: #fff; }
     @media (max-width: 900px) { .dash-grid { grid-template-columns: repeat(2, 1fr); } .dash-charts { grid-template-columns: 1fr; } }
 
     /* ===== 面板区（原有样式保留） ===== */
@@ -506,6 +512,38 @@
               <div class="chart-card"><h3>分类产品分布</h3><canvas id="chart-cat" height="120"></canvas></div>
               <div class="chart-card"><h3>批发价区间分布</h3><canvas id="chart-price" height="120"></canvas></div>
               <div class="chart-card"><h3>上架 / 下架状态</h3><canvas id="chart-status" height="120"></canvas></div>
+            </div>
+
+            <!-- 销售概览：数据来自 /api/admin/stats/sales（D1 聚合），与上方商品类图表分开取数，
+                 订单为空时这里只显示「暂无订单数据」，不影响商品图表 -->
+            <div class="dash-section-head">
+              <h3>销售概览</h3>
+              <label class="dash-range">统计周期
+                <select id="dash-sales-days">
+                  <option value="7">近 7 天</option>
+                  <option value="30" selected>近 30 天</option>
+                  <option value="90">近 90 天</option>
+                </select>
+              </label>
+            </div>
+            <div class="dash-grid">
+              <div class="dash-card"><b id="sale-amount">-</b><span id="sale-amount-label">近 30 天销售额（元）</span><div class="dash-sub" id="sale-amount-sub">—</div></div>
+              <div class="dash-card"><b id="sale-orders">-</b><span id="sale-orders-label">近 30 天订单数</span><div class="dash-sub" id="sale-orders-sub">—</div></div>
+              <div class="dash-card"><b id="sale-aov">-</b><span id="sale-aov-label">近 30 天客单价（元）</span><div class="dash-sub" id="sale-aov-sub">—</div></div>
+              <div class="dash-card"><b id="sale-qty">-</b><span id="sale-qty-label">近 30 天售出件数</span><div class="dash-sub" id="sale-qty-sub">—</div></div>
+            </div>
+            <!-- 第二行：复购与客户维度。复购以手机号为客户唯一键，与「客户管理」口径一致 -->
+            <div class="dash-grid dash-grid-3">
+              <div class="dash-card"><b id="sale-repeat-rate">-</b><span id="sale-repeat-rate-label">复购率</span><div class="dash-sub" id="sale-repeat-rate-sub">—</div></div>
+              <div class="dash-card"><b id="sale-repeat-amount">-</b><span id="sale-repeat-amount-label">复购客户销售额占比</span><div class="dash-sub" id="sale-repeat-amount-sub">—</div></div>
+              <div class="dash-card"><b id="sale-customers">-</b><span id="sale-customers-label">下单客户数</span><div class="dash-sub" id="sale-customers-sub">—</div></div>
+            </div>
+            <div class="dash-charts">
+              <div class="chart-card"><h3>销售趋势（日销售额 / 元）</h3><canvas id="chart-sales-trend" height="120"></canvas></div>
+              <div class="chart-card"><h3>订单状态分布（单数）</h3><canvas id="chart-order-status" height="120"></canvas></div>
+              <div class="chart-card"><h3>渠道销售额（元）</h3><canvas id="chart-channel-sales" height="160"></canvas></div>
+              <div class="chart-card"><h3>热销商品 Top 10（销量件数）</h3><canvas id="chart-top-products" height="180"></canvas></div>
+              <div class="chart-card"><h3>品牌销量分布（件数）</h3><canvas id="chart-brand-sales" height="120"></canvas></div>
             </div>
           </div>
 
@@ -950,6 +988,6 @@
   <script src="/qrcode.min.js?v=20261104" defer></script>
   <!-- Chart.js 自托管：外链 CDN 在国内网络常被阻断，加载失败会让看板图表静默空白 -->
   <script src="/chart.umd.min.js?v=20261111" defer></script>
-  <script src="/admin.js?v=20261111" defer></script>
+  <script src="/admin.js?v=20261112b" defer></script>
 </body>
 </html>

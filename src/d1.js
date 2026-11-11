@@ -86,6 +86,17 @@ function addressBinds(order) {
   ];
 }
 
+/* 渠道维度的固定绑定顺序：orders 表 channel / referrer 两列。
+ * 与 addressBinds 同理，INSERT 与 UPSERT 共用一处，避免两处写岔错位。 */
+function channelBinds(order) {
+  const o = order || {};
+  const clip = (v, n) => String(v === undefined || v === null ? '' : v).trim().slice(0, n);
+  return [
+    clip(o.channel, 40),
+    clip(o.referrer, 300),
+  ];
+}
+
 /**
  * 订单 upsert 内核：orders + order_items 全量重写明细行（事务批次）。
  * 返回 { ok, reason } —— reason 取值 ok / no_db / error，调用方据此决定降级还是失败。
@@ -99,8 +110,9 @@ export async function d1UpsertOrder(env, order) {
       env.DB.prepare(`
         INSERT INTO orders (id, customer_name, customer_phone, remark, status, version,
           tracking_no, status_note, total_qty, total_amount, created_at, updated_at,
-          receiver_name, receiver_phone, province, city, district, address, postal_code)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          receiver_name, receiver_phone, province, city, district, address, postal_code,
+          channel, referrer)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           customer_name = excluded.customer_name, customer_phone = excluded.customer_phone,
           remark = excluded.remark, status = excluded.status, version = excluded.version,
@@ -109,7 +121,8 @@ export async function d1UpsertOrder(env, order) {
           updated_at = excluded.updated_at,
           receiver_name = excluded.receiver_name, receiver_phone = excluded.receiver_phone,
           province = excluded.province, city = excluded.city, district = excluded.district,
-          address = excluded.address, postal_code = excluded.postal_code
+          address = excluded.address, postal_code = excluded.postal_code,
+          channel = excluded.channel, referrer = excluded.referrer
       `).bind(
         String(order.id), order.customer_name || '', order.customer_phone || '',
         order.remark || '', order.status || 'pending', Number(order.version || 1),
@@ -117,6 +130,8 @@ export async function d1UpsertOrder(env, order) {
         Number(order.total_qty || 0), Number(order.total_amount || 0),
         order.created_at || nowIso(), order.updated_at || nowIso(),
         ...addressBinds(order),
+        // 渠道维度：状态流转等后台更新也必须原样带回来，否则一次改状态就把来源抹成未标注
+        ...channelBinds(order),
       ),
       env.DB.prepare('DELETE FROM order_items WHERE order_id = ?').bind(String(order.id)),
     ];
@@ -404,8 +419,9 @@ export async function d1InsertOrder(env, order) {
       env.DB.prepare(`
         INSERT INTO orders (id, customer_name, customer_phone, remark, status, version,
           tracking_no, status_note, total_qty, total_amount, created_at, updated_at,
-          receiver_name, receiver_phone, province, city, district, address, postal_code)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          receiver_name, receiver_phone, province, city, district, address, postal_code,
+          channel, referrer)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         String(order.id), String(order.customer_name || '').slice(0, 40),
         String(order.customer_phone || '').slice(0, 20),
@@ -414,6 +430,7 @@ export async function d1InsertOrder(env, order) {
         Number(order.total_qty || 0), Number(order.total_amount || 0),
         order.created_at || nowIso(), order.updated_at || nowIso(),
         ...addressBinds(order),
+        ...channelBinds(order),
       ),
     ];
     items.forEach((it, idx) => {
@@ -641,5 +658,228 @@ export async function d1OrdersByPhone(env, phone, orderId) {
     return { ok: true, orders: rows.map((r) => ({ ...r, items: byOrder.get(r.id) || [] })) };
   } catch (_) {
     return { ok: false, reason: 'error', orders: [] };
+  }
+}
+
+/* ================= 销售统计（后台看板） =================
+ * 设计要点
+ * 1. 全部聚合下推到 SQL：看板每次刷新只读聚合结果，不把订单明细拉到 Worker 里再算，
+ *    避免订单量增长后看板请求随行数线性变慢、D1 读行数费用失控。
+ * 2. 口径统一：销售额只统计未取消订单（status <> 'cancelled'）；
+ *    另给 paid_amount（已支付及之后的 paid/shipped/done），用于区分成交额与实收额。
+ * 3. created_at 存的是 UTC ISO 串，日期分桶必须先 +8 小时换算北京时间，
+ *    否则每天早上 8 点前的订单会被算到前一天。
+ * 4. 表格数据为空时不报错，返回空数组，由前端显式提示「暂无订单数据」，
+ *    避免出现「图表空白但不知是没数据还是算错了」。
+ */
+
+const SALES_DAYS_MIN = 7;
+const SALES_DAYS_MAX = 180;
+
+export async function d1SalesStats(env, days = 30) {
+  if (!env.DB) return { ok: false, reason: 'no_db' };
+  const span = Math.min(SALES_DAYS_MAX, Math.max(SALES_DAYS_MIN, Number(days) || 30));
+  const sinceModifier = `-${span - 1} days`;
+  try {
+    const summarySql = `
+      SELECT
+        COUNT(*) AS orders,
+        SUM(CASE WHEN status <> 'cancelled' THEN 1 ELSE 0 END) AS valid_orders,
+        ROUND(SUM(CASE WHEN status <> 'cancelled' THEN total_amount ELSE 0 END), 2) AS amount,
+        ROUND(SUM(CASE WHEN status IN ('paid','shipped','done') THEN total_amount ELSE 0 END), 2) AS paid_amount,
+        SUM(CASE WHEN status <> 'cancelled' THEN total_qty ELSE 0 END) AS qty,
+        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_orders
+      FROM orders`;
+    const recentSql = `
+      SELECT
+        SUM(CASE WHEN status <> 'cancelled' THEN 1 ELSE 0 END) AS orders,
+        ROUND(SUM(CASE WHEN status <> 'cancelled' THEN total_amount ELSE 0 END), 2) AS amount,
+        SUM(CASE WHEN status <> 'cancelled' THEN total_qty ELSE 0 END) AS qty
+      FROM orders
+      WHERE date(created_at, '+8 hours') >= date('now', '+8 hours', ?)`;
+    const trendSql = `
+      SELECT date(created_at, '+8 hours') AS d,
+             COUNT(*) AS orders,
+             ROUND(SUM(total_amount), 2) AS amount,
+             SUM(total_qty) AS qty
+      FROM orders
+      WHERE status <> 'cancelled'
+        AND date(created_at, '+8 hours') >= date('now', '+8 hours', ?)
+      GROUP BY d ORDER BY d ASC`;
+    const statusSql = `
+      SELECT status, COUNT(*) AS cnt, ROUND(SUM(total_amount), 2) AS amount
+      FROM orders GROUP BY status`;
+    const topProductsSql = `
+      SELECT i.product_id AS id, MAX(i.name) AS name,
+             SUM(i.qty) AS qty, COUNT(DISTINCT i.order_id) AS orders
+      FROM order_items i JOIN orders o ON o.id = i.order_id
+      WHERE o.status <> 'cancelled'
+      GROUP BY i.product_id ORDER BY qty DESC LIMIT 10`;
+    const brandsSql = `
+      SELECT COALESCE(NULLIF(p.brand, ''), '未标注品牌') AS brand,
+             SUM(i.qty) AS qty, COUNT(DISTINCT i.order_id) AS orders
+      FROM order_items i
+      JOIN orders o ON o.id = i.order_id
+      LEFT JOIN products p ON p.id = i.product_id
+      WHERE o.status <> 'cancelled'
+      GROUP BY COALESCE(NULLIF(p.brand, ''), '未标注品牌')
+      ORDER BY qty DESC LIMIT 8`;
+    /* 上期同口径窗口（紧邻的前 span 天）：环比必须与本期同样排除已取消、同样 +8h 分桶，
+     * 否则「本期剔取消、上期不剔」会把环比算成假涨。 */
+    const prevSql = `
+      SELECT COUNT(*) AS orders,
+             ROUND(SUM(total_amount), 2) AS amount,
+             SUM(total_qty) AS qty
+      FROM orders
+      WHERE status <> 'cancelled'
+        AND date(created_at, '+8 hours') >= date('now', '+8 hours', ?)
+        AND date(created_at, '+8 hours') <  date('now', '+8 hours', ?)`;
+    /* 按渠道：channel 为空串即存量订单 / 未采集，归「未标注」，避免老订单从看板消失。 */
+    const channelsSql = `
+      SELECT COALESCE(NULLIF(channel, ''), '未标注') AS channel,
+             COUNT(*) AS orders,
+             ROUND(SUM(total_amount), 2) AS amount,
+             SUM(total_qty) AS qty,
+             COUNT(DISTINCT customer_phone) AS customers
+      FROM orders
+      WHERE status <> 'cancelled'
+        AND date(created_at, '+8 hours') >= date('now', '+8 hours', ?)
+      GROUP BY COALESCE(NULLIF(channel, ''), '未标注')
+      ORDER BY amount DESC, orders DESC LIMIT 10`;
+    /* 复购：以手机号为客户唯一键（姓名会重名、公司名会改），窗口内下单 ≥2 次算复购客户。
+     * 复购率 = 复购客户数 / 窗口内下单客户数；repeat_amount 用于看复购客户贡献的 GMV 占比。 */
+    const repeatSql = `
+      SELECT COUNT(*) AS customers,
+             SUM(CASE WHEN cnt >= 2 THEN 1 ELSE 0 END) AS repeat_customers,
+             SUM(cnt) AS orders,
+             ROUND(SUM(amount), 2) AS amount,
+             ROUND(SUM(CASE WHEN cnt >= 2 THEN amount ELSE 0 END), 2) AS repeat_amount
+      FROM (
+        SELECT customer_phone, COUNT(*) AS cnt, SUM(total_amount) AS amount
+        FROM orders
+        WHERE status <> 'cancelled' AND customer_phone <> ''
+          AND date(created_at, '+8 hours') >= date('now', '+8 hours', ?)
+        GROUP BY customer_phone
+      )`;
+
+    const [summaryRs, recentRs, trendRs, statusRs, topRs, brandRs, prevRs, channelRs, repeatRs] = await Promise.all([
+      env.DB.prepare(summarySql).all(),
+      env.DB.prepare(recentSql).bind(sinceModifier).all(),
+      env.DB.prepare(trendSql).bind(sinceModifier).all(),
+      env.DB.prepare(statusSql).all(),
+      env.DB.prepare(topProductsSql).all(),
+      env.DB.prepare(brandsSql).all(),
+      env.DB.prepare(prevSql).bind(`-${span * 2 - 1} days`, sinceModifier).all(),
+      env.DB.prepare(channelsSql).bind(sinceModifier).all(),
+      env.DB.prepare(repeatSql).bind(sinceModifier).all(),
+    ]);
+
+    const s = (summaryRs.results || [])[0] || {};
+    const r = (recentRs.results || [])[0] || {};
+    const num = (v) => (v === null || v === undefined ? 0 : Number(v));
+    const avg = (amount, count) => (count > 0 ? Math.round((amount / count) * 100) / 100 : 0);
+
+    // 补齐空白天：趋势图缺日会断线/错位，后端一次补齐，前端只负责画
+    const byDate = new Map();
+    for (const row of trendRs.results || []) {
+      byDate.set(String(row.d), { date: String(row.d), orders: num(row.orders), amount: num(row.amount), qty: num(row.qty) });
+    }
+    const trend = [];
+    const todayCn = new Date(Date.now() + 8 * 3600 * 1000);
+    for (let i = span - 1; i >= 0; i -= 1) {
+      const d = new Date(todayCn.getTime() - i * 86400000);
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+      trend.push(byDate.get(key) || { date: key, orders: 0, amount: 0, qty: 0 });
+    }
+
+    const validOrders = num(s.valid_orders);
+    const recentOrders = num(r.orders);
+    return {
+      ok: true,
+      days: span,
+      range: { from: trend[0].date, to: trend[trend.length - 1].date },
+      summary: {
+        orders: num(s.orders),
+        valid_orders: validOrders,
+        cancelled_orders: num(s.cancelled_orders),
+        amount: num(s.amount),
+        paid_amount: num(s.paid_amount),
+        qty: num(s.qty),
+        avg_order_value: avg(num(s.amount), validOrders),
+      },
+      recent: {
+        orders: recentOrders,
+        amount: num(r.amount),
+        qty: num(r.qty),
+        avg_order_value: avg(num(r.amount), recentOrders),
+      },
+      // 环比：本期（近 span 天）对比紧邻的等长上期，pct 为 null 表示上期无数据，前端不得显示成 0%
+      compare: (() => {
+        const p = (prevRs.results || [])[0] || {};
+        const curAmount = num(r.amount);
+        const curOrders = recentOrders;
+        const prevAmount = num(p.amount);
+        const prevOrders = num(p.orders);
+        const pct = (cur, base) => (base > 0 ? Math.round(((cur - base) / base) * 1000) / 10 : null);
+        return {
+          period_days: span,
+          current: { amount: curAmount, orders: curOrders, qty: num(r.qty), avg_order_value: avg(curAmount, curOrders) },
+          previous: { amount: prevAmount, orders: prevOrders, qty: num(p.qty), avg_order_value: avg(prevAmount, prevOrders) },
+          change: {
+            amount_pct: pct(curAmount, prevAmount),
+            orders_pct: pct(curOrders, prevOrders),
+            qty_pct: pct(num(r.qty), num(p.qty)),
+            avg_order_value_pct: pct(avg(curAmount, curOrders), avg(prevAmount, prevOrders)),
+          },
+        };
+      })(),
+      // 渠道维度：amount 已按渠道汇总，customers 为渠道内去重客户数
+      channels: (channelRs.results || []).map((row) => ({
+        channel: String(row.channel),
+        orders: num(row.orders),
+        amount: num(row.amount),
+        qty: num(row.qty),
+        customers: num(row.customers),
+      })),
+      // 复购：repeat_rate / repeat_amount_share 均为百分比数值（如 33.3），无客户时为 0
+      repeat: (() => {
+        const x = (repeatRs.results || [])[0] || {};
+        const customers = num(x.customers);
+        const repeatCustomers = num(x.repeat_customers);
+        const amount = num(x.amount);
+        const repeatAmount = num(x.repeat_amount);
+        const rate = (part, total) => (total > 0 ? Math.round((part / total) * 1000) / 10 : 0);
+        return {
+          customers,
+          repeat_customers: repeatCustomers,
+          repeat_rate: rate(repeatCustomers, customers),
+          orders: num(x.orders),
+          orders_per_customer: customers > 0 ? Math.round((num(x.orders) / customers) * 100) / 100 : 0,
+          amount,
+          repeat_amount: repeatAmount,
+          repeat_amount_share: rate(repeatAmount, amount),
+        };
+      })(),
+      trend,
+      status: (statusRs.results || []).map((row) => ({
+        status: String(row.status),
+        cnt: num(row.cnt),
+        amount: num(row.amount),
+      })),
+      top_products: (topRs.results || []).map((row) => ({
+        id: String(row.id || ''),
+        name: String(row.name || row.id || ''),
+        qty: num(row.qty),
+        orders: num(row.orders),
+      })),
+      brands: (brandRs.results || []).map((row) => ({
+        brand: String(row.brand),
+        qty: num(row.qty),
+        orders: num(row.orders),
+      })),
+      generated_at: new Date().toISOString(),
+    };
+  } catch (_) {
+    return { ok: false, reason: 'error' };
   }
 }
