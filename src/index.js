@@ -981,6 +981,23 @@ async function createOrder(env, order) {
   return { ok: false, reason: 'conflict' };
 }
 
+/* 渠道归一化：前端上报的是「utm_source / referrer 域名归类」后的 slug，
+ * 这里再做一次白名单收敛——下单接口匿名可写，若放行任意字符串，
+ * 渠道统计维度会被刷成一堆垃圾值，看板直接不可读。非法值一律落空串（统计归「未标注」）。
+ * referrer 只收 http(s) 绝对地址，其它（javascript: 等）直接丢弃。 */
+const ORDER_CHANNEL_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/;
+
+function normalizeOrderChannel(v) {
+  const slug = String(v === undefined || v === null ? '' : v).trim().toLowerCase();
+  if (!slug) return '';
+  return ORDER_CHANNEL_RE.test(slug) ? slug : '';
+}
+
+function normalizeOrderReferrer(v) {
+  const raw = String(v === undefined || v === null ? '' : v).trim().slice(0, 300);
+  return /^https?:\/\//i.test(raw) ? raw : '';
+}
+
 function sanitizeOrder(raw) {
   const clip = (v, n) => String(v === undefined || v === null ? '' : v).trim().slice(0, n);
   const name = clip(raw.customer_name, 40);
@@ -1007,7 +1024,13 @@ function sanitizeOrder(raw) {
         image: safeImageUrl(String(it.image || '').slice(0, 300)),
       }))
     : [];
-  return { customer_name: name, customer_phone: phone, remark, ...addr, items };
+  return {
+    customer_name: name, customer_phone: phone, remark,
+    // 渠道维度：渠道只用于统计，不参与任何计价/校验，非法值落空串由统计侧归「未标注」
+    channel: normalizeOrderChannel(raw.channel),
+    referrer: normalizeOrderReferrer(raw.referrer),
+    ...addr, items,
+  };
 }
 
 /**

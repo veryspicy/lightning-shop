@@ -1558,6 +1558,25 @@ const ORDER_STATUS_LABEL = {
 const ORDER_STATUS_COLOR = {
   pending: '#f59e0b', paid: '#0ea5e9', shipped: '#7C4DFF', done: '#059669', cancelled: '#94a3b8',
 };
+// 渠道 slug → 中文名（未收录的 slug 原样展示，避免新来源被吞掉）
+const CHANNEL_LABEL = {
+  direct: '直接访问', wechat: '微信', douyin: '抖音', xiaohongshu: '小红书',
+  weibo: '微博', zhihu: '知乎', baidu: '百度', bing: '必应', google: '谷歌',
+  alibaba: '1688/淘宝', referral: '其他外链',
+};
+
+// 订单详情里的来源渠道文案：老订单（采集上线前）无 channel，明确标注而非显示空白
+function orderChannelText(o) {
+  const slug = (o.channel || '').trim();
+  if (!slug) return '未标注（渠道采集上线前的订单）';
+  const name = CHANNEL_LABEL[slug] || slug;
+  const label = name === slug ? slug : `${name}（${slug}）`;
+  const ref = (o.referrer || '').trim();
+  if (!ref) return label;
+  let host = ref;
+  try { host = new URL(ref).hostname || ref; } catch (_) { /* 非法 URL 原样展示 */ }
+  return `${label} · 来源页 ${host}`;
+}
 let SALES_DAYS = 30;
 let SALES_LOADING = false;
 
@@ -1587,11 +1606,28 @@ async function loadSalesStats(days) {
     renderSalesSection(data);
   } catch (err) {
     toast(err.message, true);
-    ['chart-sales-trend', 'chart-order-status', 'chart-top-products', 'chart-brand-sales']
+    ['chart-sales-trend', 'chart-order-status', 'chart-channel-sales', 'chart-top-products', 'chart-brand-sales']
       .forEach((id) => setChartPlaceholder(id, '销售统计加载失败，请刷新重试'));
   } finally {
     SALES_LOADING = false;
   }
+}
+
+/* 环比文案：上期无数据（pct 为 null）时必须说「上期无数据」，
+ * 不能显示 0%，否则「新开的店」会被误读成「业务零增长」。 */
+function fmtChange(pct, prevText) {
+  const tail = prevText ? `（上期 ${prevText}）` : '';
+  if (pct === null || pct === undefined) return `环比 —${tail || '，上期无数据'}`;
+  const n = Number(pct);
+  const arrow = n > 0 ? '↑' : (n < 0 ? '↓' : '→');
+  return `环比 ${arrow} ${Math.abs(n).toFixed(1)}%${tail}`;
+}
+
+// dash-sub 需要「环比 + 累计」两行，用 innerHTML 分行；内容均为本地格式化后的数字，无外部字符串
+function setSub(id, lines) {
+  const el = $(id);
+  if (!el) return;
+  el.innerHTML = lines.filter(Boolean).map((t) => `<div>${t}</div>`).join('');
 }
 
 function renderSalesSection(d) {
@@ -1599,18 +1635,53 @@ function renderSalesSection(d) {
   const label = `近 ${d.days} 天`;
   const recent = d.recent || {};
   const summary = d.summary || {};
+  const cmp = (d.compare && d.compare.change) || {};
+  const prev = (d.compare && d.compare.previous) || {};
+  const repeat = d.repeat || {};
   $('sale-amount-label').textContent = `${label}销售额（元）`;
   $('sale-orders-label').textContent = `${label}订单数`;
   $('sale-aov-label').textContent = `${label}客单价（元）`;
   $('sale-qty-label').textContent = `${label}售出件数`;
   $('sale-amount').textContent = fmtMoney(recent.amount);
-  $('sale-amount-sub').textContent = `累计成交 ${fmtMoney(summary.amount)} 元｜已收款 ${fmtMoney(summary.paid_amount)} 元`;
+  setSub('sale-amount-sub', [
+    fmtChange(cmp.amount_pct, `${fmtMoney(prev.amount)} 元`),
+    `累计成交 ${fmtMoney(summary.amount)} 元｜已收款 ${fmtMoney(summary.paid_amount)} 元`,
+  ]);
   $('sale-orders').textContent = fmtInt(recent.orders);
-  $('sale-orders-sub').textContent = `累计有效 ${fmtInt(summary.valid_orders)} 单｜取消 ${fmtInt(summary.cancelled_orders)} 单`;
+  setSub('sale-orders-sub', [
+    fmtChange(cmp.orders_pct, `${fmtInt(prev.orders)} 单`),
+    `累计有效 ${fmtInt(summary.valid_orders)} 单｜取消 ${fmtInt(summary.cancelled_orders)} 单`,
+  ]);
   $('sale-aov').textContent = fmtMoney(recent.avg_order_value);
-  $('sale-aov-sub').textContent = `累计客单价 ${fmtMoney(summary.avg_order_value)} 元`;
+  setSub('sale-aov-sub', [
+    fmtChange(cmp.avg_order_value_pct, `${fmtMoney(prev.avg_order_value)} 元`),
+    `累计客单价 ${fmtMoney(summary.avg_order_value)} 元`,
+  ]);
   $('sale-qty').textContent = fmtInt(recent.qty);
-  $('sale-qty-sub').textContent = `累计售出 ${fmtInt(summary.qty)} 件`;
+  setSub('sale-qty-sub', [
+    fmtChange(cmp.qty_pct, `${fmtInt(prev.qty)} 件`),
+    `累计售出 ${fmtInt(summary.qty)} 件`,
+  ]);
+
+  const repeatLabel = `${label}复购率`;
+  const repeatRateEl = $('sale-repeat-rate-label');
+  if (repeatRateEl) repeatRateEl.textContent = repeatLabel;
+  $('sale-repeat-rate').textContent = repeat.customers
+    ? `${Number(repeat.repeat_rate || 0).toFixed(1)}%`
+    : '—';
+  setSub('sale-repeat-rate-sub', [repeat.customers
+    ? `复购客户 ${fmtInt(repeat.repeat_customers)} / 下单客户 ${fmtInt(repeat.customers)}`
+    : `${label}暂无下单客户（复购按手机号归并）`]);
+  $('sale-repeat-amount').textContent = repeat.customers
+    ? `${Number(repeat.repeat_amount_share || 0).toFixed(1)}%`
+    : '—';
+  setSub('sale-repeat-amount-sub', [repeat.customers
+    ? `复购客户成交 ${fmtMoney(repeat.repeat_amount)} / ${fmtMoney(repeat.amount)} 元`
+    : '—']);
+  $('sale-customers').textContent = fmtInt(repeat.customers);
+  setSub('sale-customers-sub', [repeat.customers
+    ? `人均下单 ${Number(repeat.orders_per_customer || 0).toFixed(2)} 次｜合计 ${fmtInt(repeat.orders)} 单`
+    : '—']);
 
   const trend = d.trend || [];
   if (trend.some((t) => Number(t.amount) > 0 || Number(t.orders) > 0)) {
@@ -1641,6 +1712,18 @@ function renderSalesSection(d) {
     );
   } else {
     setChartPlaceholder('chart-top-products', '暂无销量数据');
+  }
+
+  const channels = d.channels || [];
+  if (channels.length) {
+    drawChart(
+      'chart-channel-sales', 'bar',
+      channels.map((c) => String(c.channel)),
+      channels.map((c) => Number(c.amount)),
+      { horizontal: true, unit: ' 元' },
+    );
+  } else {
+    setChartPlaceholder('chart-channel-sales', `${label}暂无成交订单`);
   }
 
   const brands = d.brands || [];
@@ -1866,6 +1949,7 @@ function renderOrderModal(o) {
       ${o.remark ? `<div class="kv" style="grid-column:1/-1"><b>备注</b><span>${escapeHtml(o.remark)}</span></div>` : ''}
       ${o.tracking_no ? `<div class="kv" style="grid-column:1/-1"><b>物流单号</b><span>${escapeHtml(o.tracking_no)}</span></div>` : ''}
       ${o.note ? `<div class="kv" style="grid-column:1/-1"><b>后台备注</b><span>${escapeHtml(o.note)}</span></div>` : ''}
+      <div class="kv" style="grid-column:1/-1"><b>来源渠道</b><span>${escapeHtml(orderChannelText(o))}</span></div>
     </div>
     <h4 style="margin:6px 0 2px">商品明细</h4>
     <table class="ord-items-table">
