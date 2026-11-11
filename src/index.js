@@ -1579,7 +1579,7 @@ async function handleApiImpl(request, env, url) {
   if (path === '/api/auth/me') {
     const user = await authUser(request, env);
     if (!user) return unauthorized();
-    if (method === 'GET') return json({ ok: true, user: await publicUserWithPerms(env, user) });
+    if (method === 'GET') return jsonNoCache({ ok: true, user: await publicUserWithPerms(env, user) });
     if (method === 'PUT') {
       const body = await readJson(request);
       if (!body) return json({ error: 'bad_request' }, 400);
@@ -2738,9 +2738,11 @@ export default {
     const url = new URL(request.url);
 
     // 自定义域名主站化：页面级 GET 请求命中 workers.dev 时 301 到主站域名，
-    // 避免双入口与微信内 workers.dev 访问不稳；API/图片路由不受影响
+    // 避免双入口与微信内 workers.dev 访问不稳；API/图片路由不受影响。
+    // PREVIEW=1（仅预览环境注入）时豁免，保证预览 URL 可独立冒烟。
     const CANONICAL_HOST = 'lightning-shop.gora.dpdns.org';
     if (
+      env.PREVIEW !== '1' &&
       request.method === 'GET' &&
       url.hostname !== CANONICAL_HOST &&
       url.hostname.endsWith('.workers.dev') &&

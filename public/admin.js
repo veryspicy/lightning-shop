@@ -71,6 +71,8 @@ async function logout() {
   }
   sessionStorage.removeItem(TOKEN_KEY);
   currentUser = null;
+  lastPermSync = 0;
+  stopPermWatch();
   $('login-pass').value = '';
   $('login-panel').classList.remove('hidden');
   $('admin-main').classList.add('hidden');
@@ -91,16 +93,91 @@ function renderUserMenu(user) {
   } else {
     brandEl.hidden = true;
   }
-  const menuUsers = $('menu-users');
-  if (menuUsers) menuUsers.hidden = !hasPerm(u, 'users');
-  const menuRoles = $('menu-roles');
-  if (menuRoles) menuRoles.hidden = !hasPerm(u, 'roles');
-  const menuOrders = $('menu-orders');
-  if (menuOrders) menuOrders.hidden = !hasPerm(u, 'orders');
-  const menuCustomers = $('menu-customers');
-  if (menuCustomers) menuCustomers.hidden = !hasPerm(u, 'customers');
-  const menuBrands = $('menu-brands');
-  if (menuBrands) menuBrands.hidden = !hasPerm(u, 'brands');
+  applyMenuPerms(u);
+}
+
+/* ---- 权限上下文自动生效 ---- */
+
+// 菜单权限点：优先取侧栏按钮上的 data-perm，缺省按 tab 名同名权限点判断
+function tabPerm(tab) {
+  const btn = document.querySelector(`#admin-tabs .tab-btn[data-tab="${tab}"]`);
+  return (btn && btn.dataset.perm) || tab;
+}
+
+function canAccessTab(u, tab) {
+  return hasPerm(u, tabPerm(tab));
+}
+
+// 按当前权限重绘侧栏菜单，并回收/回退越权标签页（保存角色后无需手动刷新）
+function applyMenuPerms(u) {
+  document.querySelectorAll('#admin-tabs .tab-btn[data-tab]').forEach((btn) => {
+    btn.hidden = !hasPerm(u, btn.dataset.perm || btn.dataset.tab);
+  });
+  [...openTabs].forEach((t) => { if (!canAccessTab(u, t)) closeTab(t); });
+  const activePanel = document.querySelector('.tab-panel.active');
+  const active = activePanel ? activePanel.id.replace(/^tab-/, '') : '';
+  if (active && !canAccessTab(u, active)) {
+    const first = [...document.querySelectorAll('#admin-tabs .tab-btn[data-tab]')].find((b) => !b.hidden);
+    // 角色一个菜单都没分配时保底留在看板，避免整页空白（接口层仍会 403 拦截）
+    openTab(first ? first.dataset.tab : 'dashboard', !first);
+  }
+}
+
+function permSig(u) {
+  const perms = (u && u.permissions) || [];
+  return `${(u && u.role) || ''}:${perms.slice().sort().join(',')}`;
+}
+
+// 重新拉取 /api/auth/me：后端每次实时按角色表计算权限，故无需重新登录
+async function refreshMe() {
+  let me;
+  try {
+    me = await api('/api/auth/me', { headers: authHeaders() });
+  } catch (err) {
+    if (/登录已失效/.test(err.message)) throw err;
+    return { user: currentUser, changed: false };
+  }
+  const u = me.user || me;
+  const changed = permSig(u) !== permSig(currentUser);
+  renderUserMenu(me);
+  if (changed) {
+    if (hasPerm(u, 'users')) loadUsers();
+    if (hasPerm(u, 'roles')) loadRoles();
+  }
+  return { user: u, changed };
+}
+
+let permWatchTimer = null;
+let lastPermSync = 0;
+
+// 静默同步：定时/切回页面/聚焦时校验，别的账号改了角色权限也能自动生效
+async function syncPermsQuiet() {
+  if (!sessionStorage.getItem(TOKEN_KEY)) return;
+  const main = $('admin-main');
+  if (main && main.classList.contains('hidden')) return;
+  const now = Date.now();
+  if (now - lastPermSync < 5000) return;
+  lastPermSync = now;
+  try {
+    const r = await refreshMe();
+    if (r.changed) toast('权限已更新，菜单已同步');
+  } catch { /* 静默同步失败不打扰用户 */ }
+}
+
+function startPermWatch() {
+  if (permWatchTimer) return;
+  permWatchTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') syncPermsQuiet();
+  }, 60000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') syncPermsQuiet();
+  });
+  window.addEventListener('focus', () => syncPermsQuiet());
+}
+
+function stopPermWatch() {
+  if (permWatchTimer) clearInterval(permWatchTimer);
+  permWatchTimer = null;
 }
 
 function toggleUserDropdown(force) {
@@ -137,7 +214,9 @@ async function load() {
   loadQr();
   loadPrice();
   renderDashboard();
-  openTab('dashboard');
+  const firstAllowed = [...document.querySelectorAll('#admin-tabs .tab-btn[data-tab]')].find((b) => !b.hidden);
+  openTab(firstAllowed ? firstAllowed.dataset.tab : 'dashboard', !firstAllowed);
+  startPermWatch();
 }
 
 async function reload() {
@@ -1022,22 +1101,34 @@ async function saveRole() {
   }
   const isEdit = $('role-modal-title').textContent === '编辑角色';
   try {
+    let data;
     if (isEdit) {
-      await api(`/api/admin/roles/${encodeURIComponent(key)}`, {
+      data = await api(`/api/admin/roles/${encodeURIComponent(key)}`, {
         method: 'PUT',
         headers: authHeaders(),
         body: JSON.stringify({ name, permissions }),
       });
     } else {
-      await api('/api/admin/roles', {
+      data = await api('/api/admin/roles', {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ key, name, permissions }),
       });
     }
-    toast(isEdit ? '角色已保存' : '角色已创建');
+    // 权限已落库：改的若正是当前账号的角色，直接用响应里的角色权限就近刷新菜单。
+    // 不等 /api/auth/me 回包——首屏数据请求并发时会把它挤到后面，菜单会晚好几秒才变。
+    const saved = data && data.role;
+    if (saved && currentUser && saved.key === currentUser.role && Array.isArray(saved.permissions)) {
+      renderUserMenu({ user: Object.assign({}, currentUser, {
+        permissions: saved.permissions,
+        roleName: saved.name || currentUser.roleName,
+      }) });
+    }
+    toast(isEdit ? '角色已保存，权限已即时生效' : '角色已创建，权限已即时生效');
     closeRoleEditor();
-    loadRoles();
+    // 再拉一次 /api/auth/me 做权威校正（别的会话改了同一角色时以服务端为准），并按新权限重载角色列表
+    await refreshMe();
+    if (hasPerm(currentUser, 'roles')) loadRoles();
   } catch (err) {
     toast(err.message, true);
   }
@@ -1048,7 +1139,8 @@ async function deleteRole(key) {
   try {
     await api(`/api/admin/roles/${encodeURIComponent(key)}`, { method: 'DELETE', headers: authHeaders() });
     toast('角色已删除');
-    loadRoles();
+    await refreshMe();
+    if (hasPerm(currentUser, 'roles')) loadRoles();
   } catch (err) {
     toast(err.message, true);
   }
@@ -1329,8 +1421,12 @@ function closeTab(tab) {
   }
 }
 
-function openTab(tab) {
+function openTab(tab, force) {
   if (!MENU_TITLES[tab]) return;
+  if (!force && currentUser && !canAccessTab(currentUser, tab)) {
+    if (tab !== 'dashboard') toast('当前角色无此菜单权限', true);
+    return;
+  }
   document.querySelectorAll('#admin-tabs .tab-btn').forEach((b) => {
     const active = b.dataset.tab === tab;
     b.classList.toggle('active', active);
@@ -1358,9 +1454,23 @@ $('admin-tabs').addEventListener('click', (e) => {
 const CHART_COLORS = ['#059669', '#7C4DFF', '#f59e0b', '#0ea5e9', '#ef4444', '#14b8a6', '#8b5cf6', '#f97316', '#64748b'];
 
 function drawChart(id, type, labels, data) {
-  if (typeof Chart === 'undefined') return;
   const canvas = $(id);
   if (!canvas) return;
+  // 图表库缺失必须出可见提示：此前直接 return 会让看板图表静默空白，无法区分「无数据」与「库没加载」
+  if (typeof Chart === 'undefined') {
+    const card = canvas.parentElement;
+    if (card && !card.querySelector('.chart-fallback')) {
+      const tip = document.createElement('p');
+      tip.className = 'chart-fallback';
+      tip.textContent = '图表组件加载失败，请刷新页面重试';
+      tip.style.cssText = 'margin:8px 0 0;font-size:.82rem;color:#b45309;text-align:center';
+      card.appendChild(tip);
+    }
+    console.error('[dashboard] Chart.js 未加载，图表无法渲染');
+    return;
+  }
+  const staleTip = canvas.parentElement && canvas.parentElement.querySelector('.chart-fallback');
+  if (staleTip) staleTip.remove();
   if (canvas._chart) canvas._chart.destroy();
   const isPie = type === 'pie' || type === 'doughnut';
   canvas._chart = new Chart(canvas, {
