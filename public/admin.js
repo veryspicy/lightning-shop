@@ -1453,9 +1453,41 @@ $('admin-tabs').addEventListener('click', (e) => {
 /* ---- 看板 ---- */
 const CHART_COLORS = ['#059669', '#7C4DFF', '#f59e0b', '#0ea5e9', '#ef4444', '#14b8a6', '#8b5cf6', '#f97316', '#64748b'];
 
-function drawChart(id, type, labels, data) {
+/* 图表空态：数据为空时不能留一块白 canvas，必须显式写「暂无数据」，
+   否则和「库没加载」无法区分（历史踩坑：外链 Chart.js 被墙导致图表静默空白） */
+function setChartPlaceholder(id, text) {
+  const canvas = $(id);
+  if (!canvas || !canvas.parentElement) return;
+  const card = canvas.parentElement;
+  let tip = card.querySelector('.chart-placeholder');
+  if (!tip) {
+    tip = document.createElement('p');
+    tip.className = 'chart-placeholder';
+    tip.style.cssText = 'margin:8px 0 0;font-size:.82rem;color:#94a3b8;text-align:center';
+    card.appendChild(tip);
+  }
+  tip.textContent = text;
+  canvas.style.display = 'none';
+  if (canvas._chart) { canvas._chart.destroy(); canvas._chart = null; }
+}
+
+function clearChartPlaceholder(canvas) {
+  const card = canvas && canvas.parentElement;
+  if (!card) return;
+  const tip = card.querySelector('.chart-placeholder');
+  if (tip) tip.remove();
+  canvas.style.display = '';
+}
+
+function fmtNum(v) {
+  const n = Number(v || 0);
+  return n.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+}
+
+function drawChart(id, type, labels, data, opts = {}) {
   const canvas = $(id);
   if (!canvas) return;
+  clearChartPlaceholder(canvas);
   // 图表库缺失必须出可见提示：此前直接 return 会让看板图表静默空白，无法区分「无数据」与「库没加载」
   if (typeof Chart === 'undefined') {
     const card = canvas.parentElement;
@@ -1473,30 +1505,155 @@ function drawChart(id, type, labels, data) {
   if (staleTip) staleTip.remove();
   if (canvas._chart) canvas._chart.destroy();
   const isPie = type === 'pie' || type === 'doughnut';
+  const isLine = type === 'line';
+  const horizontal = !!opts.horizontal;
+  const unit = opts.unit || '';
+  const palette = (opts.colors && opts.colors.length ? opts.colors : CHART_COLORS);
+  const dataset = {
+    data,
+    backgroundColor: isPie ? palette.slice(0, labels.length) : (isLine ? 'rgba(5,150,105,.12)' : palette[0]),
+    borderColor: isPie ? '#fff' : palette[0],
+    borderWidth: isPie ? 2 : (isLine ? 2 : 1),
+    borderRadius: isPie || isLine ? 0 : 6,
+    tension: isLine ? 0.3 : 0,
+    pointRadius: isLine ? 2 : 0,
+    fill: isLine,
+  };
   canvas._chart = new Chart(canvas, {
     type,
     data: {
       labels,
-      datasets: [{
-        data,
-        backgroundColor: isPie ? CHART_COLORS.slice(0, labels.length) : CHART_COLORS[0],
-        borderColor: '#fff',
-        borderWidth: isPie ? 2 : 1,
-        borderRadius: 6,
-      }],
+      datasets: [dataset],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      indexAxis: horizontal ? 'y' : 'x',
       plugins: {
         legend: isPie ? { position: 'bottom', labels: { boxWidth: 12, padding: 12, font: { size: 12 } } } : { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const raw = isPie ? ctx.parsed : (horizontal ? ctx.parsed.x : ctx.parsed.y);
+              return `${ctx.label ? ctx.label + '：' : ''}${fmtNum(raw)}${unit}`;
+            },
+          },
+        },
       },
-      scales: isPie ? {} : {
+      scales: isPie ? {} : (horizontal ? {
+        x: { beginAtZero: true, ticks: { precision: 0, font: { size: 11 } }, grid: { color: '#eef3ef' } },
+        y: { ticks: { font: { size: 11 } }, grid: { display: false } },
+      } : {
         x: { ticks: { maxRotation: 45, font: { size: 11 } }, grid: { display: false } },
         y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: '#eef3ef' } },
-      },
+      }),
     },
   });
+}
+
+/* ---- 销售统计（数据源 /api/admin/stats/sales，聚合在 D1 内完成） ---- */
+const ORDER_STATUS_LABEL = {
+  pending: '待确认支付', paid: '已支付待发货', shipped: '已发货', done: '已完成', cancelled: '已取消',
+};
+const ORDER_STATUS_COLOR = {
+  pending: '#f59e0b', paid: '#0ea5e9', shipped: '#7C4DFF', done: '#059669', cancelled: '#94a3b8',
+};
+let SALES_DAYS = 30;
+let SALES_LOADING = false;
+
+function fmtMoney(v) {
+  return Number(v || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fmtInt(v) {
+  return Number(v || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+}
+
+function bindSalesRange() {
+  const sel = $('dash-sales-days');
+  if (!sel || sel._bound) return;
+  sel._bound = true;
+  sel.value = String(SALES_DAYS);
+  sel.addEventListener('change', () => loadSalesStats(Number(sel.value)));
+}
+
+async function loadSalesStats(days) {
+  const span = Math.min(180, Math.max(7, Number(days) || SALES_DAYS || 30));
+  SALES_DAYS = span;
+  if (SALES_LOADING) return;
+  SALES_LOADING = true;
+  try {
+    const data = await api(`${API}/admin/stats/sales?days=${span}`, { headers: authHeaders() });
+    renderSalesSection(data);
+  } catch (err) {
+    toast(err.message, true);
+    ['chart-sales-trend', 'chart-order-status', 'chart-top-products', 'chart-brand-sales']
+      .forEach((id) => setChartPlaceholder(id, '销售统计加载失败，请刷新重试'));
+  } finally {
+    SALES_LOADING = false;
+  }
+}
+
+function renderSalesSection(d) {
+  if (!d || !d.summary) return;
+  const label = `近 ${d.days} 天`;
+  const recent = d.recent || {};
+  const summary = d.summary || {};
+  $('sale-amount-label').textContent = `${label}销售额（元）`;
+  $('sale-orders-label').textContent = `${label}订单数`;
+  $('sale-aov-label').textContent = `${label}客单价（元）`;
+  $('sale-qty-label').textContent = `${label}售出件数`;
+  $('sale-amount').textContent = fmtMoney(recent.amount);
+  $('sale-amount-sub').textContent = `累计成交 ${fmtMoney(summary.amount)} 元｜已收款 ${fmtMoney(summary.paid_amount)} 元`;
+  $('sale-orders').textContent = fmtInt(recent.orders);
+  $('sale-orders-sub').textContent = `累计有效 ${fmtInt(summary.valid_orders)} 单｜取消 ${fmtInt(summary.cancelled_orders)} 单`;
+  $('sale-aov').textContent = fmtMoney(recent.avg_order_value);
+  $('sale-aov-sub').textContent = `累计客单价 ${fmtMoney(summary.avg_order_value)} 元`;
+  $('sale-qty').textContent = fmtInt(recent.qty);
+  $('sale-qty-sub').textContent = `累计售出 ${fmtInt(summary.qty)} 件`;
+
+  const trend = d.trend || [];
+  if (trend.some((t) => Number(t.amount) > 0 || Number(t.orders) > 0)) {
+    drawChart('chart-sales-trend', 'line', trend.map((t) => String(t.date).slice(5)), trend.map((t) => Number(t.amount)), { unit: ' 元' });
+  } else {
+    setChartPlaceholder('chart-sales-trend', `${label}暂无成交订单`);
+  }
+
+  const status = d.status || [];
+  if (status.length) {
+    drawChart(
+      'chart-order-status', 'doughnut',
+      status.map((s) => ORDER_STATUS_LABEL[s.status] || s.status),
+      status.map((s) => Number(s.cnt)),
+      { colors: status.map((s) => ORDER_STATUS_COLOR[s.status] || '#64748b'), unit: ' 单' },
+    );
+  } else {
+    setChartPlaceholder('chart-order-status', '暂无订单数据');
+  }
+
+  const top = d.top_products || [];
+  if (top.length) {
+    drawChart(
+      'chart-top-products', 'bar',
+      top.map((p) => (String(p.name).length > 14 ? `${String(p.name).slice(0, 14)}…` : String(p.name))),
+      top.map((p) => Number(p.qty)),
+      { horizontal: true, unit: ' 件' },
+    );
+  } else {
+    setChartPlaceholder('chart-top-products', '暂无销量数据');
+  }
+
+  const brands = d.brands || [];
+  if (brands.length) {
+    drawChart(
+      'chart-brand-sales', 'doughnut',
+      brands.map((b) => String(b.brand)),
+      brands.map((b) => Number(b.qty)),
+      { unit: ' 件' },
+    );
+  } else {
+    setChartPlaceholder('chart-brand-sales', '暂无品牌销量数据');
+  }
 }
 
 function renderDashboard() {
@@ -1526,6 +1683,8 @@ function renderDashboard() {
   drawChart('chart-cat', 'bar', catEntries.map((e) => e[0]), catEntries.map((e) => e[1]));
   drawChart('chart-price', 'doughnut', Object.keys(priceBands), Object.values(priceBands));
   drawChart('chart-status', 'pie', ['上架', '下架'], [onShelf, products.length - onShelf]);
+  bindSalesRange();
+  loadSalesStats();
 }
 
 /* 初始化：有 token 直接尝试进入 */

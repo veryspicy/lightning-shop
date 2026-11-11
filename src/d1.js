@@ -643,3 +643,139 @@ export async function d1OrdersByPhone(env, phone, orderId) {
     return { ok: false, reason: 'error', orders: [] };
   }
 }
+
+/* ================= 销售统计（后台看板） =================
+ * 设计要点
+ * 1. 全部聚合下推到 SQL：看板每次刷新只读聚合结果，不把订单明细拉到 Worker 里再算，
+ *    避免订单量增长后看板请求随行数线性变慢、D1 读行数费用失控。
+ * 2. 口径统一：销售额只统计未取消订单（status <> 'cancelled'）；
+ *    另给 paid_amount（已支付及之后的 paid/shipped/done），用于区分成交额与实收额。
+ * 3. created_at 存的是 UTC ISO 串，日期分桶必须先 +8 小时换算北京时间，
+ *    否则每天早上 8 点前的订单会被算到前一天。
+ * 4. 表格数据为空时不报错，返回空数组，由前端显式提示「暂无订单数据」，
+ *    避免出现「图表空白但不知是没数据还是算错了」。
+ */
+
+const SALES_DAYS_MIN = 7;
+const SALES_DAYS_MAX = 180;
+
+export async function d1SalesStats(env, days = 30) {
+  if (!env.DB) return { ok: false, reason: 'no_db' };
+  const span = Math.min(SALES_DAYS_MAX, Math.max(SALES_DAYS_MIN, Number(days) || 30));
+  const sinceModifier = `-${span - 1} days`;
+  try {
+    const summarySql = `
+      SELECT
+        COUNT(*) AS orders,
+        SUM(CASE WHEN status <> 'cancelled' THEN 1 ELSE 0 END) AS valid_orders,
+        ROUND(SUM(CASE WHEN status <> 'cancelled' THEN total_amount ELSE 0 END), 2) AS amount,
+        ROUND(SUM(CASE WHEN status IN ('paid','shipped','done') THEN total_amount ELSE 0 END), 2) AS paid_amount,
+        SUM(CASE WHEN status <> 'cancelled' THEN total_qty ELSE 0 END) AS qty,
+        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_orders
+      FROM orders`;
+    const recentSql = `
+      SELECT
+        SUM(CASE WHEN status <> 'cancelled' THEN 1 ELSE 0 END) AS orders,
+        ROUND(SUM(CASE WHEN status <> 'cancelled' THEN total_amount ELSE 0 END), 2) AS amount,
+        SUM(CASE WHEN status <> 'cancelled' THEN total_qty ELSE 0 END) AS qty
+      FROM orders
+      WHERE date(created_at, '+8 hours') >= date('now', '+8 hours', ?)`;
+    const trendSql = `
+      SELECT date(created_at, '+8 hours') AS d,
+             COUNT(*) AS orders,
+             ROUND(SUM(total_amount), 2) AS amount,
+             SUM(total_qty) AS qty
+      FROM orders
+      WHERE status <> 'cancelled'
+        AND date(created_at, '+8 hours') >= date('now', '+8 hours', ?)
+      GROUP BY d ORDER BY d ASC`;
+    const statusSql = `
+      SELECT status, COUNT(*) AS cnt, ROUND(SUM(total_amount), 2) AS amount
+      FROM orders GROUP BY status`;
+    const topProductsSql = `
+      SELECT i.product_id AS id, MAX(i.name) AS name,
+             SUM(i.qty) AS qty, COUNT(DISTINCT i.order_id) AS orders
+      FROM order_items i JOIN orders o ON o.id = i.order_id
+      WHERE o.status <> 'cancelled'
+      GROUP BY i.product_id ORDER BY qty DESC LIMIT 10`;
+    const brandsSql = `
+      SELECT COALESCE(NULLIF(p.brand, ''), '未标注品牌') AS brand,
+             SUM(i.qty) AS qty, COUNT(DISTINCT i.order_id) AS orders
+      FROM order_items i
+      JOIN orders o ON o.id = i.order_id
+      LEFT JOIN products p ON p.id = i.product_id
+      WHERE o.status <> 'cancelled'
+      GROUP BY COALESCE(NULLIF(p.brand, ''), '未标注品牌')
+      ORDER BY qty DESC LIMIT 8`;
+
+    const [summaryRs, recentRs, trendRs, statusRs, topRs, brandRs] = await Promise.all([
+      env.DB.prepare(summarySql).all(),
+      env.DB.prepare(recentSql).bind(sinceModifier).all(),
+      env.DB.prepare(trendSql).bind(sinceModifier).all(),
+      env.DB.prepare(statusSql).all(),
+      env.DB.prepare(topProductsSql).all(),
+      env.DB.prepare(brandsSql).all(),
+    ]);
+
+    const s = (summaryRs.results || [])[0] || {};
+    const r = (recentRs.results || [])[0] || {};
+    const num = (v) => (v === null || v === undefined ? 0 : Number(v));
+    const avg = (amount, count) => (count > 0 ? Math.round((amount / count) * 100) / 100 : 0);
+
+    // 补齐空白天：趋势图缺日会断线/错位，后端一次补齐，前端只负责画
+    const byDate = new Map();
+    for (const row of trendRs.results || []) {
+      byDate.set(String(row.d), { date: String(row.d), orders: num(row.orders), amount: num(row.amount), qty: num(row.qty) });
+    }
+    const trend = [];
+    const todayCn = new Date(Date.now() + 8 * 3600 * 1000);
+    for (let i = span - 1; i >= 0; i -= 1) {
+      const d = new Date(todayCn.getTime() - i * 86400000);
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+      trend.push(byDate.get(key) || { date: key, orders: 0, amount: 0, qty: 0 });
+    }
+
+    const validOrders = num(s.valid_orders);
+    const recentOrders = num(r.orders);
+    return {
+      ok: true,
+      days: span,
+      range: { from: trend[0].date, to: trend[trend.length - 1].date },
+      summary: {
+        orders: num(s.orders),
+        valid_orders: validOrders,
+        cancelled_orders: num(s.cancelled_orders),
+        amount: num(s.amount),
+        paid_amount: num(s.paid_amount),
+        qty: num(s.qty),
+        avg_order_value: avg(num(s.amount), validOrders),
+      },
+      recent: {
+        orders: recentOrders,
+        amount: num(r.amount),
+        qty: num(r.qty),
+        avg_order_value: avg(num(r.amount), recentOrders),
+      },
+      trend,
+      status: (statusRs.results || []).map((row) => ({
+        status: String(row.status),
+        cnt: num(row.cnt),
+        amount: num(row.amount),
+      })),
+      top_products: (topRs.results || []).map((row) => ({
+        id: String(row.id || ''),
+        name: String(row.name || row.id || ''),
+        qty: num(row.qty),
+        orders: num(row.orders),
+      })),
+      brands: (brandRs.results || []).map((row) => ({
+        brand: String(row.brand),
+        qty: num(row.qty),
+        orders: num(row.orders),
+      })),
+      generated_at: new Date().toISOString(),
+    };
+  } catch (_) {
+    return { ok: false, reason: 'error' };
+  }
+}

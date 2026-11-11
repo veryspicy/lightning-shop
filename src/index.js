@@ -54,6 +54,7 @@ import {
   d1ConsumeCode,
   d1PurgeCodes,
   d1OrdersByPhone,
+  d1SalesStats,
   migrateBatch,
   verifyConsistency,
 } from './d1.js';
@@ -2299,6 +2300,21 @@ async function handleApiImpl(request, env, url) {
       return jsonNoCache({ ok: true, ...r });
     }
     return notFound();
+  }
+
+  /* ---- 后台：看板销售统计 ---- */
+  // 聚合全部在 D1 内完成（见 d1SalesStats），这里只做鉴权与参数收敛。
+  // 权限沿用 dashboard 菜单权限：能看到看板即可看汇总，避免供应商角色拿到订单明细。
+  if (path === '/api/admin/stats/sales' && method === 'GET') {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!await can(env, user, 'dashboard')) return forbidden();
+    const days = Number(url.searchParams.get('days') || 30);
+    const stats = await d1SalesStats(env, days);
+    if (!stats.ok) {
+      return json({ error: 'stats_unavailable', message: stats.reason === 'no_db' ? '数据库未绑定' : '统计查询失败' }, 503);
+    }
+    return jsonNoCache(stats);
   }
 
   /* ---- 后台：订单 ---- */
