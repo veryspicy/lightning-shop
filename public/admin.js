@@ -1454,9 +1454,23 @@ $('admin-tabs').addEventListener('click', (e) => {
 const CHART_COLORS = ['#059669', '#7C4DFF', '#f59e0b', '#0ea5e9', '#ef4444', '#14b8a6', '#8b5cf6', '#f97316', '#64748b'];
 
 function drawChart(id, type, labels, data) {
-  if (typeof Chart === 'undefined') return;
   const canvas = $(id);
   if (!canvas) return;
+  // 图表库缺失必须出可见提示：此前直接 return 会让看板图表静默空白，无法区分「无数据」与「库没加载」
+  if (typeof Chart === 'undefined') {
+    const card = canvas.parentElement;
+    if (card && !card.querySelector('.chart-fallback')) {
+      const tip = document.createElement('p');
+      tip.className = 'chart-fallback';
+      tip.textContent = '图表组件加载失败，请刷新页面重试';
+      tip.style.cssText = 'margin:8px 0 0;font-size:.82rem;color:#b45309;text-align:center';
+      card.appendChild(tip);
+    }
+    console.error('[dashboard] Chart.js 未加载，图表无法渲染');
+    return;
+  }
+  const staleTip = canvas.parentElement && canvas.parentElement.querySelector('.chart-fallback');
+  if (staleTip) staleTip.remove();
   if (canvas._chart) canvas._chart.destroy();
   const isPie = type === 'pie' || type === 'doughnut';
   canvas._chart = new Chart(canvas, {
