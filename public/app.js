@@ -36,6 +36,63 @@ function escapeHtml(s) {
   }[c]));
 }
 
+/* ---------------- 渠道采集（后台看板「按渠道统计」的数据源） ----------------
+ * 判定顺序：URL 参数 utm_source → channel → src → from，其次按 referrer 域名归类，
+ * 都没有视为 direct。只在「首次落地」时判定一次并存入 sessionStorage：
+ * 站内跳转后 referrer 会变成自家域名，若每次都重算，真实来源会被覆盖成 direct，
+ * 渠道统计就失去意义。判定结果只做来源标识，不涉及任何用户身份信息。 */
+const CHANNEL_KEY = 'ls_channel_v1';
+// 已知来源的域名特征 → 统一 slug（小写、只留 [a-z0-9_-]，与后端白名单一致）
+const CHANNEL_RULES = [
+  [/weixin|wechat|wx\.qq/i, 'wechat'],
+  [/douyin|iesdouyin|tiktok/i, 'douyin'],
+  [/xiaohongshu|xhslink/i, 'xiaohongshu'],
+  [/weibo/i, 'weibo'],
+  [/zhihu/i, 'zhihu'],
+  [/baidu/i, 'baidu'],
+  [/bing/i, 'bing'],
+  [/google/i, 'google'],
+  [/1688|taobao|tmall/i, 'alibaba'],
+];
+
+function slugChannel(v) {
+  return String(v ?? '').trim().toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+}
+
+function detectChannel() {
+  try {
+    const q = new URLSearchParams(location.search);
+    const tagged = slugChannel(q.get('utm_source') || q.get('channel') || q.get('src') || q.get('from'));
+    // 中文/纯符号的营销参数 slug 化后为空，退回 referrer 判定，避免整批订单都算「未标注」
+    if (tagged) return tagged;
+    const ref = document.referrer || '';
+    if (!/^https?:\/\//i.test(ref)) return 'direct';
+    const selfHost = location.hostname.replace(/^www\./, '');
+    let host = '';
+    try { host = new URL(ref).hostname.replace(/^www\./, ''); } catch (_) { return 'referral'; }
+    if (!host || host === selfHost) return 'direct';
+    for (const [re, name] of CHANNEL_RULES) if (re.test(ref)) return name;
+    return slugChannel(host) || 'referral';
+  } catch (_) {
+    return 'direct';
+  }
+}
+
+function channelOf() {
+  let ch = '';
+  try { ch = sessionStorage.getItem(CHANNEL_KEY) || ''; } catch (_) { /* 隐私模式下不可用，按本次判定 */ }
+  if (ch) return ch;
+  ch = detectChannel();
+  try { sessionStorage.setItem(CHANNEL_KEY, ch); } catch (_) { /* 存不下就算了，不影响下单 */ }
+  return ch;
+}
+
+// 首次落地即采集：下单页可能由站内跳转进来，此时 referrer 已经失效
+channelOf();
+
 /* 图片地址白名单：站内 /img/{安全文件名} 或 http(s) 绝对地址，其余一律丢弃。
    订单明细/商品图来自外部输入（匿名下单、供应商上传），直接拼进 src 会形成存储型 XSS。 */
 function safeImgUrl(u) {
@@ -1238,6 +1295,9 @@ async function submitOrder() {
         district,
         address,
         postal_code: postalCode,
+        // 渠道只作为统计维度上报，服务端会做白名单归一化；非法值不会影响下单
+        channel: channelOf(),
+        referrer: /^https?:\/\//i.test(document.referrer || '') ? document.referrer.slice(0, 300) : '',
         items: cart,
       }),
     });
