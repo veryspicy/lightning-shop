@@ -2676,11 +2676,13 @@ async function handleApiImpl(request, env, url) {
 const CSP_POLICY = [
   "default-src 'self'",
   // challenges.cloudflare.com 仅为可选的人机校验（Turnstile）预留：未配置 TURNSTILE_SITE_KEY 时前端不会加载该脚本
-  "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
+  // static.cloudflareinsights.com 为 Cloudflare Web Analytics 的 beacon 脚本来源：不放行则被测站自身 CSP 会把 beacon 拦掉。
+  "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://static.cloudflareinsights.com",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self' https://challenges.cloudflare.com",
+  // beacon 上报：beacon.min.js 硬编码 https://cloudflareinsights.com/cdn-cgi/rum 作为上报端点，仅放行 static 域会被 CSP 拦截。
+  "connect-src 'self' https://challenges.cloudflare.com https://static.cloudflareinsights.com https://cloudflareinsights.com",
   "form-action 'self'",
   "frame-src https://challenges.cloudflare.com",
   "frame-ancestors 'none'",
