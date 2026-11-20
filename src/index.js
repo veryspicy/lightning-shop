@@ -2701,8 +2701,7 @@ async function handleApiImpl(request, env, url) {
 const CSP_POLICY = [
   "default-src 'self'",
   // challenges.cloudflare.com 仅为可选的人机校验（Turnstile）预留：未配置 TURNSTILE_SITE_KEY 时前端不会加载该脚本
-  // static.cloudflareinsights.com 为 Cloudflare Web Analytics 的 beacon 脚本来源：
-  //   不在此放行时，Dashboard 侧 CWA 自动注入 / 手动 snippet 都会被本站自身 CSP 拦掉，看板永远无数据。
+  // static.cloudflareinsights.com 为 Cloudflare Web Analytics 的 beacon 脚本来源：不放行则被测站自身 CSP 会把 beacon 拦掉。
   "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://static.cloudflareinsights.com",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
