@@ -90,6 +90,47 @@ function channelOf() {
   return ch;
 }
 
+/* ---------------- 访问统计上报（后台看板「流量」数据源） ----------------
+ * 首屏 HTML 请求已由服务端记账；站内是 hash 路由（如 #/p/123），切换页面不产生新请求，
+ * 所以站内浏览、加购、询价、搜索、下单都由这里用 sendBeacon 补报（异步发送，不阻塞交互）。
+ * 访客/会话标识放在 HttpOnly cookie 里，由浏览器自动携带；这里不读、不存任何身份信息，
+ * 也不上报 IP / UA —— 设备、地域、IP 口径全部由服务端按请求头还原。 */
+let trackEntryAt = Date.now();
+let trackLeaving = false;
+function track(kind, extra) {
+  try {
+    const body = JSON.stringify(Object.assign({
+      kind,
+      path: location.hash || '/',
+      channel: channelOf(),
+      t: Date.now(),
+    }, extra || {}));
+    if (navigator.sendBeacon) {
+      const blob = new Blob([body], { type: 'application/json' });
+      if (navigator.sendBeacon('/api/track', blob)) return;
+    }
+    fetch('/api/track', {
+      method: 'POST',
+      body,
+      headers: { 'Content-Type': 'application/json' },
+      keepalive: true,
+    }).catch(() => {});
+  } catch (_) { /* 统计失败一律静默：绝不能影响浏览与下单 */ }
+}
+
+// 站内页面切换：hash 变化即一次站内 PV（首屏由服务端记账，这里不重复报）
+window.addEventListener('hashchange', () => {
+  trackEntryAt = Date.now();
+  track('view');
+});
+
+// 停留时长：离开页面时补一次，服务端只续会话时长、不落事件行
+window.addEventListener('pagehide', () => {
+  if (trackLeaving) return;
+  trackLeaving = true;
+  track('leave', { durationMs: Date.now() - trackEntryAt });
+});
+
 // 首次落地即采集：下单页可能由站内跳转进来，此时 referrer 已经失效
 channelOf();
 
@@ -550,9 +591,15 @@ bindChipList(brandTabs, '.chip[data-brand]', (btn) => {
 }, 'brand');
 
 let searchTimer = null;
+let searchTrackTimer = null;
 searchInput.addEventListener('input', () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(reload, 300);
+  /* 搜索事件只在停手 1 秒、且关键词非空时报一次，避免逐字符刷爆上报额度 */
+  clearTimeout(searchTrackTimer);
+  searchTrackTimer = setTimeout(() => {
+    if (searchInput.value.trim()) track('search');
+  }, 1000);
 });
 
 /* 窗口尺寸变化时重新计算单行折叠（防抖） */
@@ -1039,6 +1086,7 @@ function addToCart(p, qty) {
   if (idx >= 0) cart[idx].qty = (parseInt(cart[idx].qty, 10) || 0) + n;
   else cart.push({ id: p.id, name: p.name, spec: p.spec, price: p.price, base_price: p.price, retail: p.retail_price, moq: p.moq, brand: p.brand, image: p.image, qty: n });
   setCart(cart);
+  track('add_cart');
   toastTip('已加入购物车');
 }
 function cartEstimate(cart) {
@@ -1315,6 +1363,7 @@ async function submitOrder() {
     /* 下单即落一份收据快照并立刻弹出，替代「只记订单号」的留存方式 */
     const receipt = buildReceipt(data.order, phone);
     saveReceiptSnapshot(receipt);
+    track('order');
     toastTip(`下单成功：${data.order.id}`);
     openReceipt(receipt);
     setTimeout(() => { location.hash = '#/orders'; }, 600);
@@ -2162,6 +2211,7 @@ document.addEventListener('click', (e) => {
     body.hidden = !body.hidden;
     btn.setAttribute('aria-expanded', String(!body.hidden));
   } else if (action === 'open-contact') {
+    track('inquiry');
     const contactBtn = document.getElementById('contact-open');
     if (contactBtn) contactBtn.click();
   } else if (action === 'copy-order') {

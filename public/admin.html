@@ -545,6 +545,56 @@
               <div class="chart-card"><h3>热销商品 Top 10（销量件数）</h3><canvas id="chart-top-products" height="180"></canvas></div>
               <div class="chart-card"><h3>品牌销量分布（件数）</h3><canvas id="chart-brand-sales" height="120"></canvas></div>
             </div>
+
+            <!-- 流量概览：数据来自 /api/admin/stats/traffic（D1 聚合，爬虫已剔除）。
+                 全部基于 Workers Free + D1 Free 额度，不开启任何 Cloudflare 付费项（无 Bot Management、
+                 无 Durable Object、无付费分析产品），埋点写失败静默降级，绝不影响页面与下单。 -->
+            <div class="dash-section-head">
+              <h3>流量概览</h3>
+              <label class="dash-range">统计周期
+                <select id="dash-traffic-days">
+                  <option value="7">近 7 天</option>
+                  <option value="30" selected>近 30 天</option>
+                  <option value="90">近 90 天</option>
+                </select>
+              </label>
+            </div>
+            <div class="dash-grid">
+              <div class="dash-card"><b id="traffic-pv">-</b><span id="traffic-pv-label">浏览量 PV</span><div class="dash-sub" id="traffic-pv-sub">—</div></div>
+              <div class="dash-card"><b id="traffic-uv">-</b><span id="traffic-uv-label">访客数 UV</span><div class="dash-sub" id="traffic-uv-sub">—</div></div>
+              <div class="dash-card"><b id="traffic-ip">-</b><span id="traffic-ip-label">独立 IP</span><div class="dash-sub" id="traffic-ip-sub">—</div></div>
+              <div class="dash-card"><b id="traffic-sessions">-</b><span id="traffic-sessions-label">会话数</span><div class="dash-sub" id="traffic-sessions-sub">—</div></div>
+              <div class="dash-card"><b id="traffic-bounce">-</b><span id="traffic-bounce-label">跳出率</span><div class="dash-sub" id="traffic-bounce-sub">—</div></div>
+              <div class="dash-card"><b id="traffic-duration">-</b><span id="traffic-duration-label">平均停留时长</span><div class="dash-sub" id="traffic-duration-sub">—</div></div>
+            </div>
+            <div class="dash-grid">
+              <div class="dash-card"><b id="traffic-funnel-home">-</b><span id="traffic-funnel-home-label">首页会话</span><div class="dash-sub" id="traffic-funnel-home-sub">—</div></div>
+              <div class="dash-card"><b id="traffic-funnel-detail">-</b><span id="traffic-funnel-detail-label">商品详情会话</span><div class="dash-sub" id="traffic-funnel-detail-sub">—</div></div>
+              <div class="dash-card"><b id="traffic-funnel-cart">-</b><span id="traffic-funnel-cart-label">加购会话</span><div class="dash-sub" id="traffic-funnel-cart-sub">—</div></div>
+              <div class="dash-card"><b id="traffic-funnel-order">-</b><span id="traffic-funnel-order-label">下单会话</span><div class="dash-sub" id="traffic-funnel-order-sub">—</div></div>
+            </div>
+            <div class="dash-charts">
+              <div class="chart-card"><h3>访问趋势（PV / UV）</h3><canvas id="chart-traffic-trend" height="140"></canvas></div>
+              <div class="chart-card"><h3>设备分布（PV）</h3><canvas id="chart-traffic-device" height="140"></canvas></div>
+              <div class="chart-card"><h3>浏览器分布（PV）</h3><canvas id="chart-traffic-browser" height="140"></canvas></div>
+              <div class="chart-card"><h3>操作系统分布（PV）</h3><canvas id="chart-traffic-os" height="140"></canvas></div>
+              <div class="chart-card"><h3>落地页 Top 10（PV）</h3><canvas id="chart-traffic-landing" height="180"></canvas></div>
+              <div class="chart-card"><h3>热门页面 Top 15（按具体路径，PV）</h3><canvas id="chart-traffic-toppages" height="220"></canvas></div>
+            </div>
+            <div class="table-card">
+              <h3 style="margin:0 0 8px">渠道访问与转化（按会话）</h3>
+              <table class="list-table">
+                <thead><tr><th>渠道</th><th>会话数</th><th>浏览量</th><th>成交会话</th><th>转化率</th></tr></thead>
+                <tbody id="traffic-channel-body"><tr class="empty-row"><td colspan="5" class="empty-cell">加载中…</td></tr></tbody>
+              </table>
+            </div>
+            <div class="table-card">
+              <h3 style="margin:0 0 8px">地域分布 Top 10（PV）</h3>
+              <table class="list-table">
+                <thead><tr><th>国家 / 地区</th><th>城市</th><th>浏览量</th><th>访客数</th></tr></thead>
+                <tbody id="traffic-geo-body"><tr class="empty-row"><td colspan="4" class="empty-cell">加载中…</td></tr></tbody>
+              </table>
+            </div>
           </div>
 
           <!-- 面板: 首页配置 -->
@@ -988,6 +1038,6 @@
   <script src="/qrcode.min.js?v=20261104" defer></script>
   <!-- Chart.js 自托管：外链 CDN 在国内网络常被阻断，加载失败会让看板图表静默空白 -->
   <script src="/chart.umd.min.js?v=20261111" defer></script>
-  <script src="/admin.js?v=20261112b" defer></script>
+  <script src="/admin.js?v=20261120a" defer></script>
 </body>
 </html>
