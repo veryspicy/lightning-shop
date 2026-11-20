@@ -1510,6 +1510,7 @@ function drawChart(id, type, labels, data, opts = {}) {
   const unit = opts.unit || '';
   const palette = (opts.colors && opts.colors.length ? opts.colors : CHART_COLORS);
   const dataset = {
+    label: opts.label || '',
     data,
     backgroundColor: isPie ? palette.slice(0, labels.length) : (isLine ? 'rgba(5,150,105,.12)' : palette[0]),
     borderColor: isPie ? '#fff' : palette[0],
@@ -1519,18 +1520,33 @@ function drawChart(id, type, labels, data, opts = {}) {
     pointRadius: isLine ? 2 : 0,
     fill: isLine,
   };
+  /* 多序列（如 PV + UV 同图）：调用方通过 opts.datasets 追加，不改变原有单序列调用方式 */
+  const datasets = [dataset];
+  (Array.isArray(opts.datasets) ? opts.datasets : []).forEach((ds, i) => {
+    const color = ds.color || palette[(i + 1) % palette.length];
+    datasets.push({
+      label: ds.label || '',
+      data: ds.data || [],
+      borderColor: color,
+      backgroundColor: `${color}1f`,
+      borderWidth: 2,
+      tension: 0.3,
+      pointRadius: 2,
+      fill: false,
+    });
+  });
   canvas._chart = new Chart(canvas, {
     type,
     data: {
       labels,
-      datasets: [dataset],
+      datasets,
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       indexAxis: horizontal ? 'y' : 'x',
       plugins: {
-        legend: isPie ? { position: 'bottom', labels: { boxWidth: 12, padding: 12, font: { size: 12 } } } : { display: false },
+        legend: (isPie || datasets.length > 1) ? { position: 'bottom', labels: { boxWidth: 12, padding: 12, font: { size: 12 } } } : { display: false },
         tooltip: {
           callbacks: {
             label: (ctx) => {
@@ -1739,6 +1755,195 @@ function renderSalesSection(d) {
   }
 }
 
+/* ---- 流量统计（数据源 /api/admin/stats/traffic，聚合在 D1 内完成） ----
+ * PV / UV / 独立 IP / 设备 / 浏览器 / OS / 地域 / 落地页 / 漏斗全部来自
+ * tracking_event + tracking_session；爬虫在采集侧打标、在查询侧剔除，
+ * 因此这里展示的是「真实访客」口径，与 Cloudflare Web Analytics 的旁证数据可交叉验证。 */
+let TRAFFIC_DAYS = 30;
+let TRAFFIC_LOADING = false;
+
+function fmtPct(v) {
+  return (v === null || v === undefined) ? '—' : `${Number(v).toFixed(1)}%`;
+}
+
+/* 秒级可读化：停留时长从毫秒来，短访问显示秒、长访问显示分/小时，避免「1830 秒」这种不可读数字 */
+function fmtDuration(ms) {
+  const s = Math.round(Number(ms || 0) / 1000);
+  if (s <= 0) return '0 秒';
+  if (s < 60) return `${s} 秒`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 ? `${m} 分 ${s % 60} 秒` : `${m} 分`;
+  return `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
+}
+
+function bindTrafficRange() {
+  const sel = $('dash-traffic-days');
+  if (!sel || sel._bound) return;
+  sel._bound = true;
+  sel.value = String(TRAFFIC_DAYS);
+  sel.addEventListener('change', () => loadTrafficStats(Number(sel.value)));
+}
+
+async function loadTrafficStats(days) {
+  const span = Math.min(90, Math.max(7, Number(days) || TRAFFIC_DAYS || 30));
+  TRAFFIC_DAYS = span;
+  if (TRAFFIC_LOADING) return;
+  TRAFFIC_LOADING = true;
+  try {
+    const data = await api(`${API}/admin/stats/traffic?days=${span}`, { headers: authHeaders() });
+    renderTrafficSection(data);
+  } catch (err) {
+    /* 迁移未执行或统计接口异常时只影响本区块，销售统计与其它面板保持可用 */
+    toast(err.message, true);
+    ['chart-traffic-trend', 'chart-traffic-device', 'chart-traffic-browser', 'chart-traffic-os', 'chart-traffic-landing', 'chart-traffic-toppages']
+      .forEach((id) => setChartPlaceholder(id, '流量统计加载失败，请刷新重试'));
+  } finally {
+    TRAFFIC_LOADING = false;
+  }
+}
+
+/* 表格用 DOM 拼接而非 innerHTML：路径、城市、来源域名都是外部数据，避免注入 */
+function fillTrafficTable(tbodyId, rows, colspan) {
+  const tb = $(tbodyId);
+  if (!tb) return;
+  tb.innerHTML = '';
+  if (!rows.length) {
+    const tr = document.createElement('tr');
+    tr.className = 'empty-row';
+    const td = document.createElement('td');
+    td.className = 'empty-cell';
+    td.colSpan = colspan;
+    td.textContent = '暂无数据（埋点上线后开始累积）';
+    tr.appendChild(td);
+    tb.appendChild(tr);
+    return;
+  }
+  rows.forEach((cells) => {
+    const tr = document.createElement('tr');
+    cells.forEach((c) => {
+      const td = document.createElement('td');
+      td.textContent = String(c);
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  });
+}
+
+function renderTrafficSection(d) {
+  if (!d || !d.summary) return;
+  const label = `近 ${d.days} 天`;
+  const s = d.summary || {};
+  const f = d.funnel || {};
+  ['traffic-pv', 'traffic-uv', 'traffic-ip', 'traffic-sessions', 'traffic-bounce', 'traffic-duration'].forEach((id) => {
+    const el = $(`${id}-label`);
+    if (!el) return;
+    const base = el.textContent.replace(/^近 \d+ 天/, '');
+    el.textContent = `${label}${base}`;
+  });
+
+  $('traffic-pv').textContent = fmtInt(s.pv);
+  setSub('traffic-pv-sub', [
+    `人均浏览 ${Number(s.pv_per_uv || 0).toFixed(2)} 页`,
+    `已剔除爬虫 ${fmtInt(s.bot_pv)} 次`,
+  ]);
+  $('traffic-uv').textContent = fmtInt(s.uv);
+  setSub('traffic-uv-sub', [
+    s.uv ? `平均每访客 ${(Number(s.sessions || 0) / Number(s.uv)).toFixed(2)} 个会话` : '—',
+    'UV 按访客 cookie 去重（不采集个人信息）',
+  ]);
+  $('traffic-ip').textContent = fmtInt(s.ip_count);
+  setSub('traffic-ip-sub', [
+    'IP 仅存每日加盐哈希，不留明文',
+    '与 UV 的差额即「同 IP 多设备 / 换 IP」',
+  ]);
+  $('traffic-sessions').textContent = fmtInt(s.sessions);
+  setSub('traffic-sessions-sub', [
+    `事件数 ${fmtInt(s.events)} 次`,
+    `成交会话 ${fmtInt(s.converted_sessions)} 个｜转化率 ${fmtPct(s.conversion_rate)}`,
+  ]);
+  $('traffic-bounce').textContent = fmtPct(s.bounce_rate);
+  setSub('traffic-bounce-sub', [`跳出率 = 只看 1 页的会话占比`, `会话时长上限 30 分钟（离开页面才回传）`]);
+  $('traffic-duration').textContent = fmtDuration(s.avg_duration);
+  setSub('traffic-duration-sub', ['按会话平均停留', `数据保留：事件 ${d.ttl ? d.ttl.events_days : 30} 天 / 会话 ${d.ttl ? d.ttl.sessions_days : 180} 天`]);
+
+  $('traffic-funnel-home').textContent = fmtInt(f.home);
+  setSub('traffic-funnel-home-sub', ['看过首页的会话']);
+  $('traffic-funnel-detail').textContent = fmtInt(f.detail);
+  setSub('traffic-funnel-detail-sub', [`进站 → 详情 ${fmtPct(f.detail_rate)}`]);
+  $('traffic-funnel-cart').textContent = fmtInt(f.add_cart);
+  setSub('traffic-funnel-cart-sub', [`进站 → 加购 ${fmtPct(f.cart_rate)}`]);
+  $('traffic-funnel-order').textContent = fmtInt(f.orders);
+  setSub('traffic-funnel-order-sub', [`进站 → 下单 ${fmtPct(f.order_rate)}`]);
+
+  const trend = d.trend || [];
+  if (trend.some((t) => Number(t.pv) > 0)) {
+    drawChart(
+      'chart-traffic-trend', 'line',
+      trend.map((t) => String(t.date).slice(5)),
+      trend.map((t) => Number(t.pv)),
+      { label: 'PV', unit: ' 次', datasets: [{ label: 'UV', data: trend.map((t) => Number(t.uv)), color: '#0ea5e9' }] },
+    );
+  } else {
+    setChartPlaceholder('chart-traffic-trend', `${label}暂无访问数据`);
+  }
+
+  const device = d.device || [];
+  if (device.length) {
+    drawChart('chart-traffic-device', 'doughnut', device.map((x) => x.name), device.map((x) => Number(x.pv)), { unit: ' 次' });
+  } else {
+    setChartPlaceholder('chart-traffic-device', '暂无设备数据');
+  }
+
+  const browser = d.browser || [];
+  if (browser.length) {
+    drawChart('chart-traffic-browser', 'bar', browser.map((x) => x.name), browser.map((x) => Number(x.pv)), { horizontal: true, unit: ' 次' });
+  } else {
+    setChartPlaceholder('chart-traffic-browser', '暂无浏览器数据');
+  }
+
+  const os = d.os || [];
+  if (os.length) {
+    drawChart('chart-traffic-os', 'doughnut', os.map((x) => x.name), os.map((x) => Number(x.pv)), { unit: ' 次' });
+  } else {
+    setChartPlaceholder('chart-traffic-os', '暂无系统数据');
+  }
+
+  const landing = d.landing || [];
+  if (landing.length) {
+    drawChart(
+      'chart-traffic-landing', 'bar',
+      landing.map((x) => x.path), landing.map((x) => Number(x.pv)),
+      { horizontal: true, unit: ' 次' },
+    );
+  } else {
+    setChartPlaceholder('chart-traffic-landing', '暂无落地页数据');
+  }
+
+  /* 站内是 hash 路由，落地页图把所有商品页压成 /p/[id]；这里按未归一化路径看具体页面 */
+  const topPages = d.top_pages || [];
+  if (topPages.length) {
+    drawChart(
+      'chart-traffic-toppages', 'bar',
+      topPages.map((x) => x.path), topPages.map((x) => Number(x.pv)),
+      { horizontal: true, unit: ' 次' },
+    );
+  } else {
+    setChartPlaceholder('chart-traffic-toppages', '暂无页面明细数据');
+  }
+
+  fillTrafficTable('traffic-channel-body', (d.channels || []).map((c) => [
+    CHANNEL_LABEL[c.channel] || c.channel,
+    fmtInt(c.sessions),
+    fmtInt(c.pv),
+    fmtInt(c.converted),
+    fmtPct(c.conversion_rate),
+  ]), 5);
+
+  fillTrafficTable('traffic-geo-body', (d.geo || []).map((g) => [
+    g.country, g.city, fmtInt(g.pv), fmtInt(g.uv),
+  ]), 4);
+}
+
 function renderDashboard() {
   const cats = {};
   let hasImg = 0;
@@ -1768,6 +1973,8 @@ function renderDashboard() {
   drawChart('chart-status', 'pie', ['上架', '下架'], [onShelf, products.length - onShelf]);
   bindSalesRange();
   loadSalesStats();
+  bindTrafficRange();
+  loadTrafficStats();
 }
 
 /* 初始化：有 token 直接尝试进入 */

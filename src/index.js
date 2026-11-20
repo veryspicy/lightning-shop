@@ -58,6 +58,15 @@ import {
   migrateBatch,
   verifyConsistency,
 } from './d1.js';
+import {
+  ensureTrackingCookies,
+  withTrackingCookies,
+  recordPageView,
+  handleTrackRequest,
+  d1TrafficStats,
+  purgeTraffic,
+  isPageRequest,
+} from './traffic.js';
 
 const CATEGORY_ORDER = ['低GI杂粮', '营养粮油', '黄柿子火锅底料', '野生苦菜', '坚果玉米', '羊杂碎'];
 
@@ -2340,6 +2349,22 @@ async function handleApiImpl(request, env, url) {
     return jsonNoCache(stats);
   }
 
+  /* ---- 后台：看板流量统计（PV / UV / IP / 设备 / 浏览器 / 地域 / 渠道 / 漏斗） ----
+   * 数据来自 tracking_event / tracking_session（src/traffic.js 采集），聚合全部在 D1 内完成。
+   * 清理挂在这里顺带做（每小时最多一次），不额外配 Cron，避免多一份调度面。 */
+  if (path === '/api/admin/stats/traffic' && method === 'GET') {
+    const user = await authUser(request, env);
+    if (!user) return unauthorized();
+    if (!await can(env, user, 'dashboard')) return forbidden();
+    const days = Number(url.searchParams.get('days') || 30);
+    await purgeTraffic(env);
+    const stats = await d1TrafficStats(env, days);
+    if (!stats.ok) {
+      return json({ error: 'stats_unavailable', message: stats.reason === 'no_db' ? '数据库未绑定' : '流量统计查询失败' }, 503);
+    }
+    return jsonNoCache(stats);
+  }
+
   /* ---- 后台：订单 ---- */
   if (path === '/api/admin/orders' && method === 'GET') {
     const user = await authUser(request, env);
@@ -2681,7 +2706,9 @@ const CSP_POLICY = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  // beacon 上报：beacon.min.js 硬编码 https://cloudflareinsights.com/cdn-cgi/rum 作为上报端点，仅放行 static 域会被 CSP 拦截。
+  // beacon 上报：CF 代理域走同源 /cdn-cgi/rum（'self' 已覆盖）；beacon.min.js 同时硬编码了
+  //   https://cloudflareinsights.com/cdn-cgi/rum 作为直连上报端点，仅放行 static 域会在此路径被 CSP 拦截，
+  //   表现为 Dashboard 有浏览量但无 SPA 路由/会话数据，故两域一并放行。
   "connect-src 'self' https://challenges.cloudflare.com https://static.cloudflareinsights.com https://cloudflareinsights.com",
   "form-action 'self'",
   "frame-src https://challenges.cloudflare.com",
@@ -2775,7 +2802,7 @@ async function handleImage(request, env, url) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     // 自定义域名主站化：页面级 GET 请求命中 workers.dev 时 301 到主站域名，
@@ -2791,6 +2818,24 @@ export default {
       !url.pathname.startsWith('/img/')
     ) {
       return Response.redirect(`https://${CANONICAL_HOST}${url.pathname}${url.search}`, 301);
+    }
+
+    /* ---- 访问统计（Workers Free + D1 Free 额度内，任何失败都不影响响应） ----
+     * 服务端只记「页面级 GET」（HTML 首屏），站内 hash 路由由前端 /api/track 上报。
+     * 采集挂在 ctx.waitUntil 上异步落库，不占页面响应时间。 */
+    const tracking = ensureTrackingCookies(request);
+    if (url.pathname === '/api/track') {
+      /* 埋点是公开写接口：不设闸被刷会直接烧 D1 免费写入额度，故按 IP 限流后再落库。
+         超限不报错，直接 204 丢弃，前端 beacon 无感知。 */
+      const trackLimit = await rateLimitGuard(env, 'track-ip', clientIp(request), 60, 60, 'RL_TRACK');
+      if (!trackLimit.ok) {
+        return withTrackingCookies(new Response(null, { status: 204 }), tracking.setCookies);
+      }
+      return withTrackingCookies(await handleTrackRequest(request, env, url), tracking.setCookies);
+    }
+    if (request.method === 'GET' && isPageRequest(url)) {
+      const pending = recordPageView(env, request, url, tracking).catch(() => {});
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(pending);
     }
 
     // 只读公开 API 边缘缓存（Cache API，TTL=CACHE_TTL_SEC）：GET /api/* 非后台接口，无管理 token
@@ -2859,7 +2904,9 @@ export default {
           new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers }),
         );
       }
-      return withSecurityHeaders(resp);
+      const wrapped = withSecurityHeaders(resp);
+      /* 只在页面响应上补种访客/会话 cookie：静态资源请求不带 Set-Cookie，避免无谓头部噪声 */
+      return isPageRequest(url) ? withTrackingCookies(wrapped, tracking.setCookies) : wrapped;
     }
 
     return withSecurityHeaders(new Response('Lightning Shop', { status: 200 }));
