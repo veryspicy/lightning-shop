@@ -181,6 +181,15 @@ export function resolveChannel(url, referrerUrl, hint) {
   }
   const ref = String(referrerUrl || '');
   if (ref) {
+    /* 同源 referer 说明是站内跳转，与前端 detectChannel 同口径按 direct 处理，
+     * 否则会把自家域名当成获客渠道，污染渠道分布与转化率分母 */
+    const selfHost = String((url && url.hostname) || '').replace(/^www\./i, '').toLowerCase();
+    if (selfHost) {
+      try {
+        const refHost = new URL(ref).hostname.replace(/^www\./i, '').toLowerCase();
+        if (refHost === selfHost) return 'direct';
+      } catch (_) { /* 非法 referer 继续走外链匹配 */ }
+    }
     for (const [re, name] of REF_HOST_MAP) if (re.test(ref)) return name;
     try {
       const host = new URL(ref).hostname.replace(/^www\./, '');
@@ -209,9 +218,10 @@ export function normalizePath(rawPath) {
   if (p.startsWith('http://') || p.startsWith('https://')) {
     try { p = new URL(p).pathname + (new URL(p).hash || ''); } catch (_) { p = '/'; }
   }
-  p = p.replace(/^#/, '');
+  /* 兼容三种上报形态：前端 location.hash（'#/p/1'）、整段 URL 拼接（'/#/p/1'）、首屏 pathname（'/p/1'），
+   * 统一剥掉开头的 '/' + '#' 再补 '/'，否则 '/#/p/1' 会落进兜底桶 '/#/p' */
+  p = p.split('?')[0].replace(/^\/?#/, '');
   if (!p.startsWith('/')) p = `/${p}`;
-  p = p.split('?')[0];
   if (p === '/' || p === '') return '/';
   const segs = p.split('/').filter(Boolean);
   if (segs.length === 1) return `/${segs[0]}`;
