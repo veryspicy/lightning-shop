@@ -8,11 +8,11 @@
 
 | 模块 | 状态 | 说明 |
 | --- | --- | --- |
-| 迁移 `migrations/0006_rfq_service_fee.sql` | 已完成 | 7 列 ALTER + 2 索引 + 2 条状态键幂等 UPDATE；**本地已 apply，远程 D1 未 apply** |
+| 迁移 `migrations/0006_rfq_service_fee.sql` | 已完成 | 7 列 ALTER + 2 索引 + 2 条状态键幂等 UPDATE；本地与远程 D1 均已 apply（远程 2026-11-26 执行，7 列 / 2 索引已核对，远程 `orders` 当前 0 行） |
 | 后端 `src/index.js` / `src/d1.js` | 已完成 | 服务费写入、状态流转、品牌档案白名单、`site:seller`、公开投影均已就绪 |
 | 后台品牌端（`public/admin.js` + `admin.html`） | 已完成 | 品牌弹窗新增资质 5 字段 + 对公账户 3 字段（账号 `^[0-9A-Za-z-]+$` 前端同步校验）；列表改 8 列并新增「工厂/对公账户」列（证号全量、有效期过期标红、账号仅尾四位）；「证书图」列表头改为图片张数口径；新增「服务方主体」面板对接 `GET/PUT /api/site/seller`（7 字段含 `credit_code`） |
 | 前台网页（`public/app.js` + `index.html`） | 已完成 | 品牌页新增「生产资质」区块（主体 / 证号 / 许可范围 / 有效期 / 生产地址 + 居间说明，过期标红）；首屏新增居间公示条；付款卡标签由「统一社会信用代码」纠正为「食品生产许可证号」并带有效期校验 |
-| 端到端验证 | 已完成（本地） | 接口 8 组用例 + 界面 6 张截图全部通过（见 §9）；**远程 D1 迁移仍未 apply，需单独授权** |
+| 端到端验证 | 已完成 | 接口 8 组用例 + 界面 6 张截图全部通过；远程迁移已应用并核对（见 §9） |
 
 ## 1. 模式B 的四个硬约束（所有改动的判据）
 
@@ -218,7 +218,7 @@ P0 不新建工厂主表：`factory_id` 复用品牌档案 key，避免主数据
 
 | # | 用例 | 结果 |
 | --- | --- | --- |
-| 1 | 远程 `wrangler d1 migrations apply lightning-shop-db --remote`，核对存量单无 `pending` / `paid` | **未执行**：属生产库变更，待单独授权；本地已 apply（见 #2 附注） |
+| 1 | 远程 `wrangler d1 migrations apply lightning-shop-db --remote`，核对存量单无 `pending` / `paid` | 通过（2026-11-26）：仅应用 0006，7 列 + `idx_orders_factory` / `idx_orders_fee_status` 已核对；远程 `orders` 为空表，无存量状态需迁移；线上 `/api/products` 返回 200 |
 | 2 | 前台下单无法注入 `service_fee` / `service_fee_status` / `factory_id` / `status` / `pay_note` | 通过：提交带 `service_fee=9999, status=done, factory_id=hack工厂`，落库为 `status=inquiry, service_fee=0, service_fee_status=unbilled, service_fee_note=null, factory_id=null, pay_note=''`；测试单已清理 |
 | 3 | `POST .../fee` 正常写返回 200 且 `version+1`；工厂 key 不存在应 400 | 通过：`version 1→2`；不存在工厂返回 400「工厂档案不存在：不存在的工厂，请先在品牌档案中建档」 |
 | 4 | 服务费置 `paid` 未填时间自动补；退回 `quoted` 清空时间 | 通过：`paid` 自动写 `2026-11-26 09:38:24`；退回 `quoted` 后 `service_fee_paid_at=''` |
@@ -229,7 +229,12 @@ P0 不新建工厂主表：`factory_id` 复用品牌档案 key，避免主数据
 | 9 | 界面：后台 8 列表格、编辑弹窗 13 字段回填、服务方主体 7 字段、前台首屏公示条、品牌页资质区块 | 通过（6 张截图，0 条 JS 报错）；列表账号已脱敏为 `****7890` |
 | 10 | 全文检索禁用词为 0 命中 | 通过：`app.js` / `admin.js` / `index.html` / `styles.css` 均 0 命中 |
 
-**迁移执行注记**：本地 `orders` 新列与 2 个索引在早前手工执行中已存在，但 `d1_migrations` 缺 `0006` 记录，导致 `migrations list` 反复提示待应用、再次 apply 会因列重复而失败。已补写记录使本地状态与实际一致；远程 apply 前需先确认远程库是否同样"列已加、记录缺失"，否则同一迁移会在远程报 duplicate column。
+**迁移执行注记（本地与远程各踩一次，务必保留）**
+
+1. **本地**：`orders` 新列与 2 个索引在早前手工执行中已存在，但 `d1_migrations` 缺 `0006` 记录，导致反复提示待应用、再次 apply 撞 duplicate column。已补写记录使状态与实际一致。
+2. **远程**：库里同时存在两套迁移记录表——历史遗留的 `_d1_migrations`（0001–0005，带 checksum / baseline）与 wrangler 4.155 实际使用的 `d1_migrations`（不存在）。直接 `migrations apply --remote` 会先建 `d1_migrations` 并从 0001 重跑，到 0002 即报 `duplicate column name: base_price` 中断。
+   **处置**：先 `d1 export` 全库备份，再向 `d1_migrations` 补插 0002–0005 记录（`INSERT OR IGNORE`），使 apply 只执行 0006。
+   **下次远程迁移前必查**：`SELECT name FROM d1_migrations ORDER BY id;` 与 `SELECT name FROM _d1_migrations ORDER BY id;` 是否一致，不一致先对齐元数据再 apply。
 
 ## 10. 本轮不做（划界）
 
