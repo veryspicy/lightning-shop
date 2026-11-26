@@ -1384,7 +1384,7 @@ $('batch-apply').addEventListener('click', async () => {
 });
 
 /* ---- Tab 切换（菜单 → 标签栏联动） ---- */
-const MENU_TITLES = { dashboard: '看板', hero: '首页配置', qr: '二维码配置', categories: '分类管理', price: '价格策略', products: '产品管理', users: '账号管理', roles: '角色管理', orders: '订单管理', customers: '客户档案', brands: '品牌档案' };
+const MENU_TITLES = { dashboard: '看板', hero: '首页配置', qr: '二维码配置', categories: '分类管理', price: '价格策略', products: '产品管理', users: '账号管理', roles: '角色管理', orders: '订单管理', customers: '客户档案', brands: '品牌档案', seller: '服务方主体' };
 const openTabs = new Set();
 
 function activateNavTag(tab) {
@@ -1442,6 +1442,7 @@ function openTab(tab, force) {
   if (tab === 'orders') loadOrdersPanel();
   else if (tab === 'customers') loadCustomersPanel();
   else if (tab === 'brands') loadBrandsPanel();
+  else if (tab === 'seller') loadSellerPanel();
 }
 
 $('admin-tabs').addEventListener('click', (e) => {
@@ -1569,10 +1570,16 @@ function drawChart(id, type, labels, data, opts = {}) {
 
 /* ---- 销售统计（数据源 /api/admin/stats/sales，聚合在 D1 内完成） ---- */
 const ORDER_STATUS_LABEL = {
-  pending: '待确认支付', paid: '已支付待发货', shipped: '已发货', done: '已完成', cancelled: '已取消',
+  inquiry: '待报价', quoted: '已报价', confirmed: '客户已确认', forwarded: '已转厂',
+  shipped: '工厂已发货', done: '已完成', cancelled: '已取消',
 };
 const ORDER_STATUS_COLOR = {
-  pending: '#f59e0b', paid: '#0ea5e9', shipped: '#7C4DFF', done: '#059669', cancelled: '#94a3b8',
+  inquiry: '#f59e0b', quoted: '#0ea5e9', confirmed: '#6366f1', forwarded: '#a855f7',
+  shipped: '#7C4DFF', done: '#059669', cancelled: '#94a3b8',
+};
+// 服务费状态（纯居间口径）：平台只收服务费，货款由客户直付工厂，故与订单状态各走各的
+const FEE_STATUS_LABEL = {
+  unbilled: '待开账', quoted: '已报价待收', invoiced: '已开票待收', paid: '已到账', waived: '已减免',
 };
 // 渠道 slug → 中文名（未收录的 slug 原样展示，避免新来源被吞掉）
 const CHANNEL_LABEL = {
@@ -2009,7 +2016,11 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function orderStatusBadge(s) {
-  const map = { pending: ['待确认支付', 'st-pending'], paid: ['已支付待发货', 'st-paid'], shipped: ['已发货', 'st-shipped'], done: ['已完成', 'st-done'], cancelled: ['已取消', 'st-cancelled'] };
+  const map = {
+    inquiry: ['待报价', 'st-pending'], quoted: ['已报价', 'st-quoted'], confirmed: ['客户已确认', 'st-confirmed'],
+    forwarded: ['已转厂', 'st-forwarded'], shipped: ['工厂已发货', 'st-shipped'],
+    done: ['已完成', 'st-done'], cancelled: ['已取消', 'st-cancelled'],
+  };
   const [label, cls] = map[s] || [s || '未知', 'st-cancelled'];
   return `<span class="order-status ${cls}">${label}</span>`;
 }
@@ -2144,7 +2155,9 @@ function renderOrderModal(o) {
       <div class="kv"><b>客户</b><span>${escapeHtml(o.customer_name)}</span></div>
       <div class="kv"><b>手机号</b><span>${escapeHtml(o.customer_phone)}</span></div>
       <div class="kv"><b>下单时间</b><span>${fmtTimeAdmin(o.created_at)}</span></div>
-      <div class="kv"><b>金额</b><span style="color:var(--accent);font-weight:700">¥${money(o.total_amount)}</span></div>
+      <div class="kv"><b>货款</b><span>¥${money(o.total_amount)}</span></div>
+      <div class="kv"><b>服务费</b><span>¥${money(o.service_fee)}</span></div>
+      <div class="kv"><b>应付合计</b><span style="color:var(--accent);font-weight:700">¥${money(o.total_payable)}</span></div>
       ${costTotal > 0 ? `<div class="kv"><b>出厂成本</b><span>¥${money(costTotal)}</span></div>
       <div class="kv"><b>预计毛利</b><span style="font-weight:700">¥${money(numOf(o.total_amount) - costTotal)}</span></div>` : ''}
       ${(o.province || o.address || o.receiver_name) ? `<div class="kv" style="grid-column:1/-1"><b>收货信息</b><span>${escapeHtml([
@@ -2155,6 +2168,8 @@ function renderOrderModal(o) {
     ].filter(Boolean).join(' · '))}</span></div>` : ''}
       ${o.remark ? `<div class="kv" style="grid-column:1/-1"><b>备注</b><span>${escapeHtml(o.remark)}</span></div>` : ''}
       ${o.tracking_no ? `<div class="kv" style="grid-column:1/-1"><b>物流单号</b><span>${escapeHtml(o.tracking_no)}</span></div>` : ''}
+      <div class="kv" style="grid-column:1/-1"><b>供货工厂 / 服务费</b><span>${o.factory_id ? escapeHtml(o.factory_id) : '<span class="muted">未指定</span>'} · ${FEE_STATUS_LABEL[o.service_fee_status] || '待开账'}${o.service_fee_paid_at ? `（${escapeHtml(String(o.service_fee_paid_at).slice(0, 10))} 到账）` : ''}${o.goods_paid_at ? ` · 货款已付工厂 ${escapeHtml(String(o.goods_paid_at).slice(0, 10))}` : ''}${o.service_fee_note ? `<div class="muted" style="font-size:.72rem">${escapeHtml(o.service_fee_note)}</div>` : ''}</span></div>
+      ${o.pay_note ? `<div class="kv" style="grid-column:1/-1"><b>付款说明</b><span>${escapeHtml(o.pay_note)}</span></div>` : ''}
       ${o.note ? `<div class="kv" style="grid-column:1/-1"><b>后台备注</b><span>${escapeHtml(o.note)}</span></div>` : ''}
       <div class="kv" style="grid-column:1/-1"><b>来源渠道</b><span>${escapeHtml(orderChannelText(o))}</span></div>
     </div>
@@ -2165,15 +2180,15 @@ function renderOrderModal(o) {
     </table>`;
   const foot = $('order-modal-foot');
   const act = [];
-  if (o.status === 'pending') {
-    act.push('<button type="button" class="btn btn-primary" data-order-act="confirm-paid">确认收款</button>');
-    act.push('<button type="button" class="btn btn-outline" style="color:#c0392b" data-order-act="cancel">取消订单</button>');
-  } else if (o.status === 'paid') {
-    act.push('<button type="button" class="btn btn-primary" data-order-act="ship">发货（填物流单号）</button>');
-    act.push('<button type="button" class="btn btn-outline" style="color:#c0392b" data-order-act="cancel">取消订单</button>');
-  } else if (o.status === 'shipped') {
-    act.push('<button type="button" class="btn btn-primary" data-order-act="complete">确认完成</button>');
-  }
+  const terminal = o.status === 'done' || o.status === 'cancelled';
+  // 服务费 / 工厂登记与状态流转解耦：非终态订单随时可补登记，不必为了填到账日期去动状态
+  if (!terminal) act.push('<button type="button" class="btn btn-outline" data-order-act="fee">服务费 / 工厂</button>');
+  if (o.status === 'inquiry') act.push('<button type="button" class="btn btn-primary" data-order-act="quote">报价（填服务费）</button>');
+  if (o.status === 'quoted') act.push('<button type="button" class="btn btn-primary" data-order-act="confirm">客户已确认</button>');
+  if (o.status === 'confirmed') act.push('<button type="button" class="btn btn-primary" data-order-act="forward">转厂下单</button>');
+  if (o.status === 'forwarded') act.push('<button type="button" class="btn btn-primary" data-order-act="ship">发货（填物流单号）</button>');
+  if (o.status === 'shipped') act.push('<button type="button" class="btn btn-primary" data-order-act="complete">确认完成</button>');
+  if (!terminal && o.status !== 'shipped') act.push('<button type="button" class="btn btn-outline" style="color:#c0392b" data-order-act="cancel">取消订单</button>');
   foot.innerHTML = act.join('') || '';
 }
 async function orderAct(action) {
@@ -2185,13 +2200,93 @@ async function orderAct(action) {
     return;
   }
   if (action === 'ship') {
-    const track = await askText({ title: '发货', label: '物流单号（可留空）', placeholder: '如 SF1234567890', okText: '确认发货' });
+    // 已发货态前台只凭运单号让客户追踪，后端会拒绝空单号，这里先挡住避免白跑一次请求
+    const track = await askText({ title: '发货', label: '物流单号（必填）', placeholder: '如 SF1234567890', okText: '确认发货' });
     if (track === null) return;
+    if (!String(track).trim()) return toast('请填写物流单号', true);
     await updateOrderStatus(o.id, 'shipped', String(track).trim());
     return;
   }
-  const statusMap = { 'confirm-paid': 'paid', complete: 'done' };
+  if (action === 'fee') { openOrderFeeModal(o); return; }
+  if (action === 'quote') {
+    // 报价这一步要填服务费，直接开服务费弹窗（填完保存即视为已报价），少一次点击
+    openOrderFeeModal(o, { advance: o.status === 'inquiry' || o.status === 'pending' ? 'quoted' : '' });
+    return;
+  }
+  const statusMap = { confirm: 'confirmed', forward: 'forwarded', complete: 'done', 'confirm-paid': 'confirmed' };
   await updateOrderStatus(o.id, statusMap[action]);
+}
+/* 服务费 / 工厂登记弹窗：模式B 下这是后台唯一能把「服务费、工厂归属、回款时间」写进订单的入口。
+ * 独立于状态流转：报价、收款、对账各走各的，避免为了登记一个到账日期被迫改订单状态。
+ * 弹窗自建 DOM（admin.html 里没有对应节点），关闭时整块移除，不给页面留隐藏残骸。 */
+async function openOrderFeeModal(o, opts) {
+  opts = opts || {};
+  // 工厂下拉需要品牌档案：订单面板直接进来时缓存可能为空，先补一次（失败不阻断，允许手填 key）
+  if (!BRANDS_CACHE) {
+    try {
+      const d = await api('/api/admin/brands/profile', { headers: authHeaders() });
+      BRANDS_CACHE = d.brands || [];
+    } catch (_) { BRANDS_CACHE = []; }
+  }
+  const fee = Number(o.service_fee || 0);
+  const field = (label, inner, full) => `<label class="field"${full ? ' style="grid-column:1/-1"' : ''}><span>${label}</span>${inner}</label>`;
+  const brandOpts = ['<option value="">— 未指定 —</option>'].concat(
+    (BRANDS_CACHE || []).map((b) => `<option value="${escapeHtml(b.key)}"${b.key === (o.factory_id || '') ? ' selected' : ''}>${escapeHtml(b.name || b.key)}</option>`)
+  ).join('');
+  const feeOpts = Object.entries(FEE_STATUS_LABEL).map(([k, v]) =>
+    `<option value="${k}"${(o.service_fee_status || 'unbilled') === k ? ' selected' : ''}>${v}</option>`).join('');
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  const box = document.createElement('div');
+  box.className = 'modal modal-lg';
+  box.innerHTML = `
+    <div class="modal-head"><h3>服务费 / 工厂登记 · ${escapeHtml(o.id)}</h3></div>
+    <div class="form-grid">
+      ${field('供货工厂（品牌档案 key）', `<select id="fee-factory">${brandOpts}</select>`, true)}
+      ${field('服务费金额（元，不含货款）', `<input type="number" min="0" step="0.01" id="fee-amount" value="${fee ? fee : ''}" placeholder="如 800" />`)}
+      ${field('服务费状态', `<select id="fee-status">${feeOpts}</select>`)}
+      ${field('服务费到账日期', `<input type="date" id="fee-paid-at" value="${escapeHtml(String(o.service_fee_paid_at || '').slice(0, 10))}" />`)}
+      ${field('货款到账日期（客户付给工厂）', `<input type="date" id="goods-paid-at" value="${escapeHtml(String(o.goods_paid_at || '').slice(0, 10))}" />`)}
+      ${field('服务费说明（内部备注，不对客户展示）', `<input type="text" id="fee-note" maxlength="300" value="${escapeHtml(o.service_fee_note || '')}" placeholder="如：含打样与验货，订单确认后 3 日内开账" />`, true)}
+      ${field('付款说明（货款付工厂、服务费付我方）', `<input type="text" id="pay-note" maxlength="300" value="${escapeHtml(o.pay_note || '')}" placeholder="如：货款直付工厂对公账户，服务费按我方账单支付" />`, true)}
+    </div>
+    <div class="modal-foot" style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button type="button" class="btn btn-outline" data-fee-close="1">取消</button>
+      <button type="button" class="btn btn-primary" id="fee-save">保存</button>
+    </div>`;
+  document.body.appendChild(mask);
+  document.body.appendChild(box);
+  const close = () => { mask.remove(); box.remove(); };
+  mask.addEventListener('click', close);
+  box.querySelector('[data-fee-close]').addEventListener('click', close);
+  box.querySelector('#fee-save').addEventListener('click', async () => {
+    const payload = {
+      version: o.version,
+      factory_id: box.querySelector('#fee-factory').value.trim(),
+      service_fee: Number(box.querySelector('#fee-amount').value || 0),
+      service_fee_status: box.querySelector('#fee-status').value,
+      service_fee_note: box.querySelector('#fee-note').value.trim(),
+      service_fee_paid_at: box.querySelector('#fee-paid-at').value,
+      goods_paid_at: box.querySelector('#goods-paid-at').value,
+      pay_note: box.querySelector('#pay-note').value.trim(),
+    };
+    if (payload.service_fee < 0) return toast('服务费不能为负', true);
+    const btn = box.querySelector('#fee-save');
+    btn.disabled = true;
+    try {
+      const r = await api('/api/admin/orders/' + encodeURIComponent(o.id) + '/fee', {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify(payload),
+      });
+      close();
+      toast('服务费信息已保存');
+      CURRENT_ORDER = r.order || CURRENT_ORDER;
+      if (opts.advance) await updateOrderStatus(o.id, opts.advance);
+      else { renderOrderModal(CURRENT_ORDER); loadOrdersPanel(); }
+    } catch (e) {
+      btn.disabled = false;
+      toast(e.message, true);
+    }
+  });
 }
 async function updateOrderStatus(id, status, trackingNo) {
   try {
@@ -2283,20 +2378,41 @@ function renderBrandsTable() {
   const kw = ($('brands-search') ? $('brands-search').value : '').trim().toLowerCase();
   const list = (BRANDS_CACHE || []).filter((b) => !kw
     || [b.key, b.name, b.intro, b.services, b.contact].some((v) => String(v || '').toLowerCase().includes(kw)));
-  if (!(BRANDS_CACHE || []).length) { body.innerHTML = '<tr class="empty-row"><td colspan="7" class="empty-cell">暂无品牌档案，点击右上角新增</td></tr>'; return; }
-  if (!list.length) { body.innerHTML = `<tr class="empty-row"><td colspan="7" class="empty-cell">没有匹配「${escapeHtml(kw)}」的品牌档案</td></tr>`; return; }
-  body.innerHTML = list.map((b) => `<tr>
+  if (!(BRANDS_CACHE || []).length) { body.innerHTML = '<tr class="empty-row"><td colspan="8" class="empty-cell">暂无品牌档案，点击右上角新增</td></tr>'; return; }
+  if (!list.length) { body.innerHTML = `<tr class="empty-row"><td colspan="8" class="empty-cell">没有匹配「${escapeHtml(kw)}」的品牌档案</td></tr>`; return; }
+  const today = new Date().toISOString().slice(0, 10);
+  body.innerHTML = list.map((b) => {
+    const certsN = (b.certs || []).length;
+    const accOk = !!(b.bank_account_name && b.bank_name && b.bank_account);
+    // 证号全量展示供人工核对；账号只出后四位，后台列表不做整号外露
+    const licNo = b.license_no ? '<span class="muted">证号 ' + escapeHtml(b.license_no) + '</span>' : '<span style="color:#c0392b">缺许可证号</span>';
+    let lic;
+    if (!b.license_valid_to) lic = '<span style="color:#c0392b">缺有效期</span>';
+    else if (b.license_valid_to < today) lic = '<span style="color:#c0392b">已过期 ' + escapeHtml(b.license_valid_to) + '</span>';
+    else lic = '<span style="color:#059669">有效期至 ' + escapeHtml(b.license_valid_to) + '</span>';
+    const accTail = b.bank_account ? String(b.bank_account).slice(-4) : '';
+    const accLine = accOk
+      ? '<span style="color:#059669">对公 ****' + escapeHtml(accTail) + ' · ' + escapeHtml(b.bank_name) + '</span>'
+      : '<span style="color:#c0392b">缺对公账户</span>';
+    const channel = [
+      b.entity_name ? escapeHtml(b.entity_name) : '<span class="muted">未填主体全称</span>',
+      licNo + ' ' + lic,
+      accLine,
+    ].join('<br>');
+    return `<tr>
     <td><b>${escapeHtml(b.key)}</b></td>
     <td>${escapeHtml(b.name || '-')}</td>
     <td>${b.product_count || 0}</td>
-    <td class="num">${(b.certs || []).length}</td>
+    <td class="num">${certsN}</td>
+    <td style="font-size:.78rem;line-height:1.75">${channel}</td>
     <td>${escapeHtml((b.intro || '').slice(0, 30))}</td>
     <td>${fmtTimeAdmin(b.updated_at) || '<span class="muted">—</span>'}</td>
     <td>
       <button type="button" class="btn btn-outline btn-sm" data-brand-edit="${escapeHtml(b.key)}">编辑</button>
       <button type="button" class="btn btn-outline btn-sm" style="color:#c0392b" data-brand-del="${escapeHtml(b.key)}">删除</button>
     </td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
 }
 function openBrandModal(b) {
   BRAND_EDITING = b ? Object.assign({}, b) : { key: '', name: '', intro: '', services: '', contact: '', certs: [] };
@@ -2314,6 +2430,16 @@ function openBrandModal(b) {
       <div class="field" style="grid-column:1/-1"><label>公司介绍（换行保留）</label><textarea id="b-intro" placeholder="公司简介、主营产品、优势…">${escapeHtml(BRAND_EDITING.intro || '')}</textarea></div>
       <div class="field" style="grid-column:1/-1"><label>服务说明（可含下单流程/物流/售后，换行保留）</label><textarea id="b-services">${escapeHtml(BRAND_EDITING.services || '')}</textarea></div>
       <div class="field" style="grid-column:1/-1"><label>联系方式（可含地址/电话/微信，换行保留）</label><textarea id="b-contact">${escapeHtml(BRAND_EDITING.contact || '')}</textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>工厂资质（模式B 公示项：客户在品牌页可见，仅账户不公开）</label></div>
+      <div class="field"><label>主体全称（营业执照名称）</label><input id="b-entity" maxlength="80" value="${escapeHtml(BRAND_EDITING.entity_name || '')}" placeholder="如 内蒙古某某食品有限公司" /></div>
+      <div class="field"><label>食品生产许可证号</label><input id="b-license-no" maxlength="40" value="${escapeHtml(BRAND_EDITING.license_no || '')}" placeholder="SC 开头" /></div>
+      <div class="field"><label>许可品类 / 范围</label><input id="b-license-scope" maxlength="200" value="${escapeHtml(BRAND_EDITING.license_scope || '')}" placeholder="如 调味品（半固态）" /></div>
+      <div class="field"><label>许可证有效期至</label><input type="date" id="b-license-valid-to" value="${escapeHtml(BRAND_EDITING.license_valid_to || '')}" /></div>
+      <div class="field"><label>生产地址</label><input id="b-factory-address" maxlength="200" value="${escapeHtml(BRAND_EDITING.factory_address || '')}" placeholder="许可证载明地址" /></div>
+      <div class="field" style="grid-column:1/-1"><label>货款收款账户（客户直付工厂用，仅后台与查单双因子下发，绝不出现在品牌页）</label></div>
+      <div class="field"><label>收款户名（须与主体全称一致）</label><input id="b-bank-account-name" maxlength="80" value="${escapeHtml(BRAND_EDITING.bank_account_name || '')}" /></div>
+      <div class="field"><label>开户行（含支行）</label><input id="b-bank-name" maxlength="80" value="${escapeHtml(BRAND_EDITING.bank_name || '')}" /></div>
+      <div class="field"><label>对公账号</label><input id="b-bank-account" maxlength="40" value="${escapeHtml(BRAND_EDITING.bank_account || '')}" placeholder="仅数字/字母/短横" /></div>
     </div>
     <div class="field" style="margin-top:12px">
       <label>资质证书图（${(BRAND_EDITING.certs || []).length}）</label>
@@ -2419,6 +2545,12 @@ function bindTradeEvents() {
     const name = ($('b-name') ? $('b-name').value : '').trim();
     if (!key) return toast('请填写品牌 Key', true);
     if (!name) return toast('请填写品牌名称', true);
+    const v = (id) => ($(id) ? String($(id).value || '').trim() : '');
+    const bankAccount = v('b-bank-account');
+    // 账号只允许数字/字母/短横，与后端 sanitizeBankAccount 保持一致，避免静默清空
+    if (bankAccount && !/^[0-9A-Za-z\-]+$/.test(bankAccount)) {
+      return toast('对公账号只能填数字、字母或短横', true);
+    }
     const payload = {
       key,
       name,
@@ -2426,6 +2558,15 @@ function bindTradeEvents() {
       services: $('b-services') ? $('b-services').value : '',
       contact: $('b-contact') ? $('b-contact').value : '',
       certs: BRAND_EDITING.certs || [],
+      // 模式B：资质公示 5 项 + 货款收款账户 3 项（后端白名单 FACTORY_TEXT_FIELDS 已支持）
+      entity_name: v('b-entity'),
+      license_no: v('b-license-no'),
+      license_scope: v('b-license-scope'),
+      license_valid_to: v('b-license-valid-to'),
+      factory_address: v('b-factory-address'),
+      bank_account_name: v('b-bank-account-name'),
+      bank_name: v('b-bank-name'),
+      bank_account: bankAccount,
     };
     try {
       await api('/api/admin/brands/profile/' + encodeURIComponent(key), { method: 'PUT', headers: authHeaders(), body: JSON.stringify(payload) });
@@ -2434,6 +2575,8 @@ function bindTradeEvents() {
       loadBrandsPanel();
     } catch (e) { toast(e.message, true); }
   });
+  const sellerSave = $('seller-save-btn');
+  if (sellerSave) sellerSave.addEventListener('click', () => saveSellerPanel());
   const closers = [['order-mask', 'order-modal', 'order-close'], ['customer-mask', 'customer-modal', 'customer-close'], ['brand-mask', 'brand-modal', 'brand-close']];
   closers.forEach(([maskId, modalId, closeId]) => {
     const m = $(maskId), d = $(modalId), c = $(closeId);
@@ -2443,3 +2586,43 @@ function bindTradeEvents() {
   });
 }
 bindTradeEvents();
+
+/* ---- 服务方主体（模式B 纯居间：只公示撮合方与收款说明，不登记任何货款账户） ---- */
+const SELLER_MAP = [
+  ['s-entity', 'entity_name'],
+  ['s-credit', 'credit_code'],
+  ['s-address', 'address'],
+  ['s-license', 'license_no'],
+  ['s-scope', 'license_scope'],
+  ['s-contact', 'contact'],
+  ['s-fee-note', 'fee_note'],
+];
+
+async function loadSellerPanel() {
+  try {
+    const r = await api('/api/site/seller', { headers: authHeaders() });
+    const d = (r && (r.seller || r)) || {};
+    SELLER_MAP.forEach(([id, key2]) => { if ($(id)) $(id).value = d[key2] == null ? '' : String(d[key2]); });
+  } catch (e) {
+    toast('加载服务方主体失败：' + e.message, true);
+  }
+}
+
+async function saveSellerPanel() {
+  const payload = {};
+  SELLER_MAP.forEach(([id, key2]) => { payload[key2] = ($(id) ? String($(id).value || '').trim() : ''); });
+  // 主体名称与经营范围是该区块的成立前提，缺任一项前台整块不渲染
+  if (!payload.entity_name) return toast('请填写服务方主体名称', true);
+  if (!payload.license_scope) return toast('请填写经营范围 / 服务内容', true);
+  const btn = $('seller-save-btn');
+  if (btn) btn.disabled = true;
+  try {
+    await api('/api/site/seller', { method: 'PUT', headers: authHeaders(), body: JSON.stringify(payload) });
+    toast('服务方主体已保存');
+    loadSellerPanel();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}

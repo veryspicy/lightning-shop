@@ -41,6 +41,7 @@ import {
   d1OrderList,
   d1OrderGet,
   d1OrderUpdateStatus,
+  d1OrderUpdateFee,
   d1InsertOrder,
   d1CustomerList,
   d1GetDoc,
@@ -592,7 +593,7 @@ async function authUser(request, env) {
 }
 
 // 旧版 site:write 为聚合键，同时管首页/价格/二维码；拆分为 hero/price/qr 后需兼容存量角色
-const SITE_PERMS = ['hero', 'price', 'qr'];
+const SITE_PERMS = ['hero', 'price', 'qr', 'seller'];
 
 async function can(env, user, perm) {
   if (!user) return false;
@@ -647,6 +648,14 @@ function publicOrder(order) {
     updated_at: o.updated_at || '',
     total_qty: o.total_qty || 0,
     total_amount: o.total_amount || 0,
+    // 纯居间：货款归工厂，服务费归我方。两者并列下发，禁止在任一字段里混入对方金额。
+    // service_fee_note（服务费构成备注）属内部经营信息，不下发；pay_note 是给客户的付款说明，可以下发。
+    pay_note: String(o.pay_note || ''),
+    service_fee: Math.round((Number(o.service_fee) || 0) * 100) / 100,
+    total_payable: Math.round(((Number(o.total_amount) || 0) + (Number(o.service_fee) || 0)) * 100) / 100,
+    service_fee_status: String(o.service_fee_status || 'unbilled'),
+    service_fee_paid_at: String(o.service_fee_paid_at || ''),
+    goods_paid_at: String(o.goods_paid_at || ''),
     items: items.map((it) => ({
       id: String(it.id || ''),
       name: String(it.name || ''),
@@ -659,6 +668,28 @@ function publicOrder(order) {
   };
 }
 
+/* 订单对应的工厂收款信息：模式B 下客户凭此凭证把货款打给工厂，平台只收服务费。
+ * 只在「手机号 + 订单号/验证码」双因子通过的查单响应里下发，不进任何公开列表/品牌页。 */
+async function factoryInfoForOrder(env, order) {
+  const key = String((order && order.factory_id) || '').trim();
+  if (!key) return null;
+  const p = (await getBrandProfile(env, key)) || {};
+  const bankAccount = String(p.bank_account || '').trim();
+  return {
+    key,
+    entity_name: String(p.entity_name || p.name || key).slice(0, 80),
+    license_no: String(p.license_no || '').slice(0, 40),
+    license_scope: String(p.license_scope || '').slice(0, 200),
+    license_valid_to: String(p.license_valid_to || '').slice(0, 10),
+    factory_address: String(p.factory_address || '').slice(0, 200),
+    bank_account_name: String(p.bank_account_name || '').slice(0, 80),
+    bank_name: String(p.bank_name || '').slice(0, 80),
+    bank_account: bankAccount,
+    // 账号没维护时前台必须显式提示「联系业务员」，不能渲染一个空的收款卡片
+    has_account: !!bankAccount,
+  };
+}
+
 async function readJson(request) {
   try {
     return await request.json();
@@ -666,7 +697,6 @@ async function readJson(request) {
     return null;
   }
 }
-
 // KV 无 CAS：同毫秒并发新增会算出同一个 seq，「先查后写」挡不住互相覆盖。
 // 故 id 追加 4 位随机后缀——seq 前缀保留可读性，排序仍以 seq 字段为准。
 function makeProductId(seq) {
@@ -707,6 +737,39 @@ async function saveHero(env, hero) {
   if (!h.eyebrow) h.eyebrow = DEFAULT_HERO.eyebrow;
   await putDoc(env, 'site:hero', h);
   return h;
+}
+
+/* 服务方主体公示（site:seller）：模式B 只收服务费，前台必须如实公示「谁在提供服务」。
+ * 全部字段为空时整块不渲染（见 public 端），避免未填就出现空壳「关于我们」。
+ * 严禁在此写入「平台代收货款」类表述：货款由客户直付工厂，平台不碰款。 */
+const SELLER_FIELDS = {
+  entity_name: 80,
+  credit_code: 40,
+  license_no: 40,
+  license_scope: 200,
+  address: 200,
+  contact: 100,
+  fee_note: 300,
+};
+
+function sanitizeSeller(raw) {
+  const out = {};
+  for (const [f, max] of Object.entries(SELLER_FIELDS)) {
+    out[f] = String((raw && raw[f]) || '').trim().slice(0, max);
+  }
+  return out;
+}
+
+async function getSeller(env) {
+  const raw = await getDoc(env, 'site:seller');
+  if (!raw) return sanitizeSeller({});
+  return sanitizeSeller(raw);
+}
+
+async function saveSeller(env, raw) {
+  const s = sanitizeSeller(raw);
+  await putDoc(env, 'site:seller', s);
+  return s;
 }
 
 // 价格策略：前台展示价 = 出厂价 × (1 + margin%)
@@ -946,13 +1009,31 @@ async function productIdTaken(env, id) {
 
 /* ================= 订单 / 客户 / 品牌档案 ================= */
 
+/* 订单 = 询价单（纯居间模式B）。键位语义：
+ *   inquiry   客户已提交询价，我方未出价
+ *   quoted    已发报价单（货款 + 服务费），等客户确认
+ *   confirmed 客户确认报价；货款由客户直付工厂，平台不经手
+ *   forwarded 已通知工厂接单，等工厂发货
+ *   shipped   工厂已发货（回填物流单号）
+ *   done      客户签收
+ * 模式B 下平台不收货款，故不存在「已支付」态。旧键 pending/paid 已由迁移 0006 UPDATE 掉，
+ * 这里保留 OLD_STATUS_ALIAS 只为兼容 KV 副本里的历史单（读路径以 D1 为主，KV 不追改）。 */
 const ORDER_STATUS = {
-  pending: { label: '待确认支付', next: ['paid', 'cancelled'] },
-  paid: { label: '已支付待发货', next: ['shipped', 'cancelled'] },
-  shipped: { label: '已发货', next: ['done'] },
+  inquiry: { label: '待报价', next: ['quoted', 'cancelled'] },
+  quoted: { label: '已报价待确认', next: ['confirmed', 'cancelled'] },
+  confirmed: { label: '已确认待转厂', next: ['forwarded', 'cancelled'] },
+  forwarded: { label: '已转厂待发货', next: ['shipped', 'cancelled'] },
+  shipped: { label: '工厂已发货', next: ['done'] },
   done: { label: '已完成', next: [] },
   cancelled: { label: '已取消', next: [] },
 };
+const OLD_STATUS_ALIAS = { pending: 'inquiry', paid: 'confirmed' };
+
+// 读状态定义一律走这里：历史单未迁移时不能因 ORDER_STATUS[key] 为 undefined 而抛 TypeError
+function statusDef(status) {
+  const key = OLD_STATUS_ALIAS[status] || status;
+  return ORDER_STATUS[key] || ORDER_STATUS.inquiry;
+}
 
 function genOrderIdTs(d) {
   const pad = (n, l = 2) => String(n).padStart(l, '0');
@@ -1316,7 +1397,17 @@ function orderTotals(order) {
   return { total_qty, total_amount };
 }
 function withOrderTotals(order) {
-  return { ...order, ...orderTotals(order) };
+  const t = orderTotals(order);
+  const fee = Math.round((Number(order && order.service_fee) || 0) * 100) / 100;
+  return {
+    ...order,
+    ...t,
+    // 服务费与应付合计必须由服务端统一口径：前台/后台都直接展示，不能各算各的
+    // total_amount = 货款（客户直付工厂），total_payable = 货款 + 服务费（客户总支出）
+    service_fee: fee,
+    service_fee_status: String((order && order.service_fee_status) || 'unbilled'),
+    total_payable: Math.round((t.total_amount + fee) * 100) / 100,
+  };
 }
 
 // 阶段 1：订单读路径切 D1（订单明细一次 IN 查询取回，取代 KV 的 key 全扫 + 逐条 get）。
@@ -1444,17 +1535,51 @@ async function getCustomers(env) {
 }
 
 // 品牌档案：brand:profile:{key}（key=品牌名）
-const BRAND_PROFILE_FIELDS = ['intro', 'services', 'certs', 'contact'];
+// 模式B 下品牌键同时充当「工厂档案」：资质与对公收款账户都挂在这里，
+// 订单只存 factory_id 指针，避免每单复制一份账户（账户变更需一处改、全站生效）。
+const BRAND_PROFILE_FIELDS = ['intro', 'services', 'certs', 'contact', 'entity_name', 'factory_address'];
+
+// 工厂资质与收款账户字段的落库白名单与长度上限（超长直接截断，不允许整段透传）
+const FACTORY_TEXT_FIELDS = {
+  entity_name: 80,
+  license_no: 40,
+  license_scope: 200,
+  factory_address: 200,
+  bank_account_name: 80,
+  bank_name: 80,
+};
+function sanitizeBankAccount(v) {
+  // 只允许数字/字母/短横：账号会原样渲染进复制按钮与付款指引，任何标点都可能被拼进文案误导客户
+  const s = String(v === undefined || v === null ? '' : v).replace(/[\s\u3000]/g, '');
+  return /^[0-9A-Za-z-]{6,40}$/.test(s) ? s : '';
+}
 function sanitizeBrandProfile(raw) {
   const out = { certs: [] };
   out.name = String(raw.name || '').trim().slice(0, 60);
   for (const f of ['intro', 'services', 'contact']) out[f] = String(raw[f] || '').trim().slice(0, 3000);
+  for (const [f, max] of Object.entries(FACTORY_TEXT_FIELDS)) {
+    out[f] = String(raw[f] || '').trim().slice(0, max);
+  }
+  out.bank_account = sanitizeBankAccount(raw.bank_account);
+  // 有效期只存日期：后台填 2027-08-31 这种，不接受自由文本（前端要做「即将到期」提示，必须可比较）
+  const validTo = String(raw.license_valid_to || '').trim().slice(0, 10);
+  out.license_valid_to = /^\d{4}-\d{2}-\d{2}$/.test(validTo) ? validTo : '';
   const certs = Array.isArray(raw.certs) ? raw.certs : [];
   out.certs = certs.map((c) => String(c || '').trim().slice(0, 300)).filter((c) => c.startsWith('/img/') || c.startsWith('http'));
   // 时间字段由服务端维护：created_at 沿用原值，updated_at 每次保存刷新
   if (raw.created_at) out.created_at = String(raw.created_at).slice(0, 40);
   if (raw.updated_at) out.updated_at = String(raw.updated_at).slice(0, 40);
   return out;
+}
+
+// 工厂档案的公开投影：资质可公示，对公账户绝不出现在品牌页。
+// 账户只在「手机号 + 订单号」双因子校验通过的查单响应里下发（见 factoryInfoForOrder）。
+function publicBrandProfile(p) {
+  const o = { ...(p || {}) };
+  delete o.bank_account;
+  delete o.bank_account_name;
+  delete o.bank_name;
+  return o;
 }
 
 // 品牌名可能含中文：KV key 统一用 encodeURIComponent 存 ASCII，避免本地/边缘对非 ASCII key 的 list/get 不一致
@@ -1993,6 +2118,21 @@ async function handleApiImpl(request, env, url) {
     return notFound();
   }
 
+  // 服务方主体公示：GET 公共可读（禁缓存），PUT 需鉴权。全空时前台整块不渲染。
+  if (path === '/api/site/seller') {
+    if (method === 'GET') return jsonNoCache(await getSeller(env));
+    if (method === 'PUT') {
+      const user = await authUser(request, env);
+      if (!user) return unauthorized();
+      if (!await can(env, user, 'seller')) return forbidden();
+      const raw = await readJson(request);
+      if (!raw) return json({ error: 'bad_request' }, 400);
+      const seller = await saveSeller(env, raw);
+      return json({ ok: true, seller });
+    }
+    return notFound();
+  }
+
   // 批量更新：PATCH /api/products/batch
   // body: { ids: [id...], patch: { badge: '火锅底料', ... } }
   // 仅合并 patch 中出现的字段（白名单），未传字段保留原值，批量回写 KV
@@ -2184,7 +2324,16 @@ async function handleApiImpl(request, env, url) {
     if (order.total_qty > 50000) {
       return json({ error: 'bad_request', message: '单笔数量超出上限，请分批下单或联系业务员' }, 400);
     }
-    order.status = 'pending';
+    // 新单一律进「待报价」：模式B 下我方先出报价（货款+服务费），客户确认后才有价格承诺。
+    // 服务费与工厂归属由后台 /api/admin/orders/:id/fee 写入，前端请求体无权设置（sanitizeOrder 不采信）。
+    order.status = 'inquiry';
+    order.factory_id = '';
+    order.service_fee = 0;
+    order.service_fee_note = '';
+    order.service_fee_status = 'unbilled';
+    order.service_fee_paid_at = '';
+    order.goods_paid_at = '';
+    order.pay_note = '';
     order.version = 1;
     order.created_at = new Date().toISOString();
     order.updated_at = order.created_at;
@@ -2269,8 +2418,21 @@ async function handleApiImpl(request, env, url) {
       const all = await getOrders(env);
       list = all.filter((o) => o.customer_phone === phone && (!auth.orderId || o.id === auth.orderId));
     }
-    // 查单接口返回体必须是公开投影，否则任何人可通过查单批量拖走成本价
-    return json({ ok: true, mode: auth.mode, orders: list.slice(0, 50).map(publicOrder), total: list.length });
+    // 查单接口返回体必须是公开投影，否则任何人可通过查单批量拖走成本价。
+    // 工厂收款账户按 factory_id 去重后随单下发（同页多单同厂只查一次 KV/D1）。
+    const factoryCache = new Map();
+    const orders = [];
+    for (const o of list.slice(0, 50)) {
+      const base = publicOrder(withOrderTotals(o));
+      const fk = String(o.factory_id || '');
+      let factory = null;
+      if (fk) {
+        if (!factoryCache.has(fk)) factoryCache.set(fk, await factoryInfoForOrder(env, o));
+        factory = factoryCache.get(fk);
+      }
+      orders.push({ ...base, factory });
+    }
+    return json({ ok: true, mode: auth.mode, orders, total: list.length });
   }
 
   /* ---- 品牌档案（公开）---- */
@@ -2289,7 +2451,7 @@ async function handleApiImpl(request, env, url) {
       // 公开接口只回展示价投影，成本价（wholesale_price）不得随品牌页泄露
       const priceCfg = await getPrice(env);
       const products = onShelf.filter((x) => x.brand === key).map((x) => publicProduct(x, priceCfg));
-      return jsonNoCache({ ok: true, brand: { ...profile, products } });
+      return jsonNoCache({ ok: true, brand: { ...publicBrandProfile(profile), products } });
     }
   }
 
@@ -2392,8 +2554,14 @@ async function handleApiImpl(request, env, url) {
       if (body?.version !== undefined && Number(body.version) !== Number(order.version || 1)) {
         return json({ error: 'conflict', message: '订单已被他人修改，请刷新后重试', order: withOrderTotals(order) }, 409);
       }
-      if (!ORDER_STATUS[next] || !ORDER_STATUS[order.status].next.includes(next)) {
-        return json({ error: 'bad_request', message: `状态不允许从「${ORDER_STATUS[order.status].label}」流转到该状态` }, 400);
+      if (!ORDER_STATUS[next] || !statusDef(order.status).next.includes(next)) {
+        return json({ error: 'bad_request', message: `状态不允许从「${statusDef(order.status).label}」流转到该状态` }, 400);
+      }
+      // 「已发货」必须带运单号：前台以运单号作为客户唯一可追踪凭据，
+      // 允许空号流转会产出「已发货但无单号」的死单，客户只能反复催业务员。
+      if (next === 'shipped') {
+        const tn = body?.tracking_no !== undefined ? String(body.tracking_no).trim() : (order.tracking_no || '');
+        if (!tn) return json({ error: 'bad_request', message: '发货必须填写物流单号' }, 400);
       }
       const patch = {
         status: next,
@@ -2464,6 +2632,144 @@ async function handleApiImpl(request, env, url) {
       // 阶段 1：单条订单也读 D1；D1 查无或异常（含尚未双写的历史单）时回退 KV
       const order = (await d1OrderGet(env, om[1])) || (await env.KV.get(`orders:${om[1]}`, 'json'));
       return order ? jsonNoCache({ ok: true, order: withOrderTotals(order) }) : notFound();
+    }
+  }
+
+  /* ---- 后台：订单服务费 / 工厂归属 / 付款登记 ----
+   * 模式B 的唯一收入口径就从这里写：service_fee（我方服务费）与 factory_id（货款收款方）。
+   * 这两个字段决定「客户把钱打给谁」，因此只允许后台按权限写，前台请求体一律不采信（见 sanitizeOrder）。
+   * PATCH 语义：未出现的键保留原值，避免前端只提交一个状态就把服务费/备注清空。 */
+  {
+    const fm = path.match(/^\/api\/admin\/orders\/([^/]+)\/fee$/);
+    if (fm && method === 'POST') {
+      const user = await authUser(request, env);
+      if (!user) return unauthorized();
+      if (!await can(env, user, 'orders')) return forbidden();
+      const d1Order = await d1OrderGet(env, fm[1]);
+      const order = d1Order || (await env.KV.get(`orders:${fm[1]}`, 'json'));
+      if (!order) return notFound();
+      const body = await readJson(request);
+      if (!body) return json({ error: 'bad_request', message: '请求体无效' }, 400);
+      if (body.version !== undefined && Number(body.version) !== Number(order.version || 1)) {
+        return json({ error: 'conflict', message: '订单已被他人修改，请刷新后重试', order: withOrderTotals(order) }, 409);
+      }
+
+      // 工厂归属：非空时必须已建品牌（工厂）档案，否则客户会照着不存在的键拿到空账户
+      const factoryId = body.factory_id !== undefined
+        ? String(body.factory_id).trim().slice(0, 60)
+        : String(order.factory_id || '');
+      if (factoryId) {
+        const profile = await getBrandProfile(env, factoryId);
+        if (!profile) {
+          return json({ error: 'bad_request', message: `工厂档案不存在：${factoryId}，请先在品牌档案中建档` }, 400);
+        }
+      }
+
+      // 服务费：必须是非负数金额，上限与货款同一量级；不做负数冲抵（退款走线下流程，不能留负值污染统计）
+      let fee = Number(order.service_fee) || 0;
+      if (body.service_fee !== undefined) {
+        const n = Number(body.service_fee);
+        if (!Number.isFinite(n) || n < 0) return json({ error: 'bad_request', message: '服务费必须是非负数字' }, 400);
+        if (n > 999999) return json({ error: 'bad_request', message: '服务费超出上限' }, 400);
+        fee = Math.round(n * 100) / 100;
+      }
+
+      const FEE_STATUS = ['unbilled', 'quoted', 'invoiced', 'paid', 'waived'];
+      let feeStatus = String(order.service_fee_status || 'unbilled');
+      if (body.service_fee_status !== undefined) {
+        const s = String(body.service_fee_status || '').trim();
+        if (!FEE_STATUS.includes(s)) {
+          return json({ error: 'bad_request', message: `服务费状态非法：${s || '(空)'}` }, 400);
+        }
+        feeStatus = s;
+      }
+
+      const dateLike = (v) => {
+        const s = String(v || '').trim();
+        if (!s) return '';
+        return /^\d{4}-\d{2}-\d{2}([ T][0-9:.Z+-]*)?$/.test(s) ? s.slice(0, 32) : null;
+      };
+      let feePaidAt = String(order.service_fee_paid_at || '');
+      if (body.service_fee_paid_at !== undefined) {
+        const d = dateLike(body.service_fee_paid_at);
+        if (d === null) return json({ error: 'bad_request', message: '服务费到账时间格式应为 YYYY-MM-DD' }, 400);
+        feePaidAt = d;
+      }
+      let goodsPaidAt = String(order.goods_paid_at || '');
+      if (body.goods_paid_at !== undefined) {
+        const d = dateLike(body.goods_paid_at);
+        if (d === null) return json({ error: 'bad_request', message: '货款到账时间格式应为 YYYY-MM-DD' }, 400);
+        goodsPaidAt = d;
+      }
+      // 状态与时间戳保持一致：置为 paid 且没给时间就补当下；从 paid 退回其他态必须清空，
+      // 否则页面会同时出现「未到账 + 到账时间」两个互斥事实。
+      if (feeStatus === 'paid' && !feePaidAt) feePaidAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      if (feeStatus !== 'paid') feePaidAt = '';
+
+      const patch = {
+        version: Number(order.version || 1) + 1,
+        factoryId,
+        serviceFee: fee,
+        serviceFeeNote: body.service_fee_note !== undefined
+          ? String(body.service_fee_note).trim().slice(0, 300)
+          : String(order.service_fee_note || ''),
+        serviceFeeStatus: feeStatus,
+        serviceFeePaidAt: feePaidAt,
+        goodsPaidAt,
+        payNote: body.pay_note !== undefined
+          ? String(body.pay_note).trim().slice(0, 300)
+          : String(order.pay_note || ''),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const cas = d1Order
+        ? await d1OrderUpdateFee(env, order.id, patch)
+        : { ok: false, reason: 'no_db' };
+      if (cas.ok) {
+        const merged = {
+          ...order,
+          factory_id: patch.factoryId,
+          service_fee: patch.serviceFee,
+          service_fee_note: patch.serviceFeeNote,
+          service_fee_status: patch.serviceFeeStatus,
+          service_fee_paid_at: patch.serviceFeePaidAt,
+          goods_paid_at: patch.goodsPaidAt,
+          pay_note: patch.payNote,
+          version: patch.version,
+          updated_at: patch.updatedAt,
+        };
+        try {
+          await env.KV.put(`orders:${order.id}`, JSON.stringify(merged));
+        } catch (_) { /* 副本回写失败忽略，后台读走 D1 */ }
+        // 服务费不进客户消费聚合（aggregateCustomer 只算货款），这里无需重算
+        return json({ ok: true, order: withOrderTotals(merged) });
+      }
+      if (cas.reason === 'conflict') {
+        return json({ error: 'conflict', message: '订单刚被他人更新，请刷新后重试' }, 409);
+      }
+      if (cas.reason === 'error') {
+        return json({ error: 'server_error', message: '服务费保存失败，请稍后重试' }, 500);
+      }
+      // D1 未绑定（本地降级）：KV 是唯一真源，读改写前再校验一次 version
+      const fresh = await env.KV.get(`orders:${fm[1]}`, 'json');
+      if (!fresh) return notFound();
+      if (Number(fresh.version || 1) !== Number(order.version || 1)) {
+        return json({ error: 'conflict', message: '订单刚被他人更新，请刷新后重试' }, 409);
+      }
+      Object.assign(fresh, {
+        factory_id: patch.factoryId,
+        service_fee: patch.serviceFee,
+        service_fee_note: patch.serviceFeeNote,
+        service_fee_status: patch.serviceFeeStatus,
+        service_fee_paid_at: patch.serviceFeePaidAt,
+        goods_paid_at: patch.goodsPaidAt,
+        pay_note: patch.payNote,
+        version: patch.version,
+        updated_at: patch.updatedAt,
+      });
+      const saved = await saveOrder(env, fresh);
+      if (!saved.ok) return json({ error: 'server_error', message: '服务费保存失败，请稍后重试' }, 500);
+      return json({ ok: true, order: withOrderTotals(fresh) });
     }
   }
 

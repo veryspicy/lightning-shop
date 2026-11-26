@@ -856,6 +856,14 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .brand-intro h2, .brand-services h2, .brand-contact h2, .brand-certs h2 { font-size: 16px; margin: 0 0 8px; }
 .brand-intro p, .brand-services p, .brand-contact p { margin: 0; font-size: 14px; line-height: 1.8; }
 .brand-certs { margin-bottom: 14px; }
+/* 生产资质公示（模式B）：资质必须可读，账户不在此出现 */
+.hero-note { margin: 10px 0 0; font-size: 13px; color: #475569; background: rgba(255,255,255,.7); border: 1px solid #e2e8f0; border-radius: 999px; padding: 6px 14px; display: inline-block; }
+.brand-license { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; box-shadow: var(--shadow, 0 2px 10px rgba(15,23,42,.05)); }
+.brand-license h2 { font-size: 16px; margin: 0 0 8px; }
+.brand-license p { margin: 0 0 4px; font-size: 14px; line-height: 1.8; color: #334155; }
+.brand-license p b { color: #0f172a; font-weight: 600; margin-right: 4px; }
+.brand-license .lic-expired { color: #c0392b; font-weight: 600; }
+.brand-license .payee-tip { margin-top: 6px; color: #b45309; font-size: 13px; }
 .cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 .cert-grid img { width: 100%; aspect-ratio: 3/4; object-fit: cover; border-radius: 8px; cursor: zoom-in; border: 1px solid var(--border, #eef1f6); }
 .brand-products-title { font-size: 18px; margin: 20px 0 12px; }
@@ -984,3 +992,29 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .phone-gate-error { font-size: 13px; color: #dc2626; margin: 0 0 10px; }
 .phone-gate-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .phone-gate-actions .btn { flex: 1 1 140px; }
+
+/* ===== 居间模式B：金额拆分 / 收款方 / 服务费状态（订单卡 + 收据） ===== */
+.order-amount-box { margin: 10px 0 6px; padding: 10px 12px; border-radius: 10px; background: #f8fafc; border: 1px solid #e2e8f0; }
+.order-amount { display: flex; justify-content: space-between; gap: 12px; margin: 0 0 6px; font-size: 14px; color: #475569; }
+.order-amount:last-child { margin-bottom: 0; }
+.order-amount b { color: #0f172a; font-variant-numeric: tabular-nums; }
+.order-amount-total { padding-top: 6px; border-top: 1px dashed #cbd5e1; font-weight: 600; color: #0f172a; }
+.order-pay-status { margin: 6px 0; font-size: 13px; color: #475569; }
+.order-payee { margin: 8px 0; padding: 10px 12px; border-radius: 10px; background: #f1f5f9; border: 1px dashed #cbd5e1; font-size: 13px; color: #334155; }
+.order-payee b { display: block; margin-bottom: 6px; color: #0f172a; }
+.order-payee p { margin: 0 0 4px; }
+.order-payee .payee-acc { font-family: ui-monospace, Menlo, Consolas, monospace; letter-spacing: .4px; color: #0f172a; }
+.order-payee .payee-tip { margin-top: 6px; color: #b45309; }
+.rp-fee-status { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: #475569; margin-top: 6px; }
+.rp-payee { margin: 10px 0 4px; padding: 10px 12px; border: 1px dashed #cbd5e1; border-radius: 8px; font-size: 13px; color: #334155; }
+.rp-payee p { display: flex; justify-content: space-between; gap: 10px; margin: 0 0 4px; }
+.rp-payee p b { color: #0f172a; text-align: right; word-break: break-all; }
+.rp-payee .rp-payee-tip { display: block; margin-top: 6px; color: #64748b; font-size: 12px; }
+
+/* 页脚主体公示：一行小字，与版权行区分，不抢视觉但必须可读 */
+.footer-seller { font-size: .76rem; line-height: 1.6; color: #64748b; margin-top: 4px; max-width: 720px; }
+/* 服务费收款方：与工厂收款方并列展示，边框同款式但左侧色条区分收款主体 */
+.order-payee-seller { border-left: 3px solid #2563eb; }
+@media (max-width: 640px) {
+  .footer-seller { font-size: .72rem; }
+}
