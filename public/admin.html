@@ -353,6 +353,9 @@
     .modal .field input { height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; font-size: .85rem; box-sizing: border-box; width: 100%; }
     .modal .field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px var(--ring); }
     .modal .field input::placeholder { color: var(--ink-3); }
+    /* 弹窗内 select 与 input 同规格：服务费登记弹窗与品牌档案都有下拉，样式不一致会很显眼 */
+    .modal .field select { height: 40px; padding: 0 10px; border: 1px solid var(--line); border-radius: 10px; font-size: .85rem; box-sizing: border-box; width: 100%; background: #fff; }
+    .modal .field select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px var(--ring); }
     @media (max-width: 900px) {
       .page-head { flex-direction: column; }
       .head-actions { width: 100%; }
@@ -376,6 +379,10 @@
     .st-shipped { background: #f3e8ff; color: #7c3aed; }
     .st-done { background: #e8f5e9; color: #059669; }
     .st-cancelled { background: #f1f5f9; color: #64748b; }
+  /* 居间 7 态：待报价复用橙、已报价复用蓝、客户已确认/已转厂各占一档，避免与工厂发货紫撞色 */
+  .st-quoted { background: #e3f2fd; color: #2563eb; }
+  .st-confirmed { background: #eef2ff; color: #4f46e5; }
+  .st-forwarded { background: #fae8ff; color: #a21caf; }
     .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; }
     .toolbar-input, .toolbar-select { height: 40px; padding: 0 12px; border: 1px solid var(--line, #e5e9f2); border-radius: 10px; font-size: .85rem; background: #fff; color: inherit; }
     .toolbar-input { flex: 1; min-width: 220px; }
@@ -452,6 +459,10 @@
           <button type="button" class="tab-btn" data-tab="brands" data-perm="brands" role="tab" aria-selected="false" id="menu-brands" hidden>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
             <span class="menu-label">品牌档案</span>
+          </button>
+          <button type="button" class="tab-btn" data-tab="seller" data-perm="seller" role="tab" aria-selected="false" id="menu-seller" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-6h6v6"/></svg>
+            <span class="menu-label">服务方主体</span>
           </button>
           <div class="menu-group-title">系统</div>
           <button type="button" class="tab-btn" data-tab="users" data-perm="users" role="tab" aria-selected="false" id="menu-users" hidden>
@@ -827,7 +838,7 @@
               <div class="page-head">
                 <div>
                   <h2 class="page-title">订单管理</h2>
-                  <p class="page-desc">前台手机号下单产生的订单，按状态流转：待确认支付 → 已支付待发货 → 已发货 → 已完成，支持取消。</p>
+                  <p class="page-desc">前台手机号下单产生的订单，居间流程：询价 → 已报价（填服务费）→ 客户确认 → 转厂下单 → 工厂发货 → 已完成。货款由客户直付工厂，我方只做登记。</p>
                 </div>
                 <div class="head-actions">
                   <button type="button" class="btn btn-outline btn-sm" id="orders-refresh-btn">刷新</button>
@@ -836,9 +847,11 @@
               <div class="toolbar">
                 <select id="orders-filter" class="toolbar-select">
                   <option value="">全部状态</option>
-                  <option value="pending">待确认支付</option>
-                  <option value="paid">已支付待发货</option>
-                  <option value="shipped">已发货</option>
+                  <option value="inquiry">待询价处理</option>
+                  <option value="quoted">已报价</option>
+                  <option value="confirmed">客户已确认</option>
+                  <option value="forwarded">已转厂</option>
+                  <option value="shipped">工厂已发货</option>
                   <option value="done">已完成</option>
                   <option value="cancelled">已取消</option>
                 </select>
@@ -891,10 +904,34 @@
               </div>
               <div class="table-card">
                 <table class="list-table">
-                  <thead><tr><th>品牌 Key</th><th>品牌名称</th><th>产品数</th><th class="num">资质数</th><th>简介</th><th>更新时间</th><th style="width:120px">操作</th></tr></thead>
-                  <tbody id="brands-body"><tr class="empty-row"><td colspan="7" class="empty-cell">加载中…</td></tr></tbody>
+                  <thead><tr><th>品牌 Key</th><th>品牌名称</th><th>产品数</th><th class="num">证书图</th><th>工厂/对公账户</th><th>简介</th><th>更新时间</th><th style="width:120px">操作</th></tr></thead>
+                  <tbody id="brands-body"><tr class="empty-row"><td colspan="8" class="empty-cell">加载中…</td></tr></tbody>
                 </table>
               </div>
+            </div>
+          </div>
+          <!-- 面板: 服务方主体（模式B 纯居间，仅公示撮合服务方，不填任何货款收款账户） -->
+          <div id="tab-seller" class="tab-panel">
+            <div class="panel page-panel">
+              <div class="page-head">
+                <div>
+                  <h2 class="page-title">服务方主体</h2>
+                  <p class="page-desc">纯居间模式下，前台只公示「谁提供撮合服务、向谁收服务费」。货款由客户直付工厂、发票由工厂直开，本页不登记任何货款收款账户。全部留空则前台不渲染该区块。</p>
+                </div>
+                <div class="head-actions">
+                  <button type="button" class="btn btn-primary btn-lg" id="seller-save-btn">保存</button>
+                </div>
+              </div>
+              <div class="form-grid">
+                <div class="field"><label>服务方主体名称</label><input id="s-entity" maxlength="80" placeholder="如：XX 供应链服务工作室" /></div>
+                <div class="field"><label>统一社会信用代码 / 注册号</label><input id="s-credit" maxlength="40" placeholder="个体户可填注册号" /></div>
+                <div class="field"><label>注册地址</label><input id="s-address" maxlength="200" placeholder="营业执照登记地址" /></div>
+                <div class="field"><label>营业执照号（与信用代码不同时填）</label><input id="s-license" maxlength="40" placeholder="选填" /></div>
+                <div class="field"><label>经营范围 / 服务内容</label><input id="s-scope" maxlength="200" placeholder="如：供应链管理、信息咨询、商品撮合服务（按执照原文）" /></div>
+                <div class="field"><label>联系电话</label><input id="s-contact" maxlength="60" placeholder="客户咨询与对账使用" /></div>
+                <div class="field" style="grid-column:1/-1"><label>服务费说明（前台展示）</label><textarea id="s-fee-note" rows="3" maxlength="300" placeholder="如：服务费按订单收取，与货款分开结算，单独开具服务费发票。"></textarea></div>
+              </div>
+              <p class="muted" style="margin-top:10px;font-size:.78rem">提示：启用的前提是主体已注册且具备开票能力；未完成前请全部留空，前台不会展示居间说明。</p>
             </div>
           </div>
         </div>
