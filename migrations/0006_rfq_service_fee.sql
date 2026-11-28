@@ -1,4 +1,5 @@
 -- 0006_rfq_service_fee.sql — 询价单语义改造：供货工厂标注 + 居间服务费拆分
+-- d1-baseline-when: SELECT 1 FROM pragma_table_info('orders') WHERE name='factory_id'
 --
 -- 背景：
 --   本站经营模式为居间/经纪服务（不碰货、不碰款、不碰票），站内「订单」实为询价单：
@@ -17,7 +18,11 @@
 --   4. total_amount 语义固定为「商品货款合计（归属工厂）」；
 --      客户应付合计 = total_amount + service_fee，由接口计算返回、不落库，避免双份真源。
 --
--- 幂等性：ADD COLUMN 重复执行会报 duplicate column，属预期；与 0003 / 0004 处理方式一致。
+-- 幂等性：ADD COLUMN 重复执行会报 duplicate column（SQLite 不支持 ADD COLUMN IF NOT EXISTS）。
+--   本迁移的 7 列曾在生产库经 wrangler 原生 d1_migrations 通道手工执行，但脚本账本
+--   _d1_migrations 未登记，导致 Workers Builds 构建期重放、因 duplicate column name:
+--   factory_id 失败（构建 00ad011c，2026-11-28）。故补 d1-baseline-when 探测：列已存在
+--   即登记为基线、不重放；空库探测不命中则正常执行，与 0003 的处理方式一致。
 
 ALTER TABLE orders ADD COLUMN factory_id       TEXT NOT NULL DEFAULT '';
 ALTER TABLE orders ADD COLUMN service_fee      REAL NOT NULL DEFAULT 0;
