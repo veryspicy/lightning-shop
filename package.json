@@ -7,7 +7,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "seed": "node scripts/seed-kv.mjs",
-    "upload:images": "node scripts/upload-r2.mjs"
+    "upload:images": "node scripts/upload-r2.mjs",
+    "check:assets": "node scripts/check-asset-version.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.155.0"
