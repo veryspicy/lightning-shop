@@ -498,6 +498,36 @@ export async function d1OrderUpdateStatus(env, id, patch) {
   }
 }
 
+/**
+ * 服务费 / 付款状态的原子 CAS：与状态流转同一套 version 乐观锁。
+ * 模式B 下平台不收货款，货款付给工厂由客户完成，goodsPaidAt 只是「客户回报已付」的登记，
+ * 不做资金核对，故不参与统计口径；serviceFeeStatus 才是收入侧状态。
+ * 返回 { ok:true } / { ok:false, reason:'conflict'|'no_db'|'error' }。
+ */
+export async function d1OrderUpdateFee(env, id, patch) {
+  if (!env.DB || !id) return { ok: false, reason: 'no_db' };
+  const expected = Number(patch?.version || 1) - 1;
+  try {
+    const r = await env.DB.prepare(`
+      UPDATE orders
+         SET factory_id = ?, service_fee = ?, service_fee_note = ?,
+             service_fee_status = ?, service_fee_paid_at = ?, goods_paid_at = ?, pay_note = ?,
+             version = ?, updated_at = ?
+       WHERE id = ? AND version = ?
+    `).bind(
+      String(patch.factoryId || ''), Number(patch.serviceFee || 0), String(patch.serviceFeeNote || ''),
+      String(patch.serviceFeeStatus || 'unbilled'), String(patch.serviceFeePaidAt || ''),
+      String(patch.goodsPaidAt || ''), String(patch.payNote || ''),
+      Number(patch.version || 1), String(patch.updatedAt || nowIso()),
+      String(id), expected,
+    ).run();
+    const changed = (r && r.meta && Number(r.meta.changes)) || 0;
+    return changed > 0 ? { ok: true } : { ok: false, reason: 'conflict' };
+  } catch (e) {
+    return { ok: false, reason: 'error', error: String(e && e.message ? e.message : e).slice(0, 200) };
+  }
+}
+
 /** 客户列表：一条 GROUP BY 取代 KV 时代「全扫订单 + 回写聚合」。 */
 export async function d1CustomerList(env) {
   const rs = await env.DB.prepare(`
@@ -666,7 +696,9 @@ export async function d1OrdersByPhone(env, phone, orderId) {
  * 1. 全部聚合下推到 SQL：看板每次刷新只读聚合结果，不把订单明细拉到 Worker 里再算，
  *    避免订单量增长后看板请求随行数线性变慢、D1 读行数费用失控。
  * 2. 口径统一：销售额只统计未取消订单（status <> 'cancelled'）；
- *    另给 paid_amount（已支付及之后的 paid/shipped/done），用于区分成交额与实收额。
+ *    纯居间模式下我方不收货款，故不再输出「已收款」，改为四个互不混淆的指标：
+ *    confirmed_amount（已确认成交额）、goods_paid_amount（客户已付给工厂的货款，仅登记）、
+ *    service_fee_total（应收服务费）、service_fee_paid（我方实收服务费）。
  * 3. created_at 存的是 UTC ISO 串，日期分桶必须先 +8 小时换算北京时间，
  *    否则每天早上 8 点前的订单会被算到前一天。
  * 4. 表格数据为空时不报错，返回空数组，由前端显式提示「暂无订单数据」，
@@ -686,7 +718,15 @@ export async function d1SalesStats(env, days = 30) {
         COUNT(*) AS orders,
         SUM(CASE WHEN status <> 'cancelled' THEN 1 ELSE 0 END) AS valid_orders,
         ROUND(SUM(CASE WHEN status <> 'cancelled' THEN total_amount ELSE 0 END), 2) AS amount,
-        ROUND(SUM(CASE WHEN status IN ('paid','shipped','done') THEN total_amount ELSE 0 END), 2) AS paid_amount,
+        ROUND(SUM(CASE WHEN status <> 'cancelled' AND status IN ('confirmed','forwarded','shipped','done') THEN total_amount ELSE 0 END), 2) AS confirmed_amount,
+        /* 模式B 口径：平台不经手货款，「已收款」不是一个指标而是三个——
+         *   goods_paid_amount 客户已付给工厂的货款（仅登记，不进我方收入）
+         *   service_fee_total 应收服务费
+         *   service_fee_paid  我方实际收到的服务费（唯一可称收入的数）
+         * 旧的 paid_amount 依赖 status='paid'，该键在迁移 0006 已废弃，绝不能继续算。 */
+        ROUND(SUM(CASE WHEN status <> 'cancelled' AND goods_paid_at <> '' THEN total_amount ELSE 0 END), 2) AS goods_paid_amount,
+        ROUND(SUM(CASE WHEN status <> 'cancelled' THEN COALESCE(service_fee, 0) ELSE 0 END), 2) AS service_fee_total,
+        ROUND(SUM(CASE WHEN status <> 'cancelled' AND service_fee_status = 'paid' THEN COALESCE(service_fee, 0) ELSE 0 END), 2) AS service_fee_paid,
         SUM(CASE WHEN status <> 'cancelled' THEN total_qty ELSE 0 END) AS qty,
         SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_orders
       FROM orders`;
@@ -803,7 +843,10 @@ export async function d1SalesStats(env, days = 30) {
         valid_orders: validOrders,
         cancelled_orders: num(s.cancelled_orders),
         amount: num(s.amount),
-        paid_amount: num(s.paid_amount),
+        confirmed_amount: num(s.confirmed_amount),
+        goods_paid_amount: num(s.goods_paid_amount),
+        service_fee_total: num(s.service_fee_total),
+        service_fee_paid: num(s.service_fee_paid),
         qty: num(s.qty),
         avg_order_value: avg(num(s.amount), validOrders),
       },
