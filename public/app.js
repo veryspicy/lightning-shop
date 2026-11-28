@@ -1224,7 +1224,7 @@ function detailHtml(p) {
     </div>
     <div class="detail-tip">
       <b>下单说明</b>
-      <p>1. 加入购物车提交询价单，业务员会在工作时间内与您确认规格与报价；2. 确认报价后，<b>货款由您直接支付给工厂账户</b>，我方按报价单另行开具服务费账单；3. 工厂发货后可在本页凭手机号 + 订单号查询物流进度与付款状态。</p>
+      <p>1. 加入购物车提交询价单，业务员会在工作时间内与您确认规格与报价；2. 确认报价后，<b>货款由您直接支付给工厂账户</b>，平台按报价单另行开具服务费账单；3. 工厂发货后可在本页凭手机号 + 订单号查询物流进度与付款状态。</p>
     </div>`;
 }
 async function loadDetail(id) {
@@ -1281,7 +1281,7 @@ function renderCart() {
     </div>
     <div class="checkout-form panel-params">
       <h2>提交询价单</h2>
-      <p class="query-notice">提交即询价，此步不收款。业务员报价确认后：货款直接支付至报价单所列工厂对公账户，服务费按我方账单支付。订单号会自动保存在本机，凭手机号 + 订单号可随时查单。</p>
+      <p class="query-notice">提交即询价，此步不收款。业务员报价确认后：货款直接支付至报价单所列工厂对公账户，服务费按平台账单支付。订单号会自动保存在本机，凭手机号 + 订单号可随时查单。</p>
       <label class="form-field"><span>公司/个人名称 *</span><input type="text" id="co-name" maxlength="40" placeholder="如：上海 XX 贸易有限公司 / 王小明" autocomplete="off" /></label>
       <label class="form-field"><span>手机号 *</span><input type="tel" id="co-phone" maxlength="11" placeholder="11 位手机号，用于查单" autocomplete="off" /></label>
       <h3 class="form-subhead">收货地址</h3>
@@ -1392,8 +1392,8 @@ const ORDER_STATUS_CLS = {
 // 付款指引按状态给：模式B 下我方从不让客户「向我方付款买货」，两个收款方必须分开说清
 const ORDER_PAY_TIP = {
   inquiry: '已收到询价，业务员会尽快联系您确认规格并报价',
-  quoted: '报价单已发出：确认后货款直接支付给工厂，服务费另付我方',
-  confirmed: '请将货款支付至工厂对公账户；服务费按我方账单支付，双方到账后安排发货',
+  quoted: '报价单已发出：确认后货款直接支付给工厂，服务费另付平台',
+  confirmed: '请将货款支付至工厂对公账户；服务费按平台账单支付，双方到账后安排发货',
   forwarded: '已通知工厂接单备货，发货后此处会显示物流单号',
 };
 function statusBadge(s) {
@@ -1420,7 +1420,7 @@ function moneyBreakdownHtml(o) {
   if (!fee) return `<p class="order-amount"><span>货款合计（付工厂）</span><b>${moneyText(goods)}</b></p>`;
   return `<div class="order-amount-box">
       <p class="order-amount"><span>货款（直付工厂）</span><b>${moneyText(goods)}</b></p>
-      <p class="order-amount"><span>服务费（付我方）</span><b>${moneyText(fee)}</b></p>
+      <p class="order-amount"><span>服务费（付平台）</span><b>${moneyText(fee)}</b></p>
       <p class="order-amount order-amount-total"><span>合计应付</span><b>${moneyText(total)}</b></p>
     </div>`;
 }
@@ -1435,26 +1435,52 @@ async function loadSellerInfo() {
   return SELLER_INFO;
 }
 
-/* 页脚主体公示：只公示居间服务方，不出现任何货款收款账户。
- * 主体未登记时保持 hidden，宁可不展示，也不放一行「某某公司」这种无信息量的占位。 */
+/* 平台主体公示字段（顺序固定）：只读 GET /api/site/seller。
+ * 平台是独立于任何厂家的第三方，品牌名/厂家名只属于商品与供货主体维度
+ * （商品中的品牌标签、brand profile、订单 factory），严禁混入本区块，
+ * 否则会让人误以为平台就是某一家工厂。 */
+const PLATFORM_FIELDS = [
+  ['credit_code', '统一社会信用代码'],
+  ['license_no', '许可证号'],
+  ['license_scope', '经营范围'],
+  ['address', '地址'],
+  ['contact', '服务咨询'],
+  ['fee_note', '费用说明'],
+];
+const PLATFORM_TAGLINE = '第三方供应链信息服务与撮合平台';
+
+/* 页脚主体公示：统一公示平台自身要素（主体、信用代码、许可证号、经营范围、地址、咨询、费用说明）。
+ * 要素缺失就跳过该行，主体未登记时整块保持 hidden——宁可不展示，也不放无信息量占位。 */
 function renderSellerFooter() {
   const el = document.getElementById('footer-seller');
   if (!el) return;
   const s = SELLER_INFO || {};
-  // 首屏同步一条居间公示：主体未登记则两处都不出现，避免只显示一半
+  const entity = s.entity_name == null ? '' : String(s.entity_name).trim();
+  const has = !!entity;
   const note = document.getElementById('hero-seller-note');
   if (note) {
-    if (!s.entity_name) { note.hidden = true; note.textContent = ''; }
+    if (!has) { note.hidden = true; note.textContent = ''; }
     else {
-      note.textContent = `${s.entity_name}｜本平台提供选品与撮合服务，货款直付工厂、发票由工厂开具，服务费单独结算`;
+      note.textContent = `${PLATFORM_TAGLINE}｜货款直付工厂、发票由工厂开具，平台仅收取服务费`;
       note.hidden = false;
     }
   }
-  if (!s.entity_name) { el.hidden = true; el.textContent = ''; return; }
-  const bits = [`${s.entity_name} 提供选品与撮合服务，货款由客户直付工厂、发票由工厂开具，我方仅收取服务费。`];
-  if (s.license_scope) bits.push(`经营范围：${s.license_scope}。`);
-  if (s.contact) bits.push(`服务咨询：${s.contact}`);
-  el.textContent = bits.join(' ');
+  el.textContent = '';
+  if (!has) { el.hidden = true; return; }
+  const append = (cls, text) => {
+    const p = document.createElement('p');
+    p.className = cls;
+    p.textContent = text;
+    el.appendChild(p);
+  };
+  append('fs-line fs-main', `${entity}｜${PLATFORM_TAGLINE}`);
+  PLATFORM_FIELDS.forEach((pair) => {
+    const key = pair[0];
+    const label = pair[1];
+    const v = s[key] == null ? '' : String(s[key]).trim();
+    if (!v) return;
+    append('fs-line' + (key === 'fee_note' ? ' fs-note' : ''), `${label}：${v}`);
+  });
   el.hidden = false;
 }
 
@@ -1492,7 +1518,7 @@ function factoryPayHtml(o) {
       <p>账号：<span class="payee-acc">${escapeHtml(f.bank_account)}</span></p>
       ${f.license_no ? `<p>食品生产许可证号：${escapeHtml(f.license_no)}</p>` : ''}
       ${f.license_valid_to ? `<p>许可证有效期至：${escapeHtml(f.license_valid_to)}${(f.license_valid_to < new Date().toISOString().slice(0, 10)) ? ' <span style="color:#c0392b">（已过期）</span>' : ''}</p>` : ''}
-      <p class="payee-tip">转账备注订单号 ${escapeHtml(o.id)}；货款请直接付给工厂，我方仅收服务费。</p>
+      <p class="payee-tip">转账备注订单号 ${escapeHtml(o.id)}；货款请直接付给工厂，平台仅收服务费。</p>
     </div>`;
 }
 
@@ -1506,7 +1532,7 @@ function sellerPayHtml() {
       <p class="payee-tip">服务费由业务员在报价确认后单独提供收款信息与账单，请勿与货款合并支付。</p></div>`;
   }
   return `<div class="order-payee order-payee-seller">
-      <b>服务费收款方（我方主体）</b>
+      <b>服务费收款方（平台主体）</b>
       <p>户名：${escapeHtml(s.entity_name)}</p>
       ${s.credit_code ? `<p>统一社会信用代码：${escapeHtml(s.credit_code)}</p>` : ''}
       ${s.address ? `<p>地址：${escapeHtml(s.address)}</p>` : ''}
@@ -2038,7 +2064,7 @@ function receiptPayeeHtml(r) {
     lines.push('<p><span>货款收款方</span><b>报价确认后由业务员提供工厂对公账户</b></p>');
   }
   if (r.pay_note) lines.push(`<p><span>付款说明</span><b>${escapeHtml(r.pay_note)}</b></p>`);
-  lines.push('<p class="rp-payee-tip">货款请直接支付给工厂；服务费按我方账单支付，勿将货款转入我方账户。</p>');
+  lines.push('<p class="rp-payee-tip">货款请直接支付给工厂；服务费按平台账单支付，勿将货款转入平台账户。</p>');
   return `<div class="rp-payee">${lines.join('')}</div>`;
 }
 function receiptHtml(r) {
@@ -2075,7 +2101,7 @@ function receiptHtml(r) {
     <div class="rp-total">
       <p><span>合计件数</span><b>${r.total_qty} 件</b></p>
       <p class="rp-amount"><span>货款（直付工厂）</span><b>${moneyText(r.total_amount)}</b></p>
-      ${Number(r.service_fee) > 0 ? `<p class="rp-amount"><span>服务费（付我方）</span><b>${moneyText(r.service_fee)}</b></p>` : ''}
+      ${Number(r.service_fee) > 0 ? `<p class="rp-amount"><span>服务费（付平台）</span><b>${moneyText(r.service_fee)}</b></p>` : ''}
       ${receiptFeeStatusHtml(r)}
     </div>
     ${receiptPayeeHtml(r)}
@@ -2176,7 +2202,7 @@ function paintReceiptCanvas(r) {
   const payable = Number(r.total_payable) || (Math.round((goodsAmt + feeAmt) * 100) / 100);
   pushRow('货款（直付工厂）', moneyText(goodsAmt), `700 26px ${FONT_SANS}`, '#0f172a', 12);
   if (feeAmt > 0) {
-    pushRow('服务费（付我方）', moneyText(feeAmt), `16px ${FONT_SANS}`, '#334155', 8);
+    pushRow('服务费（付平台）', moneyText(feeAmt), `16px ${FONT_SANS}`, '#334155', 8);
     pushRow('合计应付', moneyText(payable), `700 20px ${FONT_SANS}`, '#334155', 8);
     const feeMap = { unbilled: '待开账', quoted: '已报价', invoiced: '已开账', paid: '已结清', waived: '已减免' };
     pushText(`服务费状态：${feeMap[r.service_fee_status] || '待开账'}${r.service_fee_paid_at ? '（' + String(r.service_fee_paid_at).slice(0, 10) + ' 到账）' : ''}`, `15px ${FONT_SANS}`, '#475569', { gap: 8 });
@@ -2193,7 +2219,7 @@ function paintReceiptCanvas(r) {
   } else {
     pushText('货款收款方：报价确认后由业务员提供工厂对公账户', `15px ${FONT_SANS}`, '#334155', { gap: 0 });
   }
-  pushText('货款请直接支付给工厂；服务费按我方账单支付', `14px ${FONT_SANS}`, '#64748b', { gap: 6 });
+  pushText('货款请直接支付给工厂；服务费按平台账单支付', `14px ${FONT_SANS}`, '#64748b', { gap: 6 });
   if (r.pay_note) pushText(`付款说明：${r.pay_note}`, `14px ${FONT_SANS}`, '#475569', { gap: 6 });
   if (r.remark) pushText(`备注：${r.remark}`, `16px ${FONT_SANS}`, '#475569', { gap: 12 });
   rule();
