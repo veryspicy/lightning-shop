@@ -1012,7 +1012,10 @@ main#products { padding-top: 56px; padding-bottom: 72px; }
 .rp-payee .rp-payee-tip { display: block; margin-top: 6px; color: #64748b; font-size: 12px; }
 
 /* 页脚主体公示：一行小字，与版权行区分，不抢视觉但必须可读 */
-.footer-seller { font-size: .76rem; line-height: 1.6; color: #64748b; margin-top: 4px; max-width: 720px; }
+.footer-seller { font-size: .76rem; line-height: 1.7; color: #64748b; margin-top: 6px; max-width: 720px; }
+.footer-seller .fs-line { margin: 0; }
+.footer-seller .fs-main { color: #475569; }
+.footer-seller .fs-note { color: #94a3b8; }
 /* 服务费收款方：与工厂收款方并列展示，边框同款式但左侧色条区分收款主体 */
 .order-payee-seller { border-left: 3px solid #2563eb; }
 @media (max-width: 640px) {
