@@ -43,6 +43,11 @@ jobs:
           done
           exit $fail
 
+      - name: 静态资源版本参数（app.js / styles.css 的 ?v= 必须等于内容指纹）
+        run: |
+          # 这两个资源在边缘是 immutable 一年缓存，v 不跟着内容走就会让老访客长期跑旧脚本
+          node scripts/check-asset-version.mjs
+
       - name: 配置完整性（wrangler.toml 必须声明主入口与 D1 绑定）
         run: |
           set -e
